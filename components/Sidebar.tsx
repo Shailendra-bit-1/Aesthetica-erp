@@ -72,7 +72,9 @@ export default function Sidebar() {
 
   // Admins: resolve as soon as the profile loads — no permission hook needed.
   // Staff:  wait for the realtime permissions hook to be ready.
-  const loading = profileLoading || flagsLoading || (!isAdmin && !ready);
+  // flagsLoading is intentionally excluded — isEnabled() now fails open so nav
+  // items appear immediately and only hide when the DB explicitly disables them.
+  const loading = profileLoading || (!isAdmin && !ready);
 
   // Admins always see every nav item (if the module is enabled for this clinic).
   // Staff: item shows if it has no permission requirement, OR can() returns true.

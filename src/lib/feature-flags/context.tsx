@@ -177,9 +177,13 @@ export function FeatureFlagsProvider({ children }: { children: React.ReactNode }
   // ── Accessors ────────────────────────────────────────────────────────────────
 
   function isEnabled(key: ModuleKey): boolean {
-    if (loading) return false;
+    // Always-on modules are never gated
     if (ALWAYS_ON_MODULES.includes(key as typeof ALWAYS_ON_MODULES[number])) return true;
-    return modules[key]?.enabled === true;
+    // While loading OR if no DB row exists → fail open (show the item)
+    // Only hide when the DB explicitly sets is_enabled = false
+    if (loading) return true;
+    if (!(key in modules)) return true;
+    return modules[key]?.enabled !== false;
   }
 
   function getFlag(key: string): boolean {
