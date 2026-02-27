@@ -19,7 +19,13 @@
       }
     ],
     "paths": {
-      "@/*": ["./*"]
+      "@/*":        ["./*"],
+      "@modules/*": ["./src/modules/*"],
+      "@shared/*":  ["./src/shared/*"],
+      "@core/*":    ["./src/modules/core/*"],
+      "@flags":           ["./src/lib/feature-flags/hook"],
+      "@flags/*":         ["./src/lib/feature-flags/*"],
+      "@modules/config/*":["./src/lib/config/*"]
     }
   },
   "include": [

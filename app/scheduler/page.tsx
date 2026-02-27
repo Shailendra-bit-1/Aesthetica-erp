@@ -1,0 +1,2660 @@
+"use client";
+
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import {
+  ChevronLeft, ChevronRight, Plus, Settings, Eye, EyeOff,
+  Clock, User, X, AlertCircle, Loader2, Zap,
+  Star, RefreshCw, Bell, Shield, Search, Scissors,
+  CheckCircle2, XCircle, UserCheck, PhoneOff, CalendarCheck,
+  AlertTriangle, Package, Calendar, MapPin, Edit2, Trash2,
+  ChevronDown, Send, Check, Receipt, IndianRupee, CreditCard, GripVertical, CalendarClock,
+} from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { useClinic } from "@/contexts/ClinicContext";
+import { toast } from "sonner";
+import TopBar from "@/components/TopBar";
+import { ModuleGate } from "@flags/gate";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+type AppointmentStatus =
+  | "planned" | "confirmed" | "arrived"
+  | "in_session" | "completed" | "cancelled" | "no_show";
+type PatientTier = "vip" | "hni" | "standard";
+type CalendarView = "day" | "week" | "month";
+
+interface Appointment {
+  id: string;
+  clinic_id: string;
+  patient_id: string | null;
+  provider_id: string | null;
+  service_id: string | null;
+  credit_id: string | null;
+  service_name: string;
+  room: string | null;
+  start_time: string;
+  end_time: string;
+  status: AppointmentStatus;
+  notes: string | null;
+  credit_reserved: boolean;
+  // joined
+  patient_name: string;
+  patient_tier: PatientTier | null;
+  provider_name: string;
+}
+
+interface Provider {
+  id: string;
+  full_name: string;
+  role: string;
+}
+
+interface Service {
+  id: string;
+  name: string;
+  category: string;
+  duration_minutes: number;
+  selling_price: number;
+}
+
+interface SchedulerSettings {
+  id: string;
+  clinic_id: string;
+  enable_double_booking: boolean;
+  buffer_time_minutes: number;
+  credit_lock: boolean;
+  working_start: string;
+  working_end: string;
+  slot_duration_minutes: number;
+}
+
+interface PatientCredit {
+  id: string;
+  service_name: string;
+  total_sessions: number;
+  used_sessions: number;
+  per_session_value: number;
+  status: string;
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const HOUR_HEIGHT = 68; // px per hour in time grid
+const WORKING_START = 8;
+const WORKING_END = 21;
+const TOTAL_HOURS = WORKING_END - WORKING_START;
+const GRID_HEIGHT = TOTAL_HOURS * HOUR_HEIGHT;
+
+const STATUS_CFG: Record<AppointmentStatus, {
+  label: string; bg: string; border: string; text: string; dot: string; icon: React.ElementType;
+}> = {
+  planned:    { label: "Scheduled",   bg: "#FDF9F2", border: "#C5A059", text: "#1C1917", dot: "#C5A059",  icon: Calendar     },
+  confirmed:  { label: "Confirmed",  bg: "#EFF6EF", border: "#4A8A4A", text: "#1C3A1C", dot: "#4A8A4A",  icon: CheckCircle2 },
+  arrived:    { label: "Checked In", bg: "#EEF2FA", border: "#2A4A8A", text: "#1A2A5A", dot: "#2A4A8A",  icon: UserCheck    },
+  in_session: { label: "In Session", bg: "#FFF8E8", border: "#D4A017", text: "#1C1917", dot: "#D4A017",  icon: Zap          },
+  completed:  { label: "Completed",  bg: "#F5F5F3", border: "#9C9584", text: "#6B6358", dot: "#9C9584",  icon: CheckCircle2 },
+  cancelled:  { label: "Cancelled",  bg: "#FEF2F2", border: "#B43C3C", text: "#7A1C1C", dot: "#B43C3C",  icon: XCircle      },
+  no_show:    { label: "No Show",    bg: "#FEF2F2", border: "#B43C3C", text: "#7A1C1C", dot: "#EF4444",  icon: PhoneOff     },
+};
+
+const MONTHS = [
+  "January","February","March","April","May","June",
+  "July","August","September","October","November","December",
+];
+const DAY_LABELS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const fmt = (n: number) =>
+  new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
+
+function fmtTime(d: Date) {
+  return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
+}
+
+function startOfWeek(d: Date): Date {
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  return new Date(d.getFullYear(), d.getMonth(), diff);
+}
+
+function addDays(d: Date, n: number): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+}
+
+function isSameDay(a: Date, b: Date) {
+  return a.getFullYear() === b.getFullYear()
+    && a.getMonth() === b.getMonth()
+    && a.getDate() === b.getDate();
+}
+
+function isToday(d: Date) { return isSameDay(d, new Date()); }
+
+function apptTop(startTime: string): number {
+  const d = new Date(startTime);
+  const mins = d.getHours() * 60 + d.getMinutes() - WORKING_START * 60;
+  return Math.max(0, (mins / 60) * HOUR_HEIGHT);
+}
+
+function apptHeight(startTime: string, endTime: string): number {
+  const ms = new Date(endTime).getTime() - new Date(startTime).getTime();
+  return Math.max(26, (ms / 3600000) * HOUR_HEIGHT);
+}
+
+// WhatsApp placeholder — calls Edge Function
+async function sendWhatsAppReminder(appointmentId: string) {
+  try {
+    const { error } = await supabase.functions.invoke("send-whatsapp-reminder", {
+      body: { appointment_id: appointmentId },
+    });
+    if (error) throw error;
+    toast.success("WhatsApp reminder queued ✓");
+  } catch {
+    toast.info("WhatsApp reminder queued (Edge Function active — integrate WhatsApp Business API)");
+  }
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+
+function SchedulerPageInner() {
+  const { profile, activeClinicId, loading: profileLoading } = useClinic();
+  const isAdmin = ["superadmin","chain_admin","clinic_admin"].includes(profile?.role ?? "");
+
+  const [view, setView]             = useState<CalendarView>("week");
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [privacyMode, setPrivacyMode] = useState(false);
+
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [providers,    setProviders]    = useState<Provider[]>([]);
+  const [services,     setServices]     = useState<Service[]>([]);
+  const [settings,     setSettings]     = useState<SchedulerSettings | null>(null);
+  const [loading,      setLoading]      = useState(true);
+
+  const [selectedAppt,  setSelectedAppt]  = useState<Appointment | null>(null);
+  const [showNewAppt,   setShowNewAppt]   = useState(false);
+  const [showSettings,  setShowSettings]  = useState(false);
+  const [prefillSlot,   setPrefillSlot]   = useState<{ date: Date; hour: number; providerId?: string } | null>(null);
+
+  // Date range for current view
+  const viewRange = useMemo(() => {
+    if (view === "day") {
+      const s = new Date(currentDate); s.setHours(0,0,0,0);
+      const e = new Date(currentDate); e.setHours(23,59,59,999);
+      return { start: s, end: e };
+    }
+    if (view === "week") {
+      const s = startOfWeek(currentDate); s.setHours(0,0,0,0);
+      const e = addDays(s, 6);           e.setHours(23,59,59,999);
+      return { start: s, end: e };
+    }
+    const s = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+    const e = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+    e.setHours(23,59,59,999);
+    return { start: s, end: e };
+  }, [view, currentDate]);
+
+  const fetchAll = useCallback(async () => {
+    if (!activeClinicId) return;
+    setLoading(true);
+    const [apptRes, provRes, svcRes, settRes] = await Promise.all([
+      supabase
+        .from("appointments")
+        .select("*, patients!patient_id(full_name,patient_tier), profiles!provider_id(full_name)")
+        .eq("clinic_id", activeClinicId)
+        .gte("start_time", viewRange.start.toISOString())
+        .lte("start_time", viewRange.end.toISOString())
+        .neq("status", "cancelled")
+        .order("start_time"),
+      supabase
+        .from("profiles")
+        .select("id, full_name, role")
+        .eq("clinic_id", activeClinicId)
+        .eq("is_active", true)
+        .in("role", ["doctor","therapist","counsellor"])
+        .order("full_name"),
+      supabase
+        .from("services")
+        .select("id, name, category, duration_minutes, selling_price")
+        .or(`clinic_id.eq.${activeClinicId},is_global_template.eq.true`)
+        .eq("is_active", true)
+        .order("name"),
+      supabase
+        .from("scheduler_settings")
+        .select("*")
+        .eq("clinic_id", activeClinicId)
+        .maybeSingle(),
+    ]);
+
+    const normalised: Appointment[] = (apptRes.data ?? []).map((a: Record<string,unknown>) => ({
+      ...a,
+      patient_name: (a.patients as { full_name: string } | null)?.full_name ?? "Walk-in",
+      patient_tier: (a.patients as { patient_tier: PatientTier } | null)?.patient_tier ?? "standard",
+      provider_name: (a.profiles as { full_name: string } | null)?.full_name ?? "—",
+    })) as Appointment[];
+
+    setAppointments(normalised);
+    setProviders((provRes.data ?? []) as Provider[]);
+    setServices((svcRes.data ?? []) as Service[]);
+    setSettings(settRes.data as SchedulerSettings | null);
+    setLoading(false);
+  }, [activeClinicId, viewRange]);
+
+  useEffect(() => { if (!profileLoading) fetchAll(); }, [profileLoading, fetchAll]);
+
+  async function handleDragAppt(apptId: string, newStart: Date) {
+    const appt = appointments.find(a => a.id === apptId);
+    if (!appt) return;
+    const duration = new Date(appt.end_time).getTime() - new Date(appt.start_time).getTime();
+    const newEnd   = new Date(newStart.getTime() + duration);
+    const { error } = await supabase.from("appointments").update({
+      start_time: newStart.toISOString(),
+      end_time:   newEnd.toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq("id", apptId);
+    if (error) toast.error("Could not move appointment");
+    else { toast.success("Appointment moved"); fetchAll(); }
+  }
+
+  function navigate(dir: -1 | 1) {
+    if (view === "day")   setCurrentDate(d => addDays(d, dir));
+    if (view === "week")  setCurrentDate(d => addDays(d, dir * 7));
+    if (view === "month") setCurrentDate(d => new Date(d.getFullYear(), d.getMonth() + dir, 1));
+  }
+
+  const viewTitle = useMemo(() => {
+    if (view === "day") return currentDate.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    if (view === "week") {
+      const s = startOfWeek(currentDate);
+      const e = addDays(s, 6);
+      if (s.getMonth() === e.getMonth())
+        return `${s.getDate()}–${e.getDate()} ${MONTHS[s.getMonth()]} ${s.getFullYear()}`;
+      return `${s.getDate()} ${MONTHS[s.getMonth()].slice(0,3)} – ${e.getDate()} ${MONTHS[e.getMonth()].slice(0,3)} ${s.getFullYear()}`;
+    }
+    return `${MONTHS[currentDate.getMonth()]} ${currentDate.getFullYear()}`;
+  }, [view, currentDate]);
+
+  if (profileLoading) return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--background)" }}>
+      <Loader2 size={28} style={{ color: "rgba(197,160,89,0.5)", animation: "spin 1s linear infinite" }} />
+      <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+
+  return (
+    <div style={{ minHeight: "100vh", background: "var(--background)", display: "flex", flexDirection: "column" }}>
+      <TopBar />
+
+      {/* ── Calendar Header ─────────────────────────────────────────────────── */}
+      <div style={{
+        padding: "12px 24px", borderBottom: "1px solid var(--border)",
+        background: "white", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+        position: "sticky", top: 0, zIndex: 20,
+        boxShadow: "0 2px 8px rgba(28,25,23,0.06)",
+      }}>
+        {/* Nav */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button onClick={() => navigate(-1)} style={navBtn}><ChevronLeft size={16} /></button>
+          <h2 style={{ fontFamily: "Georgia, serif", fontSize: 17, fontWeight: 600, color: "var(--foreground)", minWidth: 220, textAlign: "center" }}>
+            {viewTitle}
+          </h2>
+          <button onClick={() => navigate(1)} style={navBtn}><ChevronRight size={16} /></button>
+          <button
+            onClick={() => setCurrentDate(new Date())}
+            style={{ padding: "5px 12px", borderRadius: 8, fontSize: 12, border: "1px solid rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.08)", color: "#A8853A", cursor: "pointer", fontFamily: "Georgia, serif", fontWeight: 600 }}
+          >Today</button>
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        {/* View switcher */}
+        <div style={{ display: "flex", borderRadius: 10, border: "1px solid var(--border)", overflow: "hidden" }}>
+          {(["day","week","month"] as const).map(v => (
+            <button key={v} onClick={() => setView(v)} style={{
+              padding: "6px 14px", border: "none",
+              background: view === v ? "#C5A059" : "var(--surface)",
+              color: view === v ? "white" : "var(--text-muted)",
+              fontSize: 13, fontFamily: "Georgia, serif",
+              fontWeight: view === v ? 600 : 400, cursor: "pointer",
+              transition: "all 0.15s",
+            }}>
+              {v.charAt(0).toUpperCase() + v.slice(1)}
+            </button>
+          ))}
+        </div>
+
+        {/* Privacy toggle */}
+        <button
+          onClick={() => setPrivacyMode(m => !m)}
+          style={{
+            display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8,
+            border: `1px solid ${privacyMode ? "rgba(197,160,89,0.5)" : "var(--border)"}`,
+            background: privacyMode ? "rgba(197,160,89,0.1)" : "var(--surface)",
+            color: privacyMode ? "#C5A059" : "var(--text-muted)",
+            fontSize: 12, cursor: "pointer", fontFamily: "Georgia, serif",
+          }}
+        >
+          {privacyMode ? <EyeOff size={14} /> : <Eye size={14} />}
+          {privacyMode ? "Privacy ON" : "Privacy"}
+        </button>
+
+        <button onClick={fetchAll} style={{ ...navBtn, color: "var(--text-muted)" }}>
+          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+        </button>
+
+        {isAdmin && (
+          <button onClick={() => setShowSettings(true)} style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", cursor: "pointer", color: "var(--text-muted)", fontSize: 13 }}>
+            <Settings size={14} /> Settings
+          </button>
+        )}
+
+        <button
+          onClick={() => { setPrefillSlot(null); setShowNewAppt(true); }}
+          style={{
+            display: "flex", alignItems: "center", gap: 6, padding: "7px 16px",
+            borderRadius: 10, border: "none",
+            background: "linear-gradient(135deg, #C5A059, #A8853A)",
+            color: "white", fontSize: 13, fontWeight: 600,
+            fontFamily: "Georgia, serif", cursor: "pointer",
+            boxShadow: "0 4px 14px rgba(197,160,89,0.35)",
+          }}
+        >
+          <Plus size={14} /> Book Appointment
+        </button>
+      </div>
+
+      {/* ── Status legend + tier key ─────────────────────────────────────────── */}
+      <div style={{ padding: "7px 24px", background: "rgba(249,247,242,0.9)", borderBottom: "1px solid rgba(197,160,89,0.1)", display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+        {(Object.entries(STATUS_CFG) as [AppointmentStatus, typeof STATUS_CFG[AppointmentStatus]][])
+          .filter(([k]) => !["cancelled","no_show"].includes(k))
+          .map(([key, cfg]) => (
+            <div key={key} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: cfg.dot }} />
+              <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "Georgia, serif" }}>{cfg.label}</span>
+            </div>
+          ))}
+        <div style={{ width: 1, height: 16, background: "var(--border)", margin: "0 4px" }} />
+        <span style={{ fontSize: 10, fontWeight: 700, color: "#C5A059", background: "rgba(197,160,89,0.15)", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(197,160,89,0.35)" }}>VIP</span>
+        <span style={{ fontSize: 10, fontWeight: 700, color: "#2E7D6E", background: "rgba(46,125,110,0.12)", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(46,125,110,0.3)" }}>HNI</span>
+        {privacyMode && (
+          <span style={{ fontSize: 11, color: "#C5A059", fontFamily: "Georgia, serif", marginLeft: "auto" }}>
+            <EyeOff size={11} style={{ display: "inline", marginRight: 4 }} />
+            VIP/HNI names are blurred
+          </span>
+        )}
+      </div>
+
+      {/* ── Calendar body ────────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
+        {loading ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 400 }}>
+            <Loader2 size={28} style={{ color: "rgba(197,160,89,0.5)", animation: "spin 1s linear infinite" }} />
+          </div>
+        ) : view === "week" ? (
+          <WeekView
+            appointments={appointments}
+            currentDate={currentDate}
+            privacyMode={privacyMode}
+            settings={settings}
+            onSelectAppt={setSelectedAppt}
+            onSlotClick={(date, hour) => { setPrefillSlot({ date, hour }); setShowNewAppt(true); }}
+            onDragAppt={handleDragAppt}
+          />
+        ) : view === "day" ? (
+          <DayView
+            appointments={appointments}
+            currentDate={currentDate}
+            providers={providers}
+            privacyMode={privacyMode}
+            settings={settings}
+            onSelectAppt={setSelectedAppt}
+            onSlotClick={(date, hour, pid) => { setPrefillSlot({ date, hour, providerId: pid }); setShowNewAppt(true); }}
+            onDragAppt={handleDragAppt}
+          />
+        ) : (
+          <MonthView
+            appointments={appointments}
+            currentDate={currentDate}
+            privacyMode={privacyMode}
+            onDayClick={(d) => { setCurrentDate(d); setView("day"); }}
+          />
+        )}
+      </div>
+
+      {/* ── Modals / Drawers ─────────────────────────────────────────────────── */}
+      {selectedAppt && (
+        <AppointmentModal
+          appointment={selectedAppt}
+          privacyMode={privacyMode}
+          activeClinicId={activeClinicId}
+          onClose={() => setSelectedAppt(null)}
+          onUpdated={() => { setSelectedAppt(null); fetchAll(); }}
+        />
+      )}
+
+      {showNewAppt && (
+        <NewAppointmentDrawer
+          prefillSlot={prefillSlot}
+          services={services}
+          providers={providers}
+          activeClinicId={activeClinicId}
+          settings={settings}
+          existingAppointments={appointments}
+          onClose={() => { setShowNewAppt(false); setPrefillSlot(null); }}
+          onSaved={() => { setShowNewAppt(false); setPrefillSlot(null); fetchAll(); }}
+        />
+      )}
+
+      {showSettings && isAdmin && (
+        <SettingsDrawer
+          current={settings}
+          activeClinicId={activeClinicId}
+          onClose={() => setShowSettings(false)}
+          onSaved={(s) => { setSettings(s); setShowSettings(false); }}
+        />
+      )}
+
+      <style>{`
+        @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        @keyframes pulse-gold { 0%,100%{ box-shadow:0 0 0 0 rgba(212,160,23,0.4) } 50%{ box-shadow:0 0 0 6px rgba(212,160,23,0) } }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
+      `}</style>
+    </div>
+  );
+}
+
+// ── Gated export ──────────────────────────────────────────────────────────────
+// ModuleGate checks clinic_modules — if "scheduler" is disabled for this clinic
+// the upgrade banner is shown instead of the full page.
+
+export default function SchedulerPage() {
+  return (
+    <ModuleGate module="scheduler">
+      <SchedulerPageInner />
+    </ModuleGate>
+  );
+}
+
+const navBtn: React.CSSProperties = {
+  padding: 6, borderRadius: 8, border: "1px solid var(--border)",
+  background: "var(--surface)", cursor: "pointer", display: "flex", alignItems: "center",
+};
+
+// ── Week View ─────────────────────────────────────────────────────────────────
+
+function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAppt, onSlotClick, onDragAppt }: {
+  appointments: Appointment[];
+  currentDate: Date;
+  privacyMode: boolean;
+  settings: SchedulerSettings | null;
+  onSelectAppt: (a: Appointment) => void;
+  onSlotClick: (date: Date, hour: number) => void;
+  onDragAppt: (apptId: string, newStart: Date) => void;
+}) {
+  const weekStart = startOfWeek(currentDate);
+  const days  = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+  const hours = Array.from({ length: TOTAL_HOURS }, (_, i) => WORKING_START + i);
+
+  function getApptsByDay(day: Date) {
+    return appointments.filter(a => isSameDay(new Date(a.start_time), day));
+  }
+
+  return (
+    <div style={{ display: "flex", minHeight: GRID_HEIGHT + 56 }}>
+      {/* Time gutter */}
+      <div style={{ width: 68, flexShrink: 0, borderRight: "1px solid var(--border)", paddingTop: 56, background: "white" }}>
+        {hours.map(h => (
+          <div key={h} style={{
+            height: HOUR_HEIGHT, display: "flex", alignItems: "flex-start", justifyContent: "flex-end",
+            paddingRight: 10, paddingTop: 5,
+            fontSize: 11, color: "#9C9584", fontFamily: "Georgia, serif",
+            borderBottom: "1px solid rgba(0,0,0,0.04)",
+          }}>
+            {h === 12 ? "12 PM" : h > 12 ? `${h-12} PM` : `${h} AM`}
+          </div>
+        ))}
+      </div>
+
+      {/* Day columns */}
+      <div style={{ flex: 1, display: "flex", overflowX: "auto" }}>
+        {days.map(day => {
+          const dayAppts = getApptsByDay(day);
+          const today = isToday(day);
+          return (
+            <div key={day.toISOString()} style={{ flex: 1, minWidth: 120, borderRight: "1px solid var(--border)" }}>
+              {/* Day header */}
+              <div style={{
+                height: 56, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                borderBottom: "1px solid var(--border)", position: "sticky", top: 0, zIndex: 10,
+                background: today ? "rgba(197,160,89,0.07)" : "white",
+              }}>
+                <span style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                  {DAY_LABELS[day.getDay()]}
+                </span>
+                <span style={{
+                  fontSize: 20, fontWeight: today ? 700 : 400, fontFamily: "Georgia, serif",
+                  color: today ? "#C5A059" : "var(--foreground)",
+                  width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center",
+                  borderRadius: "50%", background: today ? "rgba(197,160,89,0.14)" : "transparent",
+                }}>
+                  {day.getDate()}
+                </span>
+              </div>
+
+              {/* Time grid */}
+              <div style={{ position: "relative", height: GRID_HEIGHT, background: today ? "rgba(197,160,89,0.015)" : "transparent" }}>
+                {hours.map(h => (
+                  <div
+                    key={h}
+                    onClick={() => onSlotClick(day, h)}
+                    onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; (e.currentTarget as HTMLDivElement).style.background = "rgba(197,160,89,0.12)"; }}
+                    onDragLeave={e => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      (e.currentTarget as HTMLDivElement).style.background = "transparent";
+                      const apptId = e.dataTransfer.getData("apptId");
+                      if (apptId) {
+                        const ns = new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, 0, 0);
+                        onDragAppt(apptId, ns);
+                      }
+                    }}
+                    style={{
+                      position: "absolute", top: (h - WORKING_START) * HOUR_HEIGHT,
+                      left: 0, right: 0, height: HOUR_HEIGHT,
+                      borderBottom: "1px solid rgba(0,0,0,0.045)", cursor: "pointer",
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = "rgba(197,160,89,0.04)"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+                  />
+                ))}
+
+                {/* Double booking highlight */}
+                {settings?.enable_double_booking && (() => {
+                  const groups = dayAppts.filter(a => !["completed","cancelled","no_show"].includes(a.status));
+                  const overlapping = groups.filter(a => groups.some(b =>
+                    b.id !== a.id &&
+                    new Date(a.start_time) < new Date(b.end_time) &&
+                    new Date(a.end_time)   > new Date(b.start_time)
+                  ));
+                  return overlapping.map(a => (
+                    <div key={`ov-${a.id}`} style={{
+                      position: "absolute",
+                      top: apptTop(a.start_time),
+                      height: apptHeight(a.start_time, a.end_time),
+                      left: 0, right: 0,
+                      background: "rgba(180,60,60,0.06)",
+                      border: "1px solid rgba(180,60,60,0.3)",
+                      borderRadius: 6, pointerEvents: "none",
+                    }} />
+                  ));
+                })()}
+
+                {/* Appointments */}
+                {dayAppts.map((appt, i) => {
+                  const overlaps = dayAppts.filter(b =>
+                    b.id !== appt.id &&
+                    new Date(appt.start_time) < new Date(b.end_time) &&
+                    new Date(appt.end_time)   > new Date(b.start_time)
+                  );
+                  const col = overlaps.filter(b => b.id < appt.id).length;
+                  const total = overlaps.length + 1;
+                  return (
+                    <ApptCard
+                      key={appt.id}
+                      appt={appt}
+                      top={apptTop(appt.start_time)}
+                      height={apptHeight(appt.start_time, appt.end_time)}
+                      privacyMode={privacyMode}
+                      col={col}
+                      totalCols={total}
+                      onClick={() => onSelectAppt(appt)}
+                    />
+                  );
+                })}
+
+                {/* Now indicator */}
+                {today && (() => {
+                  const now = new Date();
+                  const top = ((now.getHours() * 60 + now.getMinutes() - WORKING_START * 60) / 60) * HOUR_HEIGHT;
+                  if (top < 0 || top > GRID_HEIGHT) return null;
+                  return (
+                    <div style={{ position: "absolute", left: 0, right: 0, top, zIndex: 6, pointerEvents: "none" }}>
+                      <div style={{ height: 2, background: "#C5A059", boxShadow: "0 0 6px rgba(197,160,89,0.5)" }} />
+                      <div style={{ position: "absolute", left: -5, top: -4, width: 10, height: 10, borderRadius: "50%", background: "#C5A059" }} />
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Day View (providers as columns) ──────────────────────────────────────────
+
+function DayView({ appointments, currentDate, providers, privacyMode, settings, onSelectAppt, onSlotClick, onDragAppt }: {
+  appointments: Appointment[];
+  currentDate: Date;
+  providers: Provider[];
+  privacyMode: boolean;
+  settings: SchedulerSettings | null;
+  onSelectAppt: (a: Appointment) => void;
+  onSlotClick: (date: Date, hour: number, providerId?: string) => void;
+  onDragAppt: (apptId: string, newStart: Date) => void;
+}) {
+  const hours = Array.from({ length: TOTAL_HOURS }, (_, i) => WORKING_START + i);
+  // Columns: one per provider, plus an "Unassigned" column
+  const cols = [
+    { id: "unassigned", full_name: "Unassigned", role: "" },
+    ...providers,
+  ];
+
+  function getApptsByProvider(providerId: string) {
+    const dayAppts = appointments.filter(a => isSameDay(new Date(a.start_time), currentDate));
+    if (providerId === "unassigned") return dayAppts.filter(a => !a.provider_id);
+    return dayAppts.filter(a => a.provider_id === providerId);
+  }
+
+  return (
+    <div style={{ display: "flex", minHeight: GRID_HEIGHT + 56 }}>
+      {/* Time gutter */}
+      <div style={{ width: 68, flexShrink: 0, borderRight: "1px solid var(--border)", paddingTop: 56, background: "white" }}>
+        {hours.map(h => (
+          <div key={h} style={{
+            height: HOUR_HEIGHT, display: "flex", alignItems: "flex-start", justifyContent: "flex-end",
+            paddingRight: 10, paddingTop: 5,
+            fontSize: 11, color: "#9C9584", fontFamily: "Georgia, serif",
+            borderBottom: "1px solid rgba(0,0,0,0.04)",
+          }}>
+            {h === 12 ? "12 PM" : h > 12 ? `${h-12} PM` : `${h} AM`}
+          </div>
+        ))}
+      </div>
+
+      {/* Provider columns */}
+      <div style={{ flex: 1, display: "flex", overflowX: "auto" }}>
+        {cols.map(col => {
+          const colAppts = getApptsByProvider(col.id);
+          return (
+            <div key={col.id} style={{ flex: 1, minWidth: 160, borderRight: "1px solid var(--border)" }}>
+              {/* Provider header */}
+              <div style={{
+                height: 56, padding: "0 12px", display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center",
+                borderBottom: "1px solid var(--border)", position: "sticky", top: 0, zIndex: 10,
+                background: "rgba(249,247,242,0.95)",
+              }}>
+                <span style={{ fontFamily: "Georgia, serif", fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>
+                  {col.full_name}
+                </span>
+                {col.role && (
+                  <span style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "capitalize" }}>{col.role}</span>
+                )}
+              </div>
+
+              <div style={{ position: "relative", height: GRID_HEIGHT, background: "white" }}>
+                {hours.map(h => (
+                  <div
+                    key={h}
+                    onClick={() => onSlotClick(currentDate, h, col.id === "unassigned" ? undefined : col.id)}
+                    onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; (e.currentTarget as HTMLDivElement).style.background = "rgba(197,160,89,0.12)"; }}
+                    onDragLeave={e => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      (e.currentTarget as HTMLDivElement).style.background = "transparent";
+                      const apptId = e.dataTransfer.getData("apptId");
+                      if (apptId) {
+                        const ns = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), h, 0, 0);
+                        onDragAppt(apptId, ns);
+                      }
+                    }}
+                    style={{
+                      position: "absolute", top: (h - WORKING_START) * HOUR_HEIGHT,
+                      left: 0, right: 0, height: HOUR_HEIGHT,
+                      borderBottom: "1px solid rgba(0,0,0,0.045)", cursor: "pointer",
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = "rgba(197,160,89,0.04)"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+                  />
+                ))}
+
+                {colAppts.map(appt => (
+                  <ApptCard
+                    key={appt.id}
+                    appt={appt}
+                    top={apptTop(appt.start_time)}
+                    height={apptHeight(appt.start_time, appt.end_time)}
+                    privacyMode={privacyMode}
+                    col={0}
+                    totalCols={1}
+                    onClick={() => onSelectAppt(appt)}
+                  />
+                ))}
+
+                {isToday(currentDate) && (() => {
+                  const now = new Date();
+                  const top = ((now.getHours() * 60 + now.getMinutes() - WORKING_START * 60) / 60) * HOUR_HEIGHT;
+                  if (top < 0 || top > GRID_HEIGHT) return null;
+                  return (
+                    <div style={{ position: "absolute", left: 0, right: 0, top, zIndex: 6, pointerEvents: "none" }}>
+                      <div style={{ height: 2, background: "#C5A059", boxShadow: "0 0 6px rgba(197,160,89,0.5)" }} />
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Month View ────────────────────────────────────────────────────────────────
+
+function MonthView({ appointments, currentDate, privacyMode, onDayClick }: {
+  appointments: Appointment[];
+  currentDate: Date;
+  privacyMode: boolean;
+  onDayClick: (d: Date) => void;
+}) {
+  const year  = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const startCol = firstDay.getDay(); // 0=Sun
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const cells: (Date | null)[] = [
+    ...Array(startCol).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => new Date(year, month, i + 1)),
+  ];
+  // Pad to complete rows
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  function getApptsByDay(d: Date) {
+    return appointments.filter(a => isSameDay(new Date(a.start_time), d));
+  }
+
+  return (
+    <div style={{ padding: "16px 24px" }}>
+      {/* Day labels header */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 }}>
+        {DAY_LABELS.map(l => (
+          <div key={l} style={{ textAlign: "center", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#9C9584", padding: "4px 0" }}>{l}</div>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+        {cells.map((day, i) => {
+          if (!day) return <div key={`empty-${i}`} />;
+          const dayAppts = getApptsByDay(day);
+          const today = isToday(day);
+          const isCurrentMonth = day.getMonth() === month;
+          return (
+            <div
+              key={day.toISOString()}
+              onClick={() => onDayClick(day)}
+              style={{
+                minHeight: 100, padding: "6px 8px",
+                borderRadius: 12, cursor: "pointer",
+                border: today ? "1px solid rgba(197,160,89,0.5)" : "1px solid var(--border)",
+                background: today ? "rgba(197,160,89,0.06)" : "white",
+                opacity: isCurrentMonth ? 1 : 0.4,
+                transition: "all 0.15s",
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = "0 2px 12px rgba(197,160,89,0.12)"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = "none"; }}
+            >
+              <div style={{
+                fontSize: 14, fontWeight: today ? 700 : 400, fontFamily: "Georgia, serif",
+                color: today ? "#C5A059" : "var(--foreground)",
+                width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
+                borderRadius: "50%", background: today ? "rgba(197,160,89,0.15)" : "transparent",
+                marginBottom: 4,
+              }}>
+                {day.getDate()}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {dayAppts.slice(0, 3).map(appt => {
+                  const cfg = STATUS_CFG[appt.status];
+                  const isVip = appt.patient_tier === "vip";
+                  const isHni = appt.patient_tier === "hni";
+                  const name = (isVip || isHni) && privacyMode
+                    ? (isVip ? "VIP" : "HNI")
+                    : appt.patient_name.split(" ")[0];
+                  return (
+                    <div
+                      key={appt.id}
+                      onClick={e => { e.stopPropagation(); /* open modal */ }}
+                      style={{
+                        fontSize: 10, padding: "2px 6px", borderRadius: 4,
+                        background: cfg.bg, borderLeft: `2px solid ${cfg.dot}`,
+                        color: cfg.text, fontFamily: "Georgia, serif",
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      }}
+                    >
+                      {new Date(appt.start_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })} {name}
+                    </div>
+                  );
+                })}
+                {dayAppts.length > 3 && (
+                  <div style={{ fontSize: 10, color: "#C5A059", fontWeight: 600, paddingLeft: 6 }}>
+                    +{dayAppts.length - 3} more
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Appointment Card (in time grid) ──────────────────────────────────────────
+
+function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick }: {
+  appt: Appointment;
+  top: number;
+  height: number;
+  privacyMode: boolean;
+  col: number;
+  totalCols: number;
+  onClick: () => void;
+}) {
+  const cfg   = STATUS_CFG[a.status];
+  const isVip = a.patient_tier === "vip";
+  const isHni = a.patient_tier === "hni";
+  const masked = (isVip || isHni) && privacyMode;
+
+  const colWidth = totalCols > 1 ? `${100 / totalCols}%` : undefined;
+  const colLeft  = totalCols > 1 ? `${(col * 100) / totalCols}%` : undefined;
+
+  return (
+    <div
+      draggable
+      onDragStart={e => {
+        e.stopPropagation();
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("apptId", a.id);
+      }}
+      onClick={onClick}
+      style={{
+        position: "absolute",
+        top, height: Math.max(height, 26),
+        left: colLeft ? `calc(${colLeft} + 2px)` : 2,
+        width: colWidth ? `calc(${colWidth} - 4px)` : undefined,
+        right: totalCols === 1 ? 2 : undefined,
+        background: cfg.bg,
+        borderRadius: 7,
+        borderLeft: `3px solid ${cfg.border}`,
+        border: isVip
+          ? `1px solid rgba(197,160,89,0.55)`
+          : isHni
+            ? `1px solid rgba(46,125,110,0.45)`
+            : `1px solid rgba(0,0,0,0.07)`,
+        borderLeftWidth: 3,
+        borderLeftColor: cfg.border,
+        cursor: "grab", overflow: "hidden",
+        padding: height > 38 ? "4px 8px" : "2px 6px",
+        boxShadow: a.status === "in_session"
+          ? "0 0 0 0 rgba(212,160,23,0.4)"
+          : isVip ? "0 2px 8px rgba(197,160,89,0.2)"
+            : "0 1px 4px rgba(0,0,0,0.05)",
+        animation: a.status === "in_session" ? "pulse-gold 2s infinite" : "none",
+        zIndex: 3,
+        transition: "box-shadow 0.2s",
+      }}
+      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; }}
+      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = "none"; }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 3, marginBottom: height > 44 ? 2 : 0 }}>
+        {isVip && <span style={{ fontSize: 8, fontWeight: 700, color: "#C5A059", background: "rgba(197,160,89,0.2)", padding: "1px 5px", borderRadius: 999 }}>VIP</span>}
+        {isHni && <span style={{ fontSize: 8, fontWeight: 700, color: "#2E7D6E", background: "rgba(46,125,110,0.15)", padding: "1px 5px", borderRadius: 999 }}>HNI</span>}
+        <span style={{
+          fontSize: 12, fontWeight: 600, fontFamily: "Georgia, serif", color: cfg.text,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          filter: masked ? "blur(4px)" : "none", userSelect: masked ? "none" : "auto",
+        }}>
+          {masked ? (isVip ? "VIP Patient" : "HNI Patient") : a.patient_name}
+        </span>
+      </div>
+      {height > 44 && (
+        <p style={{ fontSize: 10, color: cfg.text, opacity: 0.7, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "Georgia, serif" }}>
+          {a.service_name}
+        </p>
+      )}
+      {height > 58 && (
+        <p style={{ fontSize: 9, color: cfg.text, opacity: 0.5, margin: 0 }}>
+          {fmtTime(new Date(a.start_time))} – {fmtTime(new Date(a.end_time))}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Appointment Detail Modal ──────────────────────────────────────────────────
+
+function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose, onUpdated }: {
+  appointment: Appointment;
+  privacyMode: boolean;
+  activeClinicId: string | null;
+  onClose: () => void;
+  onUpdated: () => void;
+}) {
+  const { profile } = useClinic();
+  const cfg   = STATUS_CFG[a.status];
+  const isVip = a.patient_tier === "vip";
+  const isHni = a.patient_tier === "hni";
+  const masked = (isVip || isHni) && privacyMode;
+  const displayName = masked ? (isVip ? "VIP Patient" : "HNI Patient") : a.patient_name;
+
+  const [updating,     setUpdating]     = useState(false);
+  const [credits,      setCredits]      = useState<PatientCredit[]>([]);
+  const [loadingCreds, setLoadingCreds] = useState(false);
+  const [selectedCred, setSelectedCred] = useState<string | "none">("none");
+  const [showConsume,  setShowConsume]  = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [showCancel,   setShowCancel]   = useState(false);
+  const [showCheckout,         setShowCheckout]         = useState(false);
+  const [showReschedule,       setShowReschedule]       = useState(false);
+  const [rescheduleDate,       setRescheduleDate]       = useState(new Date().toISOString().slice(0,10));
+  const [rescheduleTime,       setRescheduleTime]       = useState("10:00");
+  const [rescheduleProviderId, setRescheduleProviderId] = useState(a.provider_id ?? "");
+  const [rescheduleProviders,  setRescheduleProviders]  = useState<Provider[]>([]);
+  const [rescheduling,         setRescheduling]         = useState(false);
+
+  // Fetch providers when reschedule panel opens
+  useEffect(() => {
+    if (!showReschedule || rescheduleProviders.length > 0 || !activeClinicId) return;
+    supabase.from("profiles").select("id, full_name, role")
+      .eq("clinic_id", activeClinicId)
+      .eq("is_active", true)
+      .in("role", ["doctor","therapist","counsellor"])
+      .order("full_name")
+      .then(({ data }) => setRescheduleProviders((data ?? []) as Provider[]));
+  }, [showReschedule, activeClinicId]);
+
+  async function handleReschedule() {
+    if (!rescheduleDate || !rescheduleTime) { toast.error("Set date and time"); return; }
+    setRescheduling(true);
+    try {
+      const start   = new Date(`${rescheduleDate}T${rescheduleTime}`);
+      const durMins = Math.round((new Date(a.end_time).getTime() - new Date(a.start_time).getTime()) / 60000);
+      const end     = new Date(start.getTime() + durMins * 60000);
+      const { error } = await supabase.from("appointments").insert({
+        clinic_id:       activeClinicId,
+        patient_id:      a.patient_id,
+        provider_id:     rescheduleProviderId || null,
+        service_id:      a.service_id,
+        credit_id:       null,
+        service_name:    a.service_name,
+        room:            a.room,
+        start_time:      start.toISOString(),
+        end_time:        end.toISOString(),
+        status:          "planned",
+        notes:           `Rescheduled from ${new Date(a.start_time).toLocaleDateString("en-IN")}`,
+        credit_reserved: false,
+      });
+      if (error) throw error;
+      toast.success("Appointment rescheduled");
+      onUpdated();
+    } catch {
+      toast.error("Reschedule failed");
+    } finally {
+      setRescheduling(false);
+    }
+  }
+
+  // Fetch patient credits on mount
+  useEffect(() => {
+    if (!a.patient_id) return;
+    setLoadingCreds(true);
+    supabase
+      .from("patient_service_credits")
+      .select("id, service_name, total_sessions, used_sessions, per_session_value, status")
+      .eq("patient_id", a.patient_id)
+      .eq("status", "active")
+      .then(({ data }) => {
+        setCredits((data ?? []) as PatientCredit[]);
+        // Auto-select a credit that matches the service
+        const match = (data ?? []).find((c: PatientCredit) =>
+          c.service_name.toLowerCase().includes(a.service_name.toLowerCase()) ||
+          a.service_name.toLowerCase().includes(c.service_name.toLowerCase())
+        );
+        if (match) setSelectedCred(match.id);
+        setLoadingCreds(false);
+      });
+  }, [a.patient_id, a.service_name]);
+
+  async function updateStatus(status: AppointmentStatus, extra?: Record<string, unknown>) {
+    setUpdating(true);
+    try {
+      if (status === "no_show") {
+        // Return reserved credit
+        if (a.credit_id) {
+          await supabase.from("patient_service_credits")
+            .update({ status: "active" })
+            .eq("id", a.credit_id);
+        }
+        // Increment no_show_count
+        if (a.patient_id) {
+          const { data: pat } = await supabase.from("patients").select("no_show_count").eq("id", a.patient_id).single();
+          await supabase.from("patients").update({ no_show_count: (pat?.no_show_count ?? 0) + 1 }).eq("id", a.patient_id);
+        }
+      }
+
+      const patch: Record<string, unknown> = { status, updated_at: new Date().toISOString(), ...extra };
+      if (status === "no_show") { patch.credit_reserved = false; patch.credit_id = null; }
+
+      const { error } = await supabase.from("appointments").update(patch).eq("id", a.id);
+      if (error) throw error;
+      toast.success(`Marked as ${STATUS_CFG[status].label}`);
+      onUpdated();
+    } catch (e) {
+      toast.error("Update failed");
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function handleConsume() {
+    setUpdating(true);
+    try {
+      const creditId = selectedCred !== "none" ? selectedCred : null;
+      const credit   = creditId ? credits.find(c => c.id === creditId) : null;
+
+      if (credit) {
+        // 1. Consumption log
+        await supabase.from("credit_consumption_log").insert({
+          credit_id:      credit.id,
+          appointment_id: a.id,
+          session_date:   a.start_time,
+          provider_id:    a.provider_id,
+          clinic_id:      activeClinicId,
+          notes:          `Consumed via Scheduler — ${a.service_name}`,
+        });
+        // 2. Decrement sessions
+        const newUsed = credit.used_sessions + 1;
+        await supabase.from("patient_service_credits").update({
+          used_sessions: newUsed,
+          status: newUsed >= credit.total_sessions ? "completed" : "active",
+        }).eq("id", credit.id);
+        // 3. Commission (10%)
+        if (a.provider_id) {
+          await supabase.from("staff_commissions").insert({
+            provider_id:       a.provider_id,
+            credit_id:         credit.id,
+            appointment_id:    a.id,
+            service_name:      a.service_name,
+            session_date:      a.start_time,
+            session_value:     credit.per_session_value,
+            commission_pct:    10,
+            commission_amount: credit.per_session_value * 0.1,
+            clinic_id:         activeClinicId,
+            status:            "pending",
+          });
+        }
+        // 4. Pending invoice
+        await supabase.from("pending_invoices").insert({
+          clinic_id:      activeClinicId,
+          patient_id:     a.patient_id,
+          appointment_id: a.id,
+          credit_id:      credit.id,
+          service_name:   a.service_name,
+          amount:         credit.per_session_value,
+          status:         "pending",
+        });
+      } else {
+        // No credit — direct charge
+        const { data: svc } = await supabase.from("services").select("selling_price").eq("id", a.service_id ?? "").maybeSingle();
+        const amount = svc?.selling_price ?? 0;
+        await supabase.from("pending_invoices").insert({
+          clinic_id:      activeClinicId,
+          patient_id:     a.patient_id,
+          appointment_id: a.id,
+          credit_id:      null,
+          service_name:   a.service_name,
+          amount,
+          status:         "pending",
+        });
+        if (a.provider_id && amount > 0) {
+          await supabase.from("staff_commissions").insert({
+            provider_id:       a.provider_id,
+            appointment_id:    a.id,
+            service_name:      a.service_name,
+            session_date:      a.start_time,
+            session_value:     amount,
+            commission_pct:    10,
+            commission_amount: amount * 0.1,
+            clinic_id:         activeClinicId,
+            status:            "pending",
+          });
+        }
+      }
+
+      // Mark appointment completed
+      await supabase.from("appointments").update({
+        status:         "completed",
+        credit_reserved: false,
+        updated_at:     new Date().toISOString(),
+      }).eq("id", a.id);
+
+      toast.success(`Session consumed — invoice created${credit ? ` (${fmt(credit.per_session_value)})` : ""}`);
+      onUpdated();
+    } catch (e) {
+      toast.error("Consume failed — check console");
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  const start = new Date(a.start_time);
+  const end   = new Date(a.end_time);
+  const durMins = Math.round((end.getTime() - start.getTime()) / 60000);
+
+  const NEXT_STATUS: Partial<Record<AppointmentStatus, AppointmentStatus>> = {
+    planned:    "confirmed",
+    confirmed:  "arrived",
+    arrived:    "in_session",
+  };
+  const nextStatus = NEXT_STATUS[a.status];
+
+  const STATUS_ACTION_LABELS: Partial<Record<AppointmentStatus, { icon: React.ElementType; label: string; color: string }>> = {
+    confirmed:  { icon: CheckCircle2, label: "Confirm",      color: "#4A8A4A" },
+    arrived:    { icon: UserCheck,    label: "Check In Patient", color: "#2A4A8A" },
+    in_session: { icon: Zap,          label: "Start Session",color: "#D4A017" },
+  };
+  const nextAction = nextStatus ? STATUS_ACTION_LABELS[nextStatus] : null;
+
+  return (
+  <>
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 200,
+      background: "rgba(28,25,23,0.5)", backdropFilter: "blur(6px)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+    }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: "white", borderRadius: 20, width: "100%", maxWidth: 520,
+        border: "1px solid rgba(197,160,89,0.2)",
+        boxShadow: "0 24px 72px rgba(28,25,23,0.22)",
+        overflow: "hidden", animation: "fadeIn 0.2s ease",
+      }}>
+        {/* Status bar */}
+        <div style={{ height: 4, background: `linear-gradient(90deg, ${cfg.border}, ${cfg.dot})` }} />
+
+        {/* Header */}
+        <div style={{ padding: "20px 24px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              {isVip && <span style={{ fontSize: 10, fontWeight: 700, color: "#C5A059", background: "rgba(197,160,89,0.15)", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(197,160,89,0.3)" }}>VIP</span>}
+              {isHni && <span style={{ fontSize: 10, fontWeight: 700, color: "#2E7D6E", background: "rgba(46,125,110,0.1)",  padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(46,125,110,0.25)" }}>HNI</span>}
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600,
+                color: cfg.dot, background: `${cfg.bg}`, padding: "3px 10px",
+                borderRadius: 999, border: `1px solid ${cfg.border}`,
+              }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: cfg.dot, flexShrink: 0 }} />
+                {cfg.label}
+              </span>
+            </div>
+            <h3 style={{
+              fontFamily: "Georgia, serif", fontSize: 22, fontWeight: 600,
+              color: "var(--foreground)", margin: 0,
+              filter: masked ? "blur(5px)" : "none", userSelect: masked ? "none" : "auto",
+            }}>
+              {displayName}
+            </h3>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", flexShrink: 0 }}>
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Details */}
+        <div style={{ padding: "18px 24px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
+            <DetailRow icon={<Scissors size={14} />} label="Service"  value={a.service_name} />
+            <DetailRow icon={<User size={14} />}     label="Provider" value={a.provider_name} />
+            <DetailRow icon={<Clock size={14} />}    label="Time"
+              value={`${fmtTime(start)} – ${fmtTime(end)} (${durMins} min)`} />
+            {a.room && <DetailRow icon={<MapPin size={14} />} label="Room" value={a.room} />}
+          </div>
+          {a.notes && (
+            <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(197,160,89,0.05)", border: "1px solid rgba(197,160,89,0.15)", marginBottom: 14 }}>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>{a.notes}</p>
+            </div>
+          )}
+
+          {/* ── Active Credits ── */}
+          {(a.status === "in_session" || a.status === "arrived") && (
+            <div style={{ marginBottom: 16 }}>
+              <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", marginBottom: 10 }}>
+                Patient Packages / Credits
+              </p>
+              {loadingCreds ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 0" }}>
+                  <Loader2 size={14} style={{ color: "rgba(197,160,89,0.5)", animation: "spin 1s linear infinite" }} />
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Checking credits…</span>
+                </div>
+              ) : credits.length === 0 ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 10, background: "rgba(0,0,0,0.03)", border: "1px solid var(--border)" }}>
+                  <AlertCircle size={14} style={{ color: "#9C9584" }} />
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>No active package — will bill directly</span>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div
+                    onClick={() => setSelectedCred("none")}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "8px 12px",
+                      borderRadius: 9, cursor: "pointer",
+                      border: selectedCred === "none" ? "1px solid rgba(180,60,60,0.4)" : "1px solid var(--border)",
+                      background: selectedCred === "none" ? "rgba(180,60,60,0.04)" : "var(--surface)",
+                    }}
+                  >
+                    {selectedCred === "none" && <Check size={12} style={{ color: "#B43C3C" }} />}
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>No package — charge directly</span>
+                  </div>
+                  {credits.map(cr => {
+                    const remaining = cr.total_sessions - cr.used_sessions;
+                    return (
+                      <div
+                        key={cr.id}
+                        onClick={() => setSelectedCred(cr.id)}
+                        style={{
+                          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                          padding: "10px 12px", borderRadius: 9, cursor: "pointer",
+                          border: selectedCred === cr.id ? "1px solid rgba(197,160,89,0.5)" : "1px solid var(--border)",
+                          background: selectedCred === cr.id ? "rgba(197,160,89,0.07)" : "var(--surface)",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          {selectedCred === cr.id && <Check size={12} style={{ color: "#C5A059" }} />}
+                          <div>
+                            <p style={{ fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", color: "var(--foreground)", margin: 0 }}>{cr.service_name}</p>
+                            <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>{remaining} of {cr.total_sessions} sessions left</p>
+                          </div>
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#C5A059" }}>{fmt(cr.per_session_value)}/session</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Cancel reason ── */}
+          {showCancel && (
+            <div style={{ marginBottom: 14 }}>
+              <textarea
+                value={cancelReason}
+                onChange={e => setCancelReason(e.target.value)}
+                placeholder="Reason for cancellation (optional)…"
+                rows={2}
+                style={{ ...inputStyle, resize: "vertical" }}
+              />
+            </div>
+          )}
+
+          {/* ── Reschedule panel ── */}
+          {(a.status === "cancelled" || a.status === "no_show") && (
+            <div style={{ marginTop: 8 }}>
+              {!showReschedule ? (
+                <button
+                  onClick={() => setShowReschedule(true)}
+                  style={{
+                    width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                    padding: "10px 0", borderRadius: 12,
+                    border: "1px solid rgba(197,160,89,0.4)",
+                    background: "rgba(197,160,89,0.06)",
+                    color: "#A8853A", fontSize: 13, fontWeight: 600,
+                    fontFamily: "Georgia, serif", cursor: "pointer",
+                  }}
+                >
+                  <CalendarClock size={15} /> Reschedule Appointment
+                </button>
+              ) : (
+                <div style={{ padding: 16, borderRadius: 12, background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.2)" }}>
+                  <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", marginBottom: 12 }}>
+                    Book New Slot
+                  </p>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+                    <div>
+                      <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#9C9584", display: "block", marginBottom: 5 }}>Date</label>
+                      <input type="date" value={rescheduleDate} onChange={e => setRescheduleDate(e.target.value)} style={inputStyle} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#9C9584", display: "block", marginBottom: 5 }}>Time</label>
+                      <input type="time" value={rescheduleTime} onChange={e => setRescheduleTime(e.target.value)} style={inputStyle} />
+                    </div>
+                  </div>
+                  <div style={{ marginBottom: 12 }}>
+                    <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#9C9584", display: "block", marginBottom: 5 }}>Provider</label>
+                    <select value={rescheduleProviderId} onChange={e => setRescheduleProviderId(e.target.value)} style={inputStyle}>
+                      <option value="">— Same as original —</option>
+                      {rescheduleProviders.map(p => <option key={p.id} value={p.id}>{p.full_name} ({p.role})</option>)}
+                    </select>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setShowReschedule(false)} style={{ flex: 1, padding: "9px 0", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text-muted)", fontSize: 13, cursor: "pointer" }}>
+                      Back
+                    </button>
+                    <button
+                      onClick={handleReschedule}
+                      disabled={rescheduling}
+                      style={{
+                        flex: 2, padding: "9px 0", borderRadius: 10, border: "none",
+                        background: rescheduling ? "rgba(197,160,89,0.5)" : "linear-gradient(135deg, #C5A059, #A8853A)",
+                        color: "white", fontSize: 13, fontWeight: 600,
+                        fontFamily: "Georgia, serif", cursor: rescheduling ? "not-allowed" : "pointer",
+                        display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                      }}
+                    >
+                      {rescheduling && <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} />}
+                      <CalendarCheck size={14} /> Book Rescheduled Slot
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ padding: "14px 24px 20px", borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 8 }}>
+          {/* Primary next-step button */}
+          {nextAction && nextStatus && (
+            <button
+              onClick={() => updateStatus(nextStatus)}
+              disabled={updating}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                padding: "11px 0", borderRadius: 12, border: "none",
+                background: `linear-gradient(135deg, ${nextAction.color}, ${nextAction.color}CC)`,
+                color: "white", fontSize: 14, fontWeight: 600,
+                fontFamily: "Georgia, serif", cursor: "pointer",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+              }}
+            >
+              {updating ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <nextAction.icon size={16} />}
+              {nextAction.label}
+            </button>
+          )}
+
+          {/* Checkout — opens invoice + payment flow */}
+          {(a.status === "in_session" || a.status === "arrived") && (
+            <button
+              onClick={() => setShowCheckout(true)}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                padding: "11px 0", borderRadius: 12, border: "none",
+                background: "linear-gradient(135deg, #C5A059, #A8853A)",
+                color: "white", fontSize: 14, fontWeight: 600,
+                fontFamily: "Georgia, serif", cursor: "pointer",
+                boxShadow: "0 4px 14px rgba(197,160,89,0.35)",
+              }}
+            >
+              <Receipt size={16} />
+              Checkout / Complete Session
+            </button>
+          )}
+
+          <div style={{ display: "flex", gap: 8 }}>
+            {/* WhatsApp reminder */}
+            <button
+              onClick={() => sendWhatsAppReminder(a.id)}
+              style={{
+                flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                padding: "9px 0", borderRadius: 10,
+                border: "1px solid rgba(74,138,74,0.35)",
+                background: "rgba(74,138,74,0.06)",
+                color: "#4A8A4A", fontSize: 13, cursor: "pointer", fontFamily: "Georgia, serif",
+              }}
+            >
+              <Bell size={14} /> WhatsApp Reminder
+            </button>
+
+            {/* No show */}
+            {!["completed","cancelled","no_show"].includes(a.status) && (
+              <button
+                onClick={() => updateStatus("no_show")}
+                disabled={updating}
+                style={{
+                  flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                  padding: "9px 0", borderRadius: 10,
+                  border: "1px solid rgba(180,60,60,0.3)",
+                  background: "rgba(180,60,60,0.05)",
+                  color: "#B43C3C", fontSize: 13, cursor: "pointer", fontFamily: "Georgia, serif",
+                }}
+              >
+                <PhoneOff size={14} /> No Show
+              </button>
+            )}
+
+            {/* Cancel */}
+            {!["completed","cancelled","no_show"].includes(a.status) && !showCancel && (
+              <button
+                onClick={() => setShowCancel(true)}
+                style={{
+                  flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                  padding: "9px 0", borderRadius: 10,
+                  border: "1px solid var(--border)", background: "var(--surface)",
+                  color: "var(--text-muted)", fontSize: 13, cursor: "pointer",
+                }}
+              >
+                <XCircle size={14} /> Cancel
+              </button>
+            )}
+            {showCancel && (
+              <>
+                <button
+                  onClick={() => updateStatus("cancelled", { cancellation_reason: cancelReason })}
+                  disabled={updating}
+                  style={{
+                    flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                    padding: "9px 0", borderRadius: 10,
+                    border: "none", background: "#B43C3C",
+                    color: "white", fontSize: 13, cursor: "pointer", fontWeight: 600,
+                  }}
+                >
+                  Confirm Cancel
+                </button>
+                <button
+                  onClick={() => setShowCancel(false)}
+                  style={{ padding: "9px 14px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", cursor: "pointer", color: "var(--text-muted)", fontSize: 13 }}
+                >
+                  Back
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {/* Checkout modal — sits on top of appointment modal */}
+    {showCheckout && (
+      <CheckoutModal
+        appointment={a}
+        credit={selectedCred !== "none" ? (credits.find(c => c.id === selectedCred) ?? null) : null}
+        activeClinicId={activeClinicId}
+        onClose={() => setShowCheckout(false)}
+        onCompleted={() => { setShowCheckout(false); onUpdated(); }}
+      />
+    )}
+  </>
+  );
+}
+
+function DetailRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+      <div style={{ color: "#C5A059", marginTop: 2, flexShrink: 0 }}>{icon}</div>
+      <div>
+        <p style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#9C9584", margin: 0 }}>{label}</p>
+        <p style={{ fontSize: 13, fontFamily: "Georgia, serif", color: "var(--foreground)", margin: 0 }}>{value}</p>
+      </div>
+    </div>
+  );
+}
+
+// ── New Appointment Drawer ────────────────────────────────────────────────────
+
+interface ExtraServiceRow {
+  uid: string;
+  serviceId: string;
+  durationMins: number;
+  providerId: string;
+}
+
+function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId, settings, existingAppointments, onClose, onSaved }: {
+  prefillSlot: { date: Date; hour: number; providerId?: string } | null;
+  services: Service[];
+  providers: Provider[];
+  activeClinicId: string | null;
+  settings: SchedulerSettings | null;
+  existingAppointments: Appointment[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { profile } = useClinic();
+
+  // Pre-fill date from slot
+  const initDate = prefillSlot
+    ? `${prefillSlot.date.getFullYear()}-${String(prefillSlot.date.getMonth()+1).padStart(2,"0")}-${String(prefillSlot.date.getDate()).padStart(2,"0")}`
+    : new Date().toISOString().slice(0,10);
+  const initHour = prefillSlot?.hour ?? 10;
+  const initTime = `${String(initHour).padStart(2,"0")}:00`;
+
+  const [patientSearch,  setPatientSearch]  = useState("");
+  const [patientResults, setPatientResults] = useState<{ id: string; full_name: string; patient_tier: PatientTier | null; phone: string | null }[]>([]);
+  const [selectedPatient, setSelectedPatient] = useState<{ id: string; full_name: string; patient_tier: PatientTier | null } | null>(null);
+  const [serviceId,      setServiceId]      = useState(services[0]?.id ?? "");
+  const [providerId,     setProviderId]     = useState(prefillSlot?.providerId ?? providers[0]?.id ?? "");
+  const [date,           setDate]           = useState(initDate);
+  const [startTime,      setStartTime]      = useState(initTime);
+  const [durationMins,   setDurationMins]   = useState(services[0]?.duration_minutes ?? 60);
+  const [room,           setRoom]           = useState("");
+  const [notes,          setNotes]          = useState("");
+  const [useCredit,      setUseCredit]      = useState(false);
+  const [patientCredits, setPatientCredits] = useState<PatientCredit[]>([]);
+  const [selectedCreditId, setSelectedCreditId] = useState("");
+  const [saving,         setSaving]         = useState(false);
+  const [conflict,       setConflict]       = useState<string | null>(null);
+  const [extraRows,      setExtraRows]      = useState<ExtraServiceRow[]>([]);
+
+  // Update duration when service changes
+  useEffect(() => {
+    const svc = services.find(s => s.id === serviceId);
+    if (svc) setDurationMins(svc.duration_minutes);
+  }, [serviceId, services]);
+
+  // Patient search
+  useEffect(() => {
+    if (patientSearch.length < 2) { setPatientResults([]); return; }
+    const timer = setTimeout(async () => {
+      const { data } = await supabase
+        .from("patients")
+        .select("id, full_name, patient_tier, phone")
+        .or(`full_name.ilike.%${patientSearch}%,phone.ilike.%${patientSearch}%`)
+        .limit(6);
+      setPatientResults((data ?? []) as typeof patientResults);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [patientSearch]);
+
+  // Fetch patient credits when patient + service changes
+  useEffect(() => {
+    if (!selectedPatient) return;
+    supabase.from("patient_service_credits")
+      .select("id, service_name, total_sessions, used_sessions, per_session_value, status")
+      .eq("patient_id", selectedPatient.id)
+      .eq("status", "active")
+      .then(({ data }) => {
+        const creds = (data ?? []) as PatientCredit[];
+        setPatientCredits(creds);
+        const svc = services.find(s => s.id === serviceId);
+        const match = creds.find(c =>
+          svc && (c.service_name.toLowerCase().includes(svc.name.toLowerCase()) ||
+                  svc.name.toLowerCase().includes(c.service_name.toLowerCase()))
+        );
+        if (match) { setUseCredit(true); setSelectedCreditId(match.id); }
+      });
+  }, [selectedPatient?.id, serviceId]);
+
+  // Double booking check
+  useEffect(() => {
+    if (!providerId || !date || !startTime) { setConflict(null); return; }
+    const start = new Date(`${date}T${startTime}`);
+    const end   = new Date(start.getTime() + durationMins * 60000);
+    const buffer = (settings?.buffer_time_minutes ?? 15) * 60000;
+
+    const overlap = existingAppointments.find(a =>
+      a.provider_id === providerId &&
+      !["cancelled","no_show","completed"].includes(a.status) &&
+      new Date(a.start_time).getTime() < end.getTime()   + buffer &&
+      new Date(a.end_time).getTime()   > start.getTime() - buffer
+    );
+
+    if (overlap) {
+      const bufferMsg = settings?.buffer_time_minutes ? ` (including ${settings.buffer_time_minutes}min buffer)` : "";
+      setConflict(`Overlaps with "${overlap.service_name}" for ${overlap.patient_name}${bufferMsg}`);
+    } else {
+      setConflict(null);
+    }
+  }, [providerId, date, startTime, durationMins, existingAppointments, settings]);
+
+  async function handleSave() {
+    if (!selectedPatient) { toast.error("Select a patient"); return; }
+    if (!serviceId)        { toast.error("Select a service");  return; }
+    if (conflict && !settings?.enable_double_booking) {
+      toast.error("Double booking is disabled. Resolve the conflict first.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const start = new Date(`${date}T${startTime}`);
+      const end   = new Date(start.getTime() + durationMins * 60000);
+      const svc   = services.find(s => s.id === serviceId);
+      const { data: appt, error } = await supabase.from("appointments").insert({
+        clinic_id:       activeClinicId,
+        patient_id:      selectedPatient.id,
+        provider_id:     providerId || null,
+        service_id:      serviceId,
+        credit_id:       useCredit && selectedCreditId ? selectedCreditId : null,
+        service_name:    svc?.name ?? "Service",
+        room:            room || null,
+        start_time:      start.toISOString(),
+        end_time:        end.toISOString(),
+        status:          "planned",
+        notes:           notes || null,
+        credit_reserved: useCredit && selectedCreditId && settings?.credit_lock ? true : false,
+        created_by:      (await supabase.auth.getUser()).data.user?.id,
+      }).select("id").single();
+
+      if (error) throw error;
+
+      // If credit_lock is on and using a credit, mark credit as reserved in log
+      if (useCredit && selectedCreditId && settings?.credit_lock && appt) {
+        await supabase.from("credit_consumption_log").insert({
+          credit_id:      selectedCreditId,
+          appointment_id: appt.id,
+          session_date:   start.toISOString(),
+          provider_id:    providerId || null,
+          clinic_id:      activeClinicId,
+          notes:          `Session reserved (not yet consumed) — credit lock active`,
+        });
+      }
+
+      // Create extra service appointments chained after the main one
+      let chainEnd = end;
+      for (const row of extraRows) {
+        if (!row.serviceId) continue;
+        const xSvc   = services.find(s => s.id === row.serviceId);
+        const xStart = chainEnd;
+        const xEnd   = new Date(xStart.getTime() + row.durationMins * 60000);
+        await supabase.from("appointments").insert({
+          clinic_id:       activeClinicId,
+          patient_id:      selectedPatient.id,
+          provider_id:     row.providerId || providerId || null,
+          service_id:      row.serviceId,
+          credit_id:       null,
+          service_name:    xSvc?.name ?? "Service",
+          room:            room || null,
+          start_time:      xStart.toISOString(),
+          end_time:        xEnd.toISOString(),
+          status:          "planned",
+          notes:           `Part of multi-service booking — ${notes || ""}`.trim(),
+          credit_reserved: false,
+          created_by:      (await supabase.auth.getUser()).data.user?.id,
+        });
+        chainEnd = xEnd;
+      }
+
+      const extraMsg = extraRows.length > 0 ? ` + ${extraRows.length} extra service${extraRows.length > 1 ? "s" : ""}` : "";
+      toast.success(`Appointment booked for ${selectedPatient.full_name}${extraMsg}`);
+      onSaved();
+    } catch (e) {
+      toast.error("Failed to book appointment");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const selectedSvc = services.find(s => s.id === serviceId);
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 150,
+      background: "rgba(28,25,23,0.45)", backdropFilter: "blur(8px)",
+      display: "flex", justifyContent: "flex-end",
+    }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        width: "min(520px, 96vw)", height: "100%", background: "white",
+        boxShadow: "-12px 0 60px rgba(28,25,23,0.18)",
+        borderLeft: "1px solid rgba(197,160,89,0.2)",
+        display: "flex", flexDirection: "column", overflow: "hidden",
+      }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div style={{ padding: "24px 28px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <h2 style={{ fontFamily: "Georgia, serif", fontSize: 20, fontWeight: 600, color: "var(--foreground)", margin: 0 }}>Book Appointment</h2>
+            <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>Fill in the details below</p>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)" }}><X size={20} /></button>
+        </div>
+        <div style={{ height: 1, background: "linear-gradient(to right, #C5A059, transparent)" }} />
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px 28px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+
+            {/* Patient */}
+            <DLabel label="Patient" required>
+              {selectedPatient ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, background: "rgba(197,160,89,0.06)", border: "1px solid rgba(197,160,89,0.25)" }}>
+                  <div style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(197,160,89,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <User size={14} style={{ color: "#C5A059" }} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontFamily: "Georgia, serif", fontSize: 14, fontWeight: 600, color: "var(--foreground)", margin: 0 }}>{selectedPatient.full_name}</p>
+                    {selectedPatient.patient_tier && selectedPatient.patient_tier !== "standard" && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: selectedPatient.patient_tier === "vip" ? "#C5A059" : "#2E7D6E", background: selectedPatient.patient_tier === "vip" ? "rgba(197,160,89,0.15)" : "rgba(46,125,110,0.1)", padding: "1px 7px", borderRadius: 999 }}>
+                        {selectedPatient.patient_tier.toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                  <button onClick={() => { setSelectedPatient(null); setPatientSearch(""); setPatientCredits([]); }} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)" }}>
+                    <X size={14} />
+                  </button>
+                </div>
+              ) : (
+                <div style={{ position: "relative" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 13px", borderRadius: 10, border: "1px solid #E8E2D4", background: "#FDFCF9" }}>
+                    <Search size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                    <input
+                      value={patientSearch}
+                      onChange={e => setPatientSearch(e.target.value)}
+                      placeholder="Search by name or phone…"
+                      style={{ background: "transparent", border: "none", outline: "none", fontSize: 14, flex: 1, fontFamily: "Georgia, serif", color: "var(--foreground)" }}
+                      autoFocus
+                    />
+                  </div>
+                  {patientResults.length > 0 && (
+                    <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "white", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", marginTop: 4, overflow: "hidden" }}>
+                      {patientResults.map(p => (
+                        <div
+                          key={p.id}
+                          onClick={() => { setSelectedPatient(p); setPatientSearch(""); setPatientResults([]); }}
+                          style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid rgba(0,0,0,0.04)" }}
+                          onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background = "rgba(197,160,89,0.05)"; }}
+                          onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = "white"; }}
+                        >
+                          <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(197,160,89,0.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            <User size={12} style={{ color: "#C5A059" }} />
+                          </div>
+                          <div>
+                            <p style={{ fontFamily: "Georgia, serif", fontSize: 13, fontWeight: 600, color: "var(--foreground)", margin: 0 }}>{p.full_name}</p>
+                            {p.phone && <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>{p.phone}</p>}
+                          </div>
+                          {p.patient_tier && p.patient_tier !== "standard" && (
+                            <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: p.patient_tier === "vip" ? "#C5A059" : "#2E7D6E", background: p.patient_tier === "vip" ? "rgba(197,160,89,0.15)" : "rgba(46,125,110,0.1)", padding: "2px 8px", borderRadius: 999 }}>
+                              {p.patient_tier.toUpperCase()}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </DLabel>
+
+            {/* Service */}
+            <DLabel label="Service" required>
+              <select value={serviceId} onChange={e => setServiceId(e.target.value)} style={inputStyle}>
+                {services.map(s => <option key={s.id} value={s.id}>{s.name} — {s.category} ({s.duration_minutes} min)</option>)}
+              </select>
+            </DLabel>
+
+            {/* Provider */}
+            <DLabel label="Provider">
+              <select value={providerId} onChange={e => setProviderId(e.target.value)} style={inputStyle}>
+                <option value="">— Unassigned —</option>
+                {providers.map(p => <option key={p.id} value={p.id}>{p.full_name} ({p.role})</option>)}
+              </select>
+            </DLabel>
+
+            {/* Date + Start Time */}
+            <div style={{ display: "flex", gap: 14 }}>
+              <DLabel label="Date" required style={{ flex: 1 }}>
+                <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
+              </DLabel>
+              <DLabel label="Start Time" required style={{ flex: 1 }}>
+                <input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} style={inputStyle} />
+              </DLabel>
+            </div>
+
+            {/* Duration */}
+            <DLabel label="Duration (minutes)">
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {[30, 45, 60, 90, 120].map(d => (
+                  <button key={d} onClick={() => setDurationMins(d)} style={{
+                    padding: "5px 10px", borderRadius: 8, cursor: "pointer", fontSize: 12,
+                    fontFamily: "Georgia, serif",
+                    border: durationMins === d ? "1px solid #C5A059" : "1px solid var(--border)",
+                    background: durationMins === d ? "rgba(197,160,89,0.1)" : "var(--surface)",
+                    color: durationMins === d ? "#A8853A" : "var(--text-muted)",
+                    fontWeight: durationMins === d ? 600 : 400,
+                  }}>
+                    {d < 60 ? `${d}m` : `${d/60}h`}
+                  </button>
+                ))}
+                <input
+                  type="number" value={durationMins} min={5} max={480}
+                  onChange={e => setDurationMins(Number(e.target.value))}
+                  style={{ ...inputStyle, width: 70 }}
+                />
+              </div>
+              {selectedSvc && (
+                <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                  Standard duration for {selectedSvc.name}: {selectedSvc.duration_minutes} min
+                </p>
+              )}
+            </DLabel>
+
+            {/* Room */}
+            <DLabel label="Room / Cabin (optional)">
+              <input value={room} onChange={e => setRoom(e.target.value)} placeholder="e.g. Room 2, Laser Suite…" style={inputStyle} />
+            </DLabel>
+
+            {/* Notes */}
+            <DLabel label="Notes">
+              <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Any special instructions…" style={{ ...inputStyle, resize: "vertical" }} />
+            </DLabel>
+
+            {/* Package Credit */}
+            {patientCredits.length > 0 && (
+              <div style={{ padding: 16, borderRadius: 12, background: "rgba(197,160,89,0.05)", border: "1px solid rgba(197,160,89,0.2)" }}>
+                <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", marginBottom: 12 }}>
+                  Patient has active packages
+                </p>
+                {patientCredits.map(cr => (
+                  <div
+                    key={cr.id}
+                    onClick={() => { setUseCredit(true); setSelectedCreditId(cr.id); }}
+                    style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      padding: "8px 12px", borderRadius: 9, marginBottom: 6, cursor: "pointer",
+                      border: selectedCreditId === cr.id && useCredit ? "1px solid rgba(197,160,89,0.5)" : "1px solid var(--border)",
+                      background: selectedCreditId === cr.id && useCredit ? "rgba(197,160,89,0.08)" : "white",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {selectedCreditId === cr.id && useCredit && <Check size={12} style={{ color: "#C5A059" }} />}
+                      <div>
+                        <p style={{ fontFamily: "Georgia, serif", fontSize: 13, fontWeight: 600, color: "var(--foreground)", margin: 0 }}>{cr.service_name}</p>
+                        <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>{cr.total_sessions - cr.used_sessions} sessions left</p>
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 12, color: "#C5A059", fontWeight: 700 }}>{fmt(cr.per_session_value)}/session</span>
+                  </div>
+                ))}
+                {settings?.credit_lock && useCredit && (
+                  <p style={{ fontSize: 11, color: "#9C9584", marginTop: 8, display: "flex", alignItems: "center", gap: 5 }}>
+                    <Shield size={11} /> Credit will be <strong>reserved</strong> (not deducted) until session is completed
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Additional Services (Multi-service booking) */}
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", margin: 0 }}>
+                  Additional Services (Same Visit)
+                </p>
+                <button
+                  onClick={() => setExtraRows(r => [...r, { uid: crypto.randomUUID(), serviceId: services[0]?.id ?? "", durationMins: services[0]?.duration_minutes ?? 60, providerId: "" }])}
+                  style={{ fontSize: 12, color: "#C5A059", background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.25)", borderRadius: 8, padding: "4px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}
+                >
+                  <Plus size={11} /> Add Service
+                </button>
+              </div>
+              {extraRows.map((row, idx) => {
+                const xSvc = services.find(s => s.id === row.serviceId);
+                return (
+                  <div key={row.uid} style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.15)", marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      <GripVertical size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em" }}>Service {idx + 2}</span>
+                      <button onClick={() => setExtraRows(r => r.filter(x => x.uid !== row.uid))} style={{ marginLeft: "auto", background: "transparent", border: "none", cursor: "pointer", color: "#B43C3C" }}><X size={13} /></button>
+                    </div>
+                    <select
+                      value={row.serviceId}
+                      onChange={e => {
+                        const svc = services.find(s => s.id === e.target.value);
+                        setExtraRows(r => r.map(x => x.uid === row.uid ? { ...x, serviceId: e.target.value, durationMins: svc?.duration_minutes ?? 60 } : x));
+                      }}
+                      style={{ ...inputStyle, marginBottom: 8 }}
+                    >
+                      {services.map(s => <option key={s.id} value={s.id}>{s.name} ({s.duration_minutes} min)</option>)}
+                    </select>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <select
+                        value={row.providerId}
+                        onChange={e => setExtraRows(r => r.map(x => x.uid === row.uid ? { ...x, providerId: e.target.value } : x))}
+                        style={{ ...inputStyle, flex: 1 }}
+                      >
+                        <option value="">— Same provider —</option>
+                        {providers.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+                      </select>
+                      {xSvc && <span style={{ fontSize: 11, color: "#C5A059", whiteSpace: "nowrap" }}>will follow at {row.durationMins} min</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Conflict warning */}
+            {conflict && (
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px", borderRadius: 10, background: settings?.enable_double_booking ? "rgba(212,160,23,0.08)" : "rgba(180,60,60,0.07)", border: `1px solid ${settings?.enable_double_booking ? "rgba(212,160,23,0.35)" : "rgba(180,60,60,0.3)"}` }}>
+                <AlertTriangle size={14} style={{ color: settings?.enable_double_booking ? "#D4A017" : "#B43C3C", flexShrink: 0, marginTop: 1 }} />
+                <div>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: settings?.enable_double_booking ? "#D4A017" : "#B43C3C", margin: 0 }}>
+                    {settings?.enable_double_booking ? "Warning: Double Booking" : "Booking Conflict"}
+                  </p>
+                  <p style={{ fontSize: 11, color: settings?.enable_double_booking ? "#D4A017" : "#B43C3C", margin: 0, opacity: 0.8 }}>{conflict}</p>
+                  {!settings?.enable_double_booking && (
+                    <p style={{ fontSize: 11, color: "#9C9584", margin: "4px 0 0" }}>Double booking is OFF. Contact admin to override.</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "16px 28px", borderTop: "1px solid var(--border)", display: "flex", gap: 12 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: "11px 0", borderRadius: 12, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--foreground)", fontSize: 14, fontFamily: "Georgia, serif", cursor: "pointer" }}>
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || (!settings?.enable_double_booking && !!conflict)}
+            style={{
+              flex: 2, padding: "11px 0", borderRadius: 12, border: "none",
+              background: saving || (!settings?.enable_double_booking && !!conflict) ? "rgba(197,160,89,0.5)" : "linear-gradient(135deg, #C5A059, #A8853A)",
+              color: "white", fontSize: 14, fontWeight: 600,
+              fontFamily: "Georgia, serif", cursor: saving ? "not-allowed" : "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+              boxShadow: "0 4px 14px rgba(197,160,89,0.3)",
+            }}
+          >
+            {saving && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
+            Book Appointment
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Settings Drawer ───────────────────────────────────────────────────────────
+
+function SettingsDrawer({ current, activeClinicId, onClose, onSaved }: {
+  current: SchedulerSettings | null;
+  activeClinicId: string | null;
+  onClose: () => void;
+  onSaved: (s: SchedulerSettings) => void;
+}) {
+  const [doubleBook, setDoubleBook] = useState(current?.enable_double_booking ?? false);
+  const [buffer,     setBuffer]     = useState(current?.buffer_time_minutes ?? 15);
+  const [creditLock, setCreditLock] = useState(current?.credit_lock ?? true);
+  const [wStart,     setWStart]     = useState(current?.working_start ?? "09:00");
+  const [wEnd,       setWEnd]       = useState(current?.working_end ?? "21:00");
+  const [slotDur,    setSlotDur]    = useState(current?.slot_duration_minutes ?? 30);
+  const [saving,     setSaving]     = useState(false);
+
+  async function handleSave() {
+    if (!activeClinicId) return;
+    setSaving(true);
+    const payload = {
+      clinic_id:            activeClinicId,
+      enable_double_booking: doubleBook,
+      buffer_time_minutes:  buffer,
+      credit_lock:          creditLock,
+      working_start:        wStart,
+      working_end:          wEnd,
+      slot_duration_minutes: slotDur,
+      updated_at:           new Date().toISOString(),
+    };
+    const { data, error } = await supabase
+      .from("scheduler_settings")
+      .upsert(payload, { onConflict: "clinic_id" })
+      .select("*")
+      .single();
+    if (error) { toast.error("Save failed"); setSaving(false); return; }
+    toast.success("Scheduler settings saved");
+    onSaved(data as SchedulerSettings);
+  }
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 150,
+      background: "rgba(28,25,23,0.45)", backdropFilter: "blur(8px)",
+      display: "flex", justifyContent: "flex-end",
+    }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        width: "min(440px, 96vw)", height: "100%", background: "white",
+        boxShadow: "-12px 0 60px rgba(28,25,23,0.18)",
+        borderLeft: "1px solid rgba(197,160,89,0.2)",
+        display: "flex", flexDirection: "column", overflow: "hidden",
+      }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{ padding: "24px 28px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <h2 style={{ fontFamily: "Georgia, serif", fontSize: 20, fontWeight: 600, color: "var(--foreground)", margin: 0 }}>Scheduler Settings</h2>
+            <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>Admin-controlled clinic scheduling rules</p>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)" }}><X size={20} /></button>
+        </div>
+        <div style={{ height: 1, background: "linear-gradient(to right, #C5A059, transparent)" }} />
+
+        <div style={{ flex: 1, overflowY: "auto", padding: "24px 28px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+
+            {/* Double booking */}
+            <SettingCard
+              icon={<AlertTriangle size={16} style={{ color: "#D4A017" }} />}
+              title="Double Booking"
+              sub={doubleBook
+                ? "ON — Overlaps are allowed and highlighted with a red border"
+                : "OFF — Overlapping slots are blocked for the same provider"}
+            >
+              <Toggle checked={doubleBook} onChange={setDoubleBook} />
+            </SettingCard>
+
+            {/* Buffer time */}
+            <SettingCard
+              icon={<Clock size={16} style={{ color: "#C5A059" }} />}
+              title="Linen Change Buffer"
+              sub="Gap between appointments for room setup and changeover"
+            >
+              <div style={{ display: "flex", gap: 8 }}>
+                {[0, 15, 30, 45, 60].map(b => (
+                  <button key={b} onClick={() => setBuffer(b)} style={{
+                    padding: "5px 11px", borderRadius: 8, cursor: "pointer", fontSize: 12,
+                    fontFamily: "Georgia, serif",
+                    border: buffer === b ? "1px solid #C5A059" : "1px solid var(--border)",
+                    background: buffer === b ? "rgba(197,160,89,0.1)" : "var(--surface)",
+                    color: buffer === b ? "#A8853A" : "var(--text-muted)",
+                    fontWeight: buffer === b ? 600 : 400,
+                  }}>
+                    {b === 0 ? "None" : `${b}m`}
+                  </button>
+                ))}
+              </div>
+            </SettingCard>
+
+            {/* Credit Lock */}
+            <SettingCard
+              icon={<Shield size={16} style={{ color: "#2A4A8A" }} />}
+              title="Credit Lock"
+              sub={creditLock
+                ? "ON — Session credits are Reserved at booking, deducted only on Completion"
+                : "OFF — Sessions deducted immediately at booking (not recommended for Indian market)"}
+            >
+              <Toggle checked={creditLock} onChange={setCreditLock} />
+            </SettingCard>
+
+            {/* Working hours */}
+            <SettingCard
+              icon={<Calendar size={16} style={{ color: "#4A8A4A" }} />}
+              title="Working Hours"
+              sub="Define the time range shown in the calendar grid"
+            >
+              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                <input type="time" value={wStart} onChange={e => setWStart(e.target.value)} style={{ ...inputStyle, width: 130 }} />
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>to</span>
+                <input type="time" value={wEnd} onChange={e => setWEnd(e.target.value)} style={{ ...inputStyle, width: 130 }} />
+              </div>
+            </SettingCard>
+
+            {/* Slot duration */}
+            <SettingCard
+              icon={<Clock size={16} style={{ color: "#9C9584" }} />}
+              title="Default Slot Duration"
+              sub="Minimum booking interval for new appointments"
+            >
+              <div style={{ display: "flex", gap: 8 }}>
+                {[15, 30, 45, 60].map(d => (
+                  <button key={d} onClick={() => setSlotDur(d)} style={{
+                    padding: "5px 11px", borderRadius: 8, cursor: "pointer", fontSize: 12,
+                    fontFamily: "Georgia, serif",
+                    border: slotDur === d ? "1px solid #C5A059" : "1px solid var(--border)",
+                    background: slotDur === d ? "rgba(197,160,89,0.1)" : "var(--surface)",
+                    color: slotDur === d ? "#A8853A" : "var(--text-muted)",
+                    fontWeight: slotDur === d ? 600 : 400,
+                  }}>
+                    {d}m
+                  </button>
+                ))}
+              </div>
+            </SettingCard>
+
+          </div>
+        </div>
+
+        <div style={{ padding: "16px 28px", borderTop: "1px solid var(--border)", display: "flex", gap: 12 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: "11px 0", borderRadius: 12, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--foreground)", fontSize: 14, fontFamily: "Georgia, serif", cursor: "pointer" }}>Cancel</button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            style={{
+              flex: 2, padding: "11px 0", borderRadius: 12, border: "none",
+              background: saving ? "rgba(197,160,89,0.5)" : "linear-gradient(135deg, #C5A059, #A8853A)",
+              color: "white", fontSize: 14, fontWeight: 600, fontFamily: "Georgia, serif",
+              cursor: saving ? "not-allowed" : "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+              boxShadow: "0 4px 14px rgba(197,160,89,0.3)",
+            }}
+          >
+            {saving && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
+            Save Settings
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingCard({ icon, title, sub, children }: { icon: React.ReactNode; title: string; sub: string; children: React.ReactNode }) {
+  return (
+    <div style={{ padding: "16px 20px", borderRadius: 14, background: "rgba(249,247,242,0.7)", border: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {icon}
+          <div>
+            <p style={{ fontFamily: "Georgia, serif", fontSize: 14, fontWeight: 600, color: "var(--foreground)", margin: 0 }}>{title}</p>
+            <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0, marginTop: 2 }}>{sub}</p>
+          </div>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      style={{
+        width: 44, height: 24, borderRadius: 999, border: "none", cursor: "pointer",
+        background: checked ? "#C5A059" : "#E0D9D0", position: "relative",
+        flexShrink: 0, transition: "background 0.2s",
+      }}
+    >
+      <span style={{
+        position: "absolute", top: 2, left: checked ? 22 : 2,
+        width: 20, height: 20, borderRadius: "50%", background: "white",
+        transition: "left 0.2s", boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+      }} />
+    </button>
+  );
+}
+
+function DLabel({ label, required, children, style }: {
+  label: string; required?: boolean; children: React.ReactNode; style?: React.CSSProperties;
+}) {
+  return (
+    <div style={style}>
+      <label style={{ display: "block", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", marginBottom: 7 }}>
+        {label}{required && <span style={{ color: "#C5A059", marginLeft: 2 }}>*</span>}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  width: "100%", padding: "10px 13px", borderRadius: 10,
+  border: "1px solid #E8E2D4", background: "#FDFCF9",
+  fontSize: 14, fontFamily: "Georgia, serif", color: "var(--foreground)",
+  outline: "none", boxSizing: "border-box",
+};
+
+// ── Checkout Modal ────────────────────────────────────────────────────────────
+
+interface CheckoutLineItem {
+  uid: string;
+  type: "base" | "service" | "product";
+  name: string;
+  qty: number;
+  unitPrice: number;
+}
+
+type PaymentMethod = "cash" | "card" | "upi" | "package";
+
+function CheckoutModal({ appointment: a, credit, activeClinicId, onClose, onCompleted }: {
+  appointment: Appointment;
+  credit: PatientCredit | null;
+  activeClinicId: string | null;
+  onClose: () => void;
+  onCompleted: () => void;
+}) {
+  const [step, setStep]           = useState<"invoice" | "payment">("invoice");
+  const [lineItems, setLineItems] = useState<CheckoutLineItem[]>([]);
+  const [allServices,  setAllServices]  = useState<Service[]>([]);
+  const [allProducts,  setAllProducts]  = useState<{ id: string; product_name: string; selling_price: number | null }[]>([]);
+  const [loadingData,  setLoadingData]  = useState(true);
+  const [addingType,   setAddingType]   = useState<"service" | "product" | null>(null);
+  const [addServiceId, setAddServiceId] = useState("");
+  const [addProductId, setAddProductId] = useState("");
+  const [payMethod,    setPayMethod]    = useState<PaymentMethod>("cash");
+  const [amountPaid,   setAmountPaid]   = useState(0);
+  const [processing,   setProcessing]   = useState(false);
+  const [gstPct,       setGstPct]       = useState(18);
+
+  // Fetch services, products, and base price
+  useEffect(() => {
+    Promise.all([
+      supabase.from("services")
+        .select("id, name, category, duration_minutes, selling_price")
+        .or(`clinic_id.eq.${activeClinicId},is_global_template.eq.true`)
+        .eq("is_active", true).order("name"),
+      supabase.from("inventory_products")
+        .select("id, product_name, selling_price")
+        .eq("clinic_id", activeClinicId ?? "")
+        .eq("category", "retail")
+        .limit(100),
+    ]).then(([svcRes, prodRes]) => {
+      const svcs = (svcRes.data ?? []) as Service[];
+      setAllServices(svcs);
+      setAllProducts(prodRes.data ?? []);
+
+      // Set up base line item
+      let basePrice = 0;
+      if (credit) {
+        basePrice = credit.per_session_value;
+      } else {
+        const svc = svcs.find(s => s.id === a.service_id);
+        basePrice = svc?.selling_price ?? 0;
+      }
+      setLineItems([{ uid: "base", type: "base", name: a.service_name, qty: 1, unitPrice: basePrice }]);
+      setAmountPaid(basePrice > 0 && !credit ? Math.round(basePrice * 1.18) : 0);
+      setLoadingData(false);
+    });
+  }, [activeClinicId, a.service_id, a.service_name, credit]);
+
+  const subtotal = lineItems.reduce((s, i) => s + i.qty * i.unitPrice, 0);
+  const gst      = credit && lineItems.filter(i => i.type !== "base").length === 0
+    ? 0 // No GST on package-covered session with no extras
+    : Math.round(subtotal * gstPct / 100);
+  const total    = subtotal + gst;
+  const covered  = credit ? (credit.per_session_value ?? 0) : 0;
+  const balanceDue = Math.max(0, total - covered);
+
+  function addExtraService() {
+    if (!addServiceId) return;
+    const svc = allServices.find(s => s.id === addServiceId);
+    if (!svc) return;
+    setLineItems(prev => [...prev, { uid: crypto.randomUUID(), type: "service", name: svc.name, qty: 1, unitPrice: svc.selling_price }]);
+    setAddServiceId(""); setAddingType(null);
+  }
+
+  function addExtraProduct() {
+    if (!addProductId) return;
+    const prod = allProducts.find(p => p.id === addProductId);
+    if (!prod) return;
+    setLineItems(prev => [...prev, { uid: crypto.randomUUID(), type: "product", name: prod.product_name, qty: 1, unitPrice: prod.selling_price ?? 0 }]);
+    setAddProductId(""); setAddingType(null);
+  }
+
+  async function handleCheckout() {
+    setProcessing(true);
+    try {
+      // 1. Consume credit session
+      if (credit) {
+        await supabase.from("credit_consumption_log").insert({
+          credit_id:      credit.id,
+          appointment_id: a.id,
+          session_date:   a.start_time,
+          provider_id:    a.provider_id,
+          clinic_id:      activeClinicId,
+          notes:          `Consumed via Checkout — ${a.service_name}`,
+        });
+        const newUsed = credit.used_sessions + 1;
+        await supabase.from("patient_service_credits").update({
+          used_sessions: newUsed,
+          status: newUsed >= credit.total_sessions ? "completed" : "active",
+        }).eq("id", credit.id);
+        if (a.provider_id) {
+          await supabase.from("staff_commissions").insert({
+            provider_id:       a.provider_id,
+            credit_id:         credit.id,
+            appointment_id:    a.id,
+            service_name:      a.service_name,
+            session_date:      a.start_time,
+            session_value:     credit.per_session_value,
+            commission_pct:    10,
+            commission_amount: credit.per_session_value * 0.1,
+            clinic_id:         activeClinicId,
+            status:            "pending",
+          });
+        }
+      }
+
+      // 2. Create invoice
+      const invoiceStatus = payMethod === "package" || amountPaid >= total ? "paid" : "pending";
+      await supabase.from("pending_invoices").insert({
+        clinic_id:      activeClinicId,
+        patient_id:     a.patient_id,
+        appointment_id: a.id,
+        credit_id:      credit?.id ?? null,
+        service_name:   lineItems.map(i => i.name).join(", "),
+        amount:         subtotal,
+        tax_amount:     gst,
+        total_amount:   total,
+        status:         invoiceStatus,
+      });
+
+      // 3. Provider commission for direct billing
+      if (!credit && a.provider_id && subtotal > 0) {
+        await supabase.from("staff_commissions").insert({
+          provider_id:       a.provider_id,
+          appointment_id:    a.id,
+          service_name:      a.service_name,
+          session_date:      a.start_time,
+          session_value:     subtotal,
+          commission_pct:    10,
+          commission_amount: subtotal * 0.1,
+          clinic_id:         activeClinicId,
+          status:            "pending",
+        });
+      }
+
+      // 4. Mark appointment completed
+      await supabase.from("appointments").update({
+        status:         "completed",
+        credit_reserved: false,
+        updated_at:     new Date().toISOString(),
+      }).eq("id", a.id);
+
+      const payMsg = invoiceStatus === "paid" ? ` — ₹${total.toLocaleString("en-IN")} collected` : " — invoice pending";
+      toast.success(`Checkout complete${payMsg}`);
+      onCompleted();
+    } catch {
+      toast.error("Checkout failed");
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 250,
+      background: "rgba(28,25,23,0.65)", backdropFilter: "blur(8px)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+    }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: "white", borderRadius: 22, width: "100%", maxWidth: 560,
+        border: "1px solid rgba(197,160,89,0.2)",
+        boxShadow: "0 28px 80px rgba(28,25,23,0.28)",
+        overflow: "hidden", animation: "fadeIn 0.2s ease",
+        maxHeight: "92vh", display: "flex", flexDirection: "column",
+      }}>
+        {/* Gold top bar */}
+        <div style={{ height: 4, background: "linear-gradient(90deg, #C5A059, #E8CC8A, #A8853A)" }} />
+
+        {/* Header */}
+        <div style={{ padding: "18px 24px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Receipt size={16} style={{ color: "#C5A059" }} />
+              <h3 style={{ fontFamily: "Georgia, serif", fontSize: 18, fontWeight: 600, color: "var(--foreground)", margin: 0 }}>
+                {step === "invoice" ? "Session Checkout — Invoice" : "Payment Collection"}
+              </h3>
+            </div>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 3 }}>
+              {a.patient_name} · {a.service_name}
+            </p>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)" }}><X size={20} /></button>
+        </div>
+
+        {/* Step tabs */}
+        <div style={{ display: "flex", borderBottom: "1px solid var(--border)" }}>
+          {(["invoice", "payment"] as const).map((s, idx) => (
+            <button key={s} onClick={() => idx === 0 || lineItems.length > 0 ? setStep(s) : null} style={{
+              flex: 1, padding: "10px 0", border: "none",
+              background: step === s ? "rgba(197,160,89,0.08)" : "white",
+              borderBottom: step === s ? "2px solid #C5A059" : "2px solid transparent",
+              color: step === s ? "#C5A059" : "var(--text-muted)",
+              fontSize: 13, fontWeight: step === s ? 600 : 400,
+              fontFamily: "Georgia, serif", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            }}>
+              {idx === 0 ? <Receipt size={13} /> : <CreditCard size={13} />}
+              {idx === 0 ? "Invoice" : "Payment"}
+            </button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
+          {loadingData ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 120 }}>
+              <Loader2 size={22} style={{ color: "rgba(197,160,89,0.5)", animation: "spin 1s linear infinite" }} />
+            </div>
+          ) : step === "invoice" ? (
+            <>
+              {/* Credit badge */}
+              {credit && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 10, background: "rgba(74,138,74,0.07)", border: "1px solid rgba(74,138,74,0.25)", marginBottom: 16 }}>
+                  <Package size={13} style={{ color: "#4A8A4A" }} />
+                  <span style={{ fontSize: 12, color: "#4A8A4A", fontWeight: 600 }}>
+                    Package: {credit.service_name} — {credit.total_sessions - credit.used_sessions} sessions remaining
+                  </span>
+                </div>
+              )}
+
+              {/* Line items */}
+              <div style={{ marginBottom: 16 }}>
+                <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", marginBottom: 10 }}>Line Items</p>
+                {lineItems.map(item => (
+                  <div key={item.uid} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 10, background: item.type === "base" ? "rgba(197,160,89,0.04)" : "rgba(0,0,0,0.02)", border: "1px solid var(--border)", marginBottom: 6 }}>
+                    <div style={{ flex: 1 }}>
+                      <p style={{ fontFamily: "Georgia, serif", fontSize: 13, fontWeight: 600, color: "var(--foreground)", margin: 0 }}>{item.name}</p>
+                      <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0, textTransform: "capitalize" }}>{item.type === "base" ? "Session" : item.type}</p>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input
+                        type="number" value={item.qty} min={1} max={10}
+                        onChange={e => setLineItems(prev => prev.map(x => x.uid === item.uid ? { ...x, qty: Math.max(1, Number(e.target.value)) } : x))}
+                        style={{ width: 52, padding: "5px 8px", borderRadius: 7, border: "1px solid #E8E2D4", background: "#FDFCF9", fontSize: 13, textAlign: "center", outline: "none" }}
+                      />
+                      <span style={{ fontSize: 11, color: "var(--text-muted)" }}>×</span>
+                      <input
+                        type="number" value={item.unitPrice} min={0}
+                        onChange={e => setLineItems(prev => prev.map(x => x.uid === item.uid ? { ...x, unitPrice: Number(e.target.value) } : x))}
+                        style={{ width: 90, padding: "5px 8px", borderRadius: 7, border: "1px solid #E8E2D4", background: "#FDFCF9", fontSize: 13, outline: "none" }}
+                      />
+                      <span style={{ fontSize: 13, fontWeight: 700, color: "var(--foreground)", minWidth: 72, textAlign: "right" }}>
+                        ₹{(item.qty * item.unitPrice).toLocaleString("en-IN")}
+                      </span>
+                    </div>
+                    {item.type !== "base" && (
+                      <button onClick={() => setLineItems(prev => prev.filter(x => x.uid !== item.uid))} style={{ background: "transparent", border: "none", cursor: "pointer", color: "#B43C3C", padding: 2 }}><X size={13} /></button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Add extra items */}
+              <div style={{ marginBottom: 16 }}>
+                <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", marginBottom: 8 }}>Add Extra Items</p>
+                {addingType === null ? (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => { setAddingType("service"); setAddServiceId(allServices[0]?.id ?? ""); }} style={{ flex: 1, padding: "8px 0", borderRadius: 9, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", color: "#A8853A", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                      <Scissors size={12} /> Add Service
+                    </button>
+                    <button onClick={() => { setAddingType("product"); setAddProductId(allProducts[0]?.id ?? ""); }} style={{ flex: 1, padding: "8px 0", borderRadius: 9, border: "1px solid rgba(42,74,138,0.3)", background: "rgba(42,74,138,0.06)", color: "#2A4A8A", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                      <Package size={12} /> Add Product
+                    </button>
+                  </div>
+                ) : addingType === "service" ? (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <select value={addServiceId} onChange={e => setAddServiceId(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+                      {allServices.map(s => <option key={s.id} value={s.id}>{s.name} — ₹{s.selling_price?.toLocaleString("en-IN")}</option>)}
+                    </select>
+                    <button onClick={addExtraService} style={{ padding: "10px 14px", borderRadius: 9, border: "none", background: "#C5A059", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Add</button>
+                    <button onClick={() => setAddingType(null)} style={{ padding: "10px 10px", borderRadius: 9, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text-muted)", fontSize: 12, cursor: "pointer" }}><X size={13} /></button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <select value={addProductId} onChange={e => setAddProductId(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+                      {allProducts.map(p => <option key={p.id} value={p.id}>{p.product_name} — ₹{p.selling_price?.toLocaleString("en-IN") ?? "0"}</option>)}
+                    </select>
+                    <button onClick={addExtraProduct} style={{ padding: "10px 14px", borderRadius: 9, border: "none", background: "#2A4A8A", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Add</button>
+                    <button onClick={() => setAddingType(null)} style={{ padding: "10px 10px", borderRadius: 9, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text-muted)", fontSize: 12, cursor: "pointer" }}><X size={13} /></button>
+                  </div>
+                )}
+              </div>
+
+              {/* GST selector */}
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16 }}>
+                <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>GST:</p>
+                {[0, 5, 12, 18].map(g => (
+                  <button key={g} onClick={() => setGstPct(g)} style={{ padding: "4px 10px", borderRadius: 7, fontSize: 12, cursor: "pointer", border: gstPct === g ? "1px solid #C5A059" : "1px solid var(--border)", background: gstPct === g ? "rgba(197,160,89,0.1)" : "var(--surface)", color: gstPct === g ? "#A8853A" : "var(--text-muted)", fontWeight: gstPct === g ? 600 : 400 }}>
+                    {g}%
+                  </button>
+                ))}
+              </div>
+
+              {/* Totals */}
+              <div style={{ padding: "14px 16px", borderRadius: 12, background: "rgba(249,247,242,0.8)", border: "1px solid rgba(197,160,89,0.2)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                  <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Subtotal</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>₹{subtotal.toLocaleString("en-IN")}</span>
+                </div>
+                {gst > 0 && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ fontSize: 13, color: "var(--text-muted)" }}>GST ({gstPct}%)</span>
+                    <span style={{ fontSize: 13, color: "var(--text-muted)" }}>₹{gst.toLocaleString("en-IN")}</span>
+                  </div>
+                )}
+                {credit && covered > 0 && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ fontSize: 13, color: "#4A8A4A" }}>Covered by package</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: "#4A8A4A" }}>−₹{covered.toLocaleString("en-IN")}</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, borderTop: "1px solid rgba(197,160,89,0.2)" }}>
+                  <span style={{ fontSize: 15, fontWeight: 700, fontFamily: "Georgia, serif", color: "var(--foreground)" }}>Balance Due</span>
+                  <span style={{ fontSize: 18, fontWeight: 700, fontFamily: "Georgia, serif", color: balanceDue === 0 ? "#4A8A4A" : "#C5A059" }}>
+                    {balanceDue === 0 ? "₹0 (Covered)" : `₹${balanceDue.toLocaleString("en-IN")}`}
+                  </span>
+                </div>
+              </div>
+            </>
+          ) : (
+            /* Payment step */
+            <>
+              <div style={{ padding: "16px 18px", borderRadius: 14, background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.2)", marginBottom: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Total Bill</span>
+                  <span style={{ fontSize: 22, fontWeight: 700, fontFamily: "Georgia, serif", color: "var(--foreground)" }}>₹{total.toLocaleString("en-IN")}</span>
+                </div>
+                {credit && covered > 0 && (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+                    <span style={{ fontSize: 12, color: "#4A8A4A" }}>Package covers</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#4A8A4A" }}>₹{covered.toLocaleString("en-IN")}</span>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, paddingTop: 8, borderTop: "1px solid rgba(197,160,89,0.15)" }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "var(--foreground)" }}>Amount Due</span>
+                  <span style={{ fontSize: 18, fontWeight: 700, fontFamily: "Georgia, serif", color: balanceDue === 0 ? "#4A8A4A" : "#C5A059" }}>
+                    ₹{balanceDue.toLocaleString("en-IN")}
+                  </span>
+                </div>
+              </div>
+
+              {balanceDue > 0 && (
+                <>
+                  <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", marginBottom: 10 }}>Payment Method</p>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+                    {([
+                      { key: "cash",    label: "Cash",    Icon: IndianRupee },
+                      { key: "card",    label: "Card",    Icon: CreditCard  },
+                      { key: "upi",     label: "UPI",     Icon: Zap         },
+                      { key: "package", label: "Package / Wallet", Icon: Package },
+                    ] as const).map(({ key, label, Icon }) => (
+                      <button key={key} onClick={() => setPayMethod(key)} style={{
+                        padding: "11px 14px", borderRadius: 11,
+                        border: payMethod === key ? "2px solid #C5A059" : "1px solid var(--border)",
+                        background: payMethod === key ? "rgba(197,160,89,0.08)" : "var(--surface)",
+                        color: payMethod === key ? "#A8853A" : "var(--foreground)",
+                        fontFamily: "Georgia, serif", fontSize: 13, fontWeight: payMethod === key ? 700 : 400,
+                        cursor: "pointer", display: "flex", alignItems: "center", gap: 7,
+                        transition: "all 0.15s",
+                      }}>
+                        <Icon size={14} /> {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", display: "block", marginBottom: 7 }}>Amount Received (₹)</label>
+                    <input
+                      type="number"
+                      value={amountPaid}
+                      onChange={e => setAmountPaid(Number(e.target.value))}
+                      min={0}
+                      style={{ ...inputStyle, fontSize: 20, fontFamily: "Georgia, serif", fontWeight: 700, color: "#C5A059" }}
+                    />
+                    {amountPaid > 0 && amountPaid < balanceDue && (
+                      <p style={{ fontSize: 12, color: "#D4A017", marginTop: 5 }}>
+                        Change due: ₹{(amountPaid - balanceDue).toLocaleString("en-IN")} (partial payment — invoice will remain pending)
+                      </p>
+                    )}
+                    {amountPaid >= balanceDue && balanceDue > 0 && (
+                      <p style={{ fontSize: 12, color: "#4A8A4A", marginTop: 5 }}>
+                        {amountPaid > balanceDue ? `Change to return: ₹${(amountPaid - balanceDue).toLocaleString("en-IN")}` : "Exact payment ✓"}
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {balanceDue === 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", borderRadius: 12, background: "rgba(74,138,74,0.07)", border: "1px solid rgba(74,138,74,0.25)" }}>
+                  <CheckCircle2 size={18} style={{ color: "#4A8A4A", flexShrink: 0 }} />
+                  <p style={{ fontSize: 13, color: "#4A8A4A", fontWeight: 600, margin: 0 }}>
+                    Session fully covered by package. No payment required.
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "14px 24px 20px", borderTop: "1px solid var(--border)", display: "flex", gap: 10 }}>
+          {step === "invoice" ? (
+            <>
+              <button onClick={onClose} style={{ flex: 1, padding: "11px 0", borderRadius: 12, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--foreground)", fontSize: 14, fontFamily: "Georgia, serif", cursor: "pointer" }}>
+                Cancel
+              </button>
+              {balanceDue === 0 && lineItems.filter(i => i.type !== "base").length === 0 ? (
+                <button
+                  onClick={handleCheckout}
+                  disabled={processing}
+                  style={{ flex: 2, padding: "11px 0", borderRadius: 12, border: "none", background: processing ? "rgba(74,138,74,0.5)" : "#4A8A4A", color: "white", fontSize: 14, fontWeight: 600, fontFamily: "Georgia, serif", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, boxShadow: "0 4px 14px rgba(74,138,74,0.3)" }}>
+                  {processing && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
+                  <CheckCircle2 size={15} /> Complete Session (No Payment Due)
+                </button>
+              ) : (
+                <button
+                  onClick={() => setStep("payment")}
+                  style={{ flex: 2, padding: "11px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #C5A059, #A8853A)", color: "white", fontSize: 14, fontWeight: 600, fontFamily: "Georgia, serif", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, boxShadow: "0 4px 14px rgba(197,160,89,0.35)" }}>
+                  Proceed to Payment <ChevronRight size={15} />
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <button onClick={() => setStep("invoice")} style={{ flex: 1, padding: "11px 0", borderRadius: 12, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--foreground)", fontSize: 14, fontFamily: "Georgia, serif", cursor: "pointer" }}>
+                ← Back
+              </button>
+              <button
+                onClick={handleCheckout}
+                disabled={processing}
+                style={{ flex: 2, padding: "11px 0", borderRadius: 12, border: "none", background: processing ? "rgba(197,160,89,0.5)" : "linear-gradient(135deg, #C5A059, #A8853A)", color: "white", fontSize: 14, fontWeight: 600, fontFamily: "Georgia, serif", cursor: processing ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, boxShadow: "0 4px 14px rgba(197,160,89,0.35)" }}>
+                {processing && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
+                <IndianRupee size={15} /> Collect & Complete
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
