@@ -896,6 +896,14 @@ export default function ManagePage() {
   const [showClinicForm, setShowClinicForm] = useState(false);
   const [clinicForm, setClinicForm] = useState(emptyClinicForm);
   const [clinicSubmitting, setClinicSubmitting] = useState(false);
+  const [clinicBillingMethod, setClinicBillingMethod] = useState<"credit_card" | "bank_transfer" | "upi" | "">("");
+  const [clinicBillingDetails, setClinicBillingDetails] = useState({
+    masked_card: "",
+    masked_account: "",
+    upi_id: "",
+    grace_period_days: 7,
+    warning_days_before: 3,
+  });
 
   // Edit clinic drawer
   const [editDrawerOpen, setEditDrawerOpen] = useState(false);
@@ -988,6 +996,20 @@ export default function ManagePage() {
     if (error) {
       toast.error("Failed to create clinic", { description: error.message });
     } else {
+      // Save auto-pay billing method for this clinic if provided
+      if (clinicBillingMethod) {
+        await supabase.from("clinic_billing_methods").insert({
+          clinic_id: data.id,
+          method_type: clinicBillingMethod,
+          masked_card_number: clinicBillingDetails.masked_card.trim() || null,
+          masked_account_number: clinicBillingDetails.masked_account.trim() || null,
+          upi_id: clinicBillingDetails.upi_id.trim() || null,
+          grace_period_days: clinicBillingDetails.grace_period_days,
+          warning_days_before: clinicBillingDetails.warning_days_before,
+          is_active: true,
+        });
+      }
+
       toast.success(`"${data.name}" clinic created`, {
         icon: <Building2 size={15} color="#C5A059" />,
         description: clinicForm.admin_email
@@ -996,6 +1018,8 @@ export default function ManagePage() {
       });
       setClinics((prev) => [data, ...prev]);
       setClinicForm(emptyClinicForm);
+      setClinicBillingMethod("");
+      setClinicBillingDetails({ masked_card: "", masked_account: "", upi_id: "", grace_period_days: 7, warning_days_before: 3 });
       setShowClinicForm(false);
     }
 
@@ -1517,6 +1541,146 @@ export default function ManagePage() {
                         />
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                {/* Auto-pay Billing */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Receipt size={12} color="var(--gold)" />
+                    <p className="text-xs uppercase tracking-widest font-semibold" style={{ color: "var(--gold)" }}>
+                      Auto-Pay Billing
+                    </p>
+                    <div className="flex-1 h-px" style={{ background: "rgba(197,160,89,0.2)" }} />
+                    <span className="text-xs" style={{ color: "var(--text-muted)" }}>Optional</span>
+                  </div>
+                  <div className="space-y-3">
+                    <div>
+                      <label style={labelSx}>Payment Method</label>
+                      <div className="flex gap-2">
+                        {(["credit_card", "bank_transfer", "upi"] as const).map((m) => {
+                          const icons = {
+                            credit_card: <CreditCard size={11} />,
+                            bank_transfer: <Landmark size={11} />,
+                            upi: <Smartphone size={11} />,
+                          };
+                          const labels = { credit_card: "Credit Card", bank_transfer: "Bank", upi: "UPI" };
+                          return (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => setClinicBillingMethod((prev) => prev === m ? "" : m)}
+                              className="flex-1 flex flex-col items-center gap-1 py-2 rounded-lg text-xs font-semibold transition-all duration-150"
+                              style={{
+                                border: clinicBillingMethod === m ? "1.5px solid var(--gold)" : "1.5px solid var(--border)",
+                                background: clinicBillingMethod === m ? "rgba(197,160,89,0.12)" : "var(--surface-warm)",
+                                color: clinicBillingMethod === m ? "var(--gold)" : "var(--text-muted)",
+                              }}
+                            >
+                              {icons[m]}
+                              {labels[m]}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {clinicBillingMethod === "credit_card" && (
+                      <div>
+                        <label style={labelSx}>
+                          <CreditCard size={11} color="var(--gold)" /> Masked Card Number
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. **** **** **** 4242"
+                          value={clinicBillingDetails.masked_card}
+                          onChange={(e) => setClinicBillingDetails((d) => ({ ...d, masked_card: e.target.value }))}
+                          style={{ ...inputSx, fontFamily: "monospace" }}
+                          onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                          onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                        />
+                      </div>
+                    )}
+                    {clinicBillingMethod === "bank_transfer" && (
+                      <div>
+                        <label style={labelSx}>
+                          <Landmark size={11} color="var(--gold)" /> Masked Account Number
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. ****6789"
+                          value={clinicBillingDetails.masked_account}
+                          onChange={(e) => setClinicBillingDetails((d) => ({ ...d, masked_account: e.target.value }))}
+                          style={{ ...inputSx, fontFamily: "monospace" }}
+                          onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                          onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                        />
+                      </div>
+                    )}
+                    {clinicBillingMethod === "upi" && (
+                      <div>
+                        <label style={labelSx}>
+                          <Smartphone size={11} color="var(--gold)" /> UPI ID
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. clinic@okaxis"
+                          value={clinicBillingDetails.upi_id}
+                          onChange={(e) => setClinicBillingDetails((d) => ({ ...d, upi_id: e.target.value }))}
+                          style={inputSx}
+                          onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                          onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                        />
+                      </div>
+                    )}
+
+                    {clinicBillingMethod && (
+                      <>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label style={labelSx}>
+                              <Bell size={11} color="var(--gold)" /> Grace Period (days)
+                            </label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={30}
+                              value={clinicBillingDetails.grace_period_days}
+                              onChange={(e) => setClinicBillingDetails((d) => ({ ...d, grace_period_days: Number(e.target.value) }))}
+                              style={inputSx}
+                              onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                              onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                            />
+                          </div>
+                          <div>
+                            <label style={labelSx}>
+                              <Bell size={11} color="var(--gold)" /> Warn Before (days)
+                            </label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={14}
+                              value={clinicBillingDetails.warning_days_before}
+                              onChange={(e) => setClinicBillingDetails((d) => ({ ...d, warning_days_before: Number(e.target.value) }))}
+                              style={inputSx}
+                              onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                              onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                            />
+                          </div>
+                        </div>
+                        <div
+                          className="flex items-start gap-2 p-3 rounded-xl"
+                          style={{ background: "rgba(139,158,122,0.08)", border: "1px solid rgba(139,158,122,0.25)" }}
+                        >
+                          <CheckCircle2 size={13} style={{ color: "#6B8A5A", flexShrink: 0, marginTop: 1 }} />
+                          <p style={{ fontSize: 11, color: "#6B8A5A", lineHeight: 1.6 }}>
+                            Admins will be warned {clinicBillingDetails.warning_days_before} days before due date.
+                            After a {clinicBillingDetails.grace_period_days}-day grace period, the subscription
+                            auto-resumes once payment is cleared.
+                          </p>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
