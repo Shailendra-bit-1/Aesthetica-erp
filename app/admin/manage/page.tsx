@@ -22,6 +22,13 @@ import {
   Pencil,
   ShieldCheck,
   Users,
+  Receipt,
+  Hash,
+  CreditCard,
+  Smartphone,
+  Landmark,
+  Bell,
+  CheckCircle2,
 } from "lucide-react";
 import { ROLE_BADGE } from "@/lib/permissions";
 
@@ -58,6 +65,10 @@ const emptyClinicForm = {
   location: "",
   admin_email: "",
   subscription_status: "active",
+  gst_number: "",
+  legal_business_name: "",
+  gst_state_code: "",
+  gst_registered_state: "",
 };
 
 // Updated labels per spec: Active / Past Due / Canceled
@@ -872,6 +883,14 @@ export default function ManagePage() {
   const [showChainForm, setShowChainForm] = useState(false);
   const [chainName, setChainName] = useState("");
   const [chainSubmitting, setChainSubmitting] = useState(false);
+  const [chainBillingMethod, setChainBillingMethod] = useState<"credit_card" | "bank_transfer" | "upi" | "">("");
+  const [chainBillingDetails, setChainBillingDetails] = useState({
+    masked_card: "",
+    masked_account: "",
+    upi_id: "",
+    grace_period_days: 7,
+    warning_days_before: 3,
+  });
 
   // Clinic form
   const [showClinicForm, setShowClinicForm] = useState(false);
@@ -914,14 +933,33 @@ export default function ManagePage() {
 
     if (error) {
       toast.error("Failed to create chain", { description: error.message });
-    } else {
-      toast.success(`"${data.name}" chain created`, {
-        icon: <Network size={15} color="#C5A059" />,
-      });
-      setChains((prev) => [data, ...prev]);
-      setChainName("");
-      setShowChainForm(false);
+      setChainSubmitting(false);
+      return;
     }
+
+    // Save auto-pay billing method if provided
+    if (chainBillingMethod) {
+      await supabase.from("chain_billing_methods").insert({
+        chain_id: data.id,
+        method_type: chainBillingMethod,
+        masked_card_number: chainBillingDetails.masked_card.trim() || null,
+        masked_account_number: chainBillingDetails.masked_account.trim() || null,
+        upi_id: chainBillingDetails.upi_id.trim() || null,
+        grace_period_days: chainBillingDetails.grace_period_days,
+        warning_days_before: chainBillingDetails.warning_days_before,
+        is_active: true,
+      });
+    }
+
+    toast.success(`"${data.name}" chain created`, {
+      icon: <Network size={15} color="#C5A059" />,
+      description: chainBillingMethod ? "Auto-pay billing configured." : undefined,
+    });
+    setChains((prev) => [data, ...prev]);
+    setChainName("");
+    setChainBillingMethod("");
+    setChainBillingDetails({ masked_card: "", masked_account: "", upi_id: "", grace_period_days: 7, warning_days_before: 3 });
+    setShowChainForm(false);
     setChainSubmitting(false);
   }
 
@@ -931,46 +969,24 @@ export default function ManagePage() {
     e.preventDefault();
     setClinicSubmitting(true);
 
-    const basePayload = {
-      name: clinicForm.name.trim(),
-      chain_id: clinicForm.chain_id || null,
-      location: clinicForm.location.trim() || null,
-      subscription_status: clinicForm.subscription_status,
-    };
-
     const { data, error } = await supabase
       .from("clinics")
-      .insert({ ...basePayload, admin_email: clinicForm.admin_email.trim() || null })
+      .insert({
+        name: clinicForm.name.trim(),
+        chain_id: clinicForm.chain_id || null,
+        location: clinicForm.location.trim() || null,
+        subscription_status: clinicForm.subscription_status,
+        admin_email: clinicForm.admin_email.trim() || null,
+        gst_number: clinicForm.gst_number.trim() || null,
+        legal_business_name: clinicForm.legal_business_name.trim() || null,
+        gst_state_code: clinicForm.gst_state_code.trim() || null,
+        gst_registered_state: clinicForm.gst_registered_state.trim() || null,
+      })
       .select("*, chains(name)")
       .single();
 
     if (error) {
-      const isColumnMissing =
-        error.message.toLowerCase().includes("admin_email") ||
-        error.code === "42703" ||
-        error.code === "PGRST204";
-
-      if (isColumnMissing) {
-        const { data: d2, error: e2 } = await supabase
-          .from("clinics")
-          .insert(basePayload)
-          .select("*, chains(name)")
-          .single();
-
-        if (e2) {
-          toast.error("Failed to create clinic", { description: e2.message });
-        } else {
-          toast.success(`"${d2.name}" clinic created`, {
-            description: "Run the SQL migration below to enable admin email.",
-            icon: <Building2 size={15} color="#C5A059" />,
-          });
-          setClinics((prev) => [d2, ...prev]);
-          setClinicForm(emptyClinicForm);
-          setShowClinicForm(false);
-        }
-      } else {
-        toast.error("Failed to create clinic", { description: error.message });
-      }
+      toast.error("Failed to create clinic", { description: error.message });
     } else {
       toast.success(`"${data.name}" clinic created`, {
         icon: <Building2 size={15} color="#C5A059" />,
@@ -1114,6 +1130,149 @@ export default function ManagePage() {
                       onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
                     />
                   </div>
+                  {/* Auto-pay Billing */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <Receipt size={12} color="var(--gold)" />
+                      <p className="text-xs uppercase tracking-widest font-semibold" style={{ color: "var(--gold)" }}>
+                        Auto-Pay Billing
+                      </p>
+                      <div className="flex-1 h-px" style={{ background: "rgba(197,160,89,0.2)" }} />
+                      <span className="text-xs" style={{ color: "var(--text-muted)" }}>Optional</span>
+                    </div>
+                    <div className="space-y-3">
+                      {/* Method type selector */}
+                      <div>
+                        <label style={labelSx}>Payment Method</label>
+                        <div className="flex gap-2">
+                          {(["credit_card", "bank_transfer", "upi"] as const).map((m) => {
+                            const icons = {
+                              credit_card: <CreditCard size={11} />,
+                              bank_transfer: <Landmark size={11} />,
+                              upi: <Smartphone size={11} />,
+                            };
+                            const labels = { credit_card: "Credit Card", bank_transfer: "Bank", upi: "UPI" };
+                            return (
+                              <button
+                                key={m}
+                                type="button"
+                                onClick={() => setChainBillingMethod((prev) => prev === m ? "" : m)}
+                                className="flex-1 flex flex-col items-center gap-1 py-2 rounded-lg text-xs font-semibold transition-all duration-150"
+                                style={{
+                                  border: chainBillingMethod === m ? "1.5px solid var(--gold)" : "1.5px solid var(--border)",
+                                  background: chainBillingMethod === m ? "rgba(197,160,89,0.12)" : "var(--surface-warm)",
+                                  color: chainBillingMethod === m ? "var(--gold)" : "var(--text-muted)",
+                                }}
+                              >
+                                {icons[m]}
+                                {labels[m]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Conditional detail fields */}
+                      {chainBillingMethod === "credit_card" && (
+                        <div>
+                          <label style={labelSx}>
+                            <CreditCard size={11} color="var(--gold)" /> Masked Card Number
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. **** **** **** 4242"
+                            value={chainBillingDetails.masked_card}
+                            onChange={(e) => setChainBillingDetails((d) => ({ ...d, masked_card: e.target.value }))}
+                            style={{ ...inputSx, fontFamily: "monospace" }}
+                            onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                            onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                          />
+                        </div>
+                      )}
+                      {chainBillingMethod === "bank_transfer" && (
+                        <div>
+                          <label style={labelSx}>
+                            <Landmark size={11} color="var(--gold)" /> Masked Account Number
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. ****6789"
+                            value={chainBillingDetails.masked_account}
+                            onChange={(e) => setChainBillingDetails((d) => ({ ...d, masked_account: e.target.value }))}
+                            style={{ ...inputSx, fontFamily: "monospace" }}
+                            onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                            onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                          />
+                        </div>
+                      )}
+                      {chainBillingMethod === "upi" && (
+                        <div>
+                          <label style={labelSx}>
+                            <Smartphone size={11} color="var(--gold)" /> UPI ID
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. clinic@okaxis"
+                            value={chainBillingDetails.upi_id}
+                            onChange={(e) => setChainBillingDetails((d) => ({ ...d, upi_id: e.target.value }))}
+                            style={inputSx}
+                            onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                            onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                          />
+                        </div>
+                      )}
+
+                      {/* Grace period & warning (shown when any method selected) */}
+                      {chainBillingMethod && (
+                        <>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label style={labelSx}>
+                                <Bell size={11} color="var(--gold)" /> Grace Period (days)
+                              </label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={30}
+                                value={chainBillingDetails.grace_period_days}
+                                onChange={(e) => setChainBillingDetails((d) => ({ ...d, grace_period_days: Number(e.target.value) }))}
+                                style={inputSx}
+                                onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                                onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                              />
+                            </div>
+                            <div>
+                              <label style={labelSx}>
+                                <Bell size={11} color="var(--gold)" /> Warn Before (days)
+                              </label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={14}
+                                value={chainBillingDetails.warning_days_before}
+                                onChange={(e) => setChainBillingDetails((d) => ({ ...d, warning_days_before: Number(e.target.value) }))}
+                                style={inputSx}
+                                onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                                onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                              />
+                            </div>
+                          </div>
+                          <div
+                            className="flex items-start gap-2 p-3 rounded-xl"
+                            style={{ background: "rgba(139,158,122,0.08)", border: "1px solid rgba(139,158,122,0.25)" }}
+                          >
+                            <CheckCircle2 size={13} style={{ color: "#6B8A5A", flexShrink: 0, marginTop: 1 }} />
+                            <p style={{ fontSize: 11, color: "#6B8A5A", lineHeight: 1.6 }}>
+                              Admins will be warned {chainBillingDetails.warning_days_before} days before due date.
+                              After a {chainBillingDetails.grace_period_days}-day grace period, the subscription
+                              auto-resumes once payment is cleared.
+                            </p>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
                   <GoldButton type="submit" loading={chainSubmitting} disabled={!chainName.trim()}>
                     <Sparkles size={13} /> Create Chain
                   </GoldButton>
@@ -1293,6 +1452,74 @@ export default function ManagePage() {
                   />
                 </div>
 
+                {/* GST Details */}
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Hash size={12} color="var(--gold)" />
+                    <p className="text-xs uppercase tracking-widest font-semibold" style={{ color: "var(--gold)" }}>
+                      GST Details
+                    </p>
+                    <div className="flex-1 h-px" style={{ background: "rgba(197,160,89,0.2)" }} />
+                    <span className="text-xs" style={{ color: "var(--text-muted)" }}>Optional</span>
+                  </div>
+                  <div className="space-y-3">
+                    <div>
+                      <label style={labelSx}>
+                        <Hash size={11} color="var(--gold)" /> GSTIN
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 27AADCB2230M1ZP"
+                        value={clinicForm.gst_number}
+                        onChange={(e) => setClinicForm((f) => ({ ...f, gst_number: e.target.value.toUpperCase() }))}
+                        style={{ ...inputSx, fontFamily: "monospace" }}
+                        onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                        onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                      />
+                    </div>
+                    <div>
+                      <label style={labelSx}>
+                        <Building2 size={11} color="var(--gold)" /> Legal Business Name
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="As per GST registration"
+                        value={clinicForm.legal_business_name}
+                        onChange={(e) => setClinicForm((f) => ({ ...f, legal_business_name: e.target.value }))}
+                        style={inputSx}
+                        onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                        onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label style={labelSx}>State Code</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 27"
+                          value={clinicForm.gst_state_code}
+                          onChange={(e) => setClinicForm((f) => ({ ...f, gst_state_code: e.target.value }))}
+                          style={inputSx}
+                          onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                          onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                        />
+                      </div>
+                      <div>
+                        <label style={labelSx}>Registered State</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Maharashtra"
+                          value={clinicForm.gst_registered_state}
+                          onChange={(e) => setClinicForm((f) => ({ ...f, gst_registered_state: e.target.value }))}
+                          style={inputSx}
+                          onFocus={(e) => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.1)"; }}
+                          onBlur={(e)  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Subscription status */}
                 <div>
                   <label style={labelSx}>Subscription Status</label>
@@ -1319,32 +1546,6 @@ export default function ManagePage() {
                       </button>
                     ))}
                   </div>
-                </div>
-
-                {/* Migration notice */}
-                <div
-                  className="flex items-start gap-2 p-3 rounded-xl"
-                  style={{ background: "rgba(197,160,89,0.07)", border: "1px solid rgba(197,160,89,0.2)" }}
-                >
-                  <AlertCircle size={13} style={{ color: "var(--gold)", flexShrink: 0, marginTop: 1 }} />
-                  <p style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6 }}>
-                    If admin email doesn't save, run in Supabase SQL Editor:
-                    <br />
-                    <code
-                      className="font-mono"
-                      style={{
-                        fontSize: 10,
-                        background: "rgba(197,160,89,0.12)",
-                        color: "var(--gold)",
-                        padding: "1px 5px",
-                        borderRadius: 4,
-                        display: "inline-block",
-                        marginTop: 3,
-                      }}
-                    >
-                      ALTER TABLE clinics ADD COLUMN IF NOT EXISTS admin_email text;
-                    </code>
-                  </p>
                 </div>
 
                 <GoldButton

@@ -46,13 +46,13 @@ const SIDEBAR_ITEMS = [
 ] as const;
 
 const ADMIN_ITEMS = [
-  { label: "User Management",    href: "/admin/users",        icon: UserCog    },
-  { label: "Billing & Plans",    href: "/admin/billing",      icon: CreditCard },
-  { label: "Analytics",          href: "/admin/settings",     icon: BarChart3  },
-  { label: "Audit Log",          href: "/admin/audit",        icon: ScrollText },
-  { label: "Permissions Matrix", href: "/admin/permissions",       icon: ShieldCheck },
-  { label: "Team Permissions",   href: "/settings/team/permissions", icon: Users       },
-  { label: "Rule Builder",       href: "/admin/rules",        icon: Zap        },
+  { label: "User Management",    href: "/admin/users",               icon: UserCog,    superadminOnly: false },
+  { label: "Billing & Plans",    href: "/admin/billing",             icon: CreditCard, superadminOnly: true  },
+  { label: "Analytics",          href: "/admin/settings",            icon: BarChart3,  superadminOnly: false },
+  { label: "Audit Log",          href: "/admin/audit",               icon: ScrollText, superadminOnly: false },
+  { label: "Permissions Matrix", href: "/admin/permissions",         icon: ShieldCheck, superadminOnly: false },
+  { label: "Team Permissions",   href: "/settings/team/permissions", icon: Users,      superadminOnly: false },
+  { label: "Rule Builder",       href: "/admin/rules",               icon: Zap,        superadminOnly: false },
 ] as const;
 
 const BOTTOM_ITEMS = [
@@ -209,7 +209,7 @@ export default function Sidebar() {
                 background: "rgba(197,160,89,0.04)",
               }}
             >
-              {ADMIN_ITEMS.map((item) => (
+              {ADMIN_ITEMS.filter((item) => !item.superadminOnly || isSuperAdmin).map((item) => (
                 <NavLink key={item.href} item={item} pathname={pathname} admin />
               ))}
             </div>
