@@ -13,6 +13,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { logAction } from "@/lib/audit";
 import { toast } from "sonner";
+import BeforeAfterProgress from "@/components/BeforeAfterProgress";
 
 // ─────────────────────────────────────── Types ───────────────────────────────
 
@@ -29,6 +30,10 @@ interface MedicalHistory {
   had_prior_injections: boolean | null; last_injection_date: string | null;
   injection_complications: string | null; patient_notes: string | null;
   recorded_at: string;
+  allergies: string[] | null;
+  current_medications: string | null;
+  past_procedures: string | null;
+  skin_type: string | null;
 }
 interface PatientNote {
   id: string; note_type: string; content: string;
@@ -120,7 +125,7 @@ export default function PatientEMRPage() {
   const [notFound,   setNotFound]   = useState(false);
   const [mounted,    setMounted]    = useState(false);
   const [fabOpen,    setFabOpen]    = useState(false);
-  const [drawer,     setDrawer]     = useState<"soap" | "note" | null>(null);
+  const [drawer,     setDrawer]     = useState<"soap" | "note" | "treatment" | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -200,7 +205,7 @@ export default function PatientEMRPage() {
 
           {/* Right */}
           <div className="emr-col" style={{ overflowY: "auto", borderLeft: "1px solid rgba(197,160,89,0.13)", padding: "20px 16px 32px" }}>
-            <BusinessColumn treatments={treatments} packages={packages} patientId={id} />
+            <BusinessColumn treatments={treatments} packages={packages} patientId={id} onAddTreatment={() => { setFabOpen(false); setDrawer("treatment"); }} />
           </div>
         </div>
       </div>
@@ -224,6 +229,12 @@ export default function PatientEMRPage() {
       {/* ── Quick Note Drawer ── */}
       {mounted && drawer === "note" && createPortal(
         <NoteDrawer patientId={id} onClose={closeDrawer} />,
+        document.body
+      )}
+
+      {/* ── Add Treatment Drawer ── */}
+      {mounted && drawer === "treatment" && createPortal(
+        <TreatmentDrawer patientId={id} onClose={closeDrawer} />,
         document.body
       )}
     </>
@@ -428,6 +439,33 @@ function MedicalColumn({ patient, medicalHistory }: { patient: Patient; medicalH
         </div>
       </Card>
 
+      {/* Current Medications */}
+      {medicalHistory?.current_medications && (
+        <Card title="Current Medications">
+          <p style={{ fontSize: 12, color: "#3D3530", fontFamily: "Georgia, serif", lineHeight: 1.7, margin: 0, whiteSpace: "pre-wrap" }}>
+            {medicalHistory.current_medications}
+          </p>
+        </Card>
+      )}
+
+      {/* Past Procedures */}
+      {medicalHistory?.past_procedures && (
+        <Card title="Past Procedures">
+          <p style={{ fontSize: 12, color: "#3D3530", fontFamily: "Georgia, serif", lineHeight: 1.7, margin: 0, whiteSpace: "pre-wrap" }}>
+            {medicalHistory.past_procedures}
+          </p>
+        </Card>
+      )}
+
+      {/* Skin Type */}
+      {medicalHistory?.skin_type && (
+        <Card title="Skin Type">
+          <p style={{ fontSize: 12, color: "#5C5447", fontFamily: "Georgia, serif", lineHeight: 1.65, margin: 0 }}>
+            {medicalHistory.skin_type}
+          </p>
+        </Card>
+      )}
+
       {/* Patient notes from intake */}
       {(medicalHistory?.patient_notes || patient.notes) && (
         <Card title="Patient Notes">
@@ -488,6 +526,11 @@ function TimelineColumn({ patient, medicalHistory, notes, encounters }: {
           </div>
         </div>
       )}
+
+      {/* ── Before & After Progress ── */}
+      <div style={{ marginTop: 28, paddingTop: 20, borderTop: "1px solid rgba(197,160,89,0.12)" }}>
+        <BeforeAfterProgress patientId={patient.id} clinicId={patient.clinic_id} />
+      </div>
     </div>
   );
 }
@@ -638,7 +681,7 @@ function NoteEntryBody({ note }: { note: PatientNote }) {
 const fmtINR = (n: number) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
 
-function BusinessColumn({ treatments, packages, patientId }: { treatments: Treatment[]; packages: PatientPackage[]; patientId: string }) {
+function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { treatments: Treatment[]; packages: PatientPackage[]; patientId: string; onAddTreatment: () => void }) {
   const proposed   = treatments.filter(t => t.status === "proposed");
   const totalValue = proposed.reduce((s, t) => s + (t.price ?? 0), 0);
   const [credits, setCredits] = useState<ServiceCredit[]>([]);
@@ -750,7 +793,15 @@ function BusinessColumn({ treatments, packages, patientId }: { treatments: Treat
       {/* Proposed Treatments */}
       <Card title="Proposed Treatments">
         {proposed.length === 0 ? (
-          <EmptyMini label="No treatments proposed" />
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center" }}>
+            <EmptyMini label="No treatments proposed" />
+            <button
+              onClick={onAddTreatment}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px dashed rgba(5,150,105,0.4)", background: "rgba(5,150,105,0.05)", cursor: "pointer", fontSize: 12, color: "#059669", fontFamily: "Georgia, serif" }}
+            >
+              <Plus size={12} /> Add First Treatment
+            </button>
+          </div>
         ) : (
           <>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -780,7 +831,7 @@ function BusinessColumn({ treatments, packages, patientId }: { treatments: Treat
                     )}
                     {t.price != null && (
                       <p style={{ fontSize: 14, fontWeight: 700, color: isHighValue ? "#C5A059" : "#1C1917", marginTop: 5, fontFamily: "Georgia, serif" }}>
-                        ${t.price.toLocaleString("en-US", { minimumFractionDigits: 0 })}
+                        ₹{t.price.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
                       </p>
                     )}
                   </div>
@@ -788,13 +839,21 @@ function BusinessColumn({ treatments, packages, patientId }: { treatments: Treat
               })}
             </div>
 
-            {/* Total */}
+            {/* Total + Add */}
             {totalValue > 0 && (
               <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: "linear-gradient(135deg, rgba(197,160,89,0.1), rgba(168,133,58,0.06))", border: "1px solid rgba(197,160,89,0.25)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 11, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em" }}>Proposed Total</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em" }}>Proposed Total</span>
+                    <button
+                      onClick={onAddTreatment}
+                      style={{ display: "flex", alignItems: "center", gap: 3, padding: "2px 8px", borderRadius: 6, border: "1px solid rgba(5,150,105,0.3)", background: "rgba(5,150,105,0.08)", cursor: "pointer", fontSize: 10, color: "#059669", fontWeight: 600 }}
+                    >
+                      <Plus size={9} /> Add
+                    </button>
+                  </div>
                   <span style={{ fontSize: 16, fontWeight: 700, color: "#C5A059", fontFamily: "Georgia, serif" }}>
-                    ${totalValue.toLocaleString("en-US", { minimumFractionDigits: 0 })}
+                    ₹{totalValue.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
                   </span>
                 </div>
               </div>
@@ -824,10 +883,11 @@ function BusinessColumn({ treatments, packages, patientId }: { treatments: Treat
 
 // ─────────────────────────────────────── FAB ─────────────────────────────────
 
-function FAB({ open, onToggle, onAction }: { open: boolean; onToggle: () => void; onAction: (a: "soap" | "note") => void }) {
+function FAB({ open, onToggle, onAction }: { open: boolean; onToggle: () => void; onAction: (a: "soap" | "note" | "treatment") => void }) {
   const actions = [
-    { key: "note" as const, label: "Quick Note",    icon: <FileText size={15} />, bg: "#4B5563" },
-    { key: "soap" as const, label: "New Session",   icon: <Clipboard size={15} />, bg: "linear-gradient(135deg, #C5A059, #A8853A)" },
+    { key: "note"      as const, label: "Quick Note",      icon: <FileText size={15} />,  bg: "#4B5563"                                     },
+    { key: "treatment" as const, label: "Add Treatment",   icon: <DollarSign size={15} />, bg: "#059669"                                     },
+    { key: "soap"      as const, label: "New Session",     icon: <Clipboard size={15} />, bg: "linear-gradient(135deg, #C5A059, #A8853A)"    },
   ];
 
   return (
@@ -1249,6 +1309,135 @@ function NoteDrawer({ patientId, onClose }: { patientId: string; onClose: () => 
           <button onClick={onClose} style={{ padding: "10px 18px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", fontSize: 13, color: "#9C9584" }}>Cancel</button>
           <button onClick={handleSave} disabled={saving || !content.trim()} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: "none", background: saving || !content.trim() ? "rgba(197,160,89,0.3)" : "linear-gradient(135deg, #C5A059, #A8853A)", cursor: saving || !content.trim() ? "not-allowed" : "pointer", color: "white", fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif" }}>
             {saving ? "Saving…" : "Add Note"}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────── Add Treatment Drawer ────────────────
+
+function TreatmentDrawer({ patientId, onClose }: { patientId: string; onClose: () => void }) {
+  const [name,       setName]       = useState("");
+  const [price,      setPrice]      = useState("");
+  const [counselled, setCounselled] = useState("");
+  const [notes,      setNotes]      = useState("");
+  const [saving,     setSaving]     = useState(false);
+
+  async function handleSave() {
+    if (!name.trim()) { toast.error("Treatment name is required."); return; }
+    setSaving(true);
+    const res = await fetch(`/api/patients/${patientId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "add_treatment", treatment_name: name.trim(), price: price || null, counselled_by: counselled.trim() || null, notes: notes.trim() || null }),
+    });
+    const data = await res.json();
+    setSaving(false);
+    if (data.success) { toast.success("Treatment added."); onClose(); }
+    else toast.error(data.error ?? "Failed to add treatment.");
+  }
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 40, background: "rgba(28,25,23,0.45)", backdropFilter: "blur(2px)" }} />
+      <div style={{ position: "fixed", right: 0, top: 0, bottom: 0, zIndex: 50, width: 460, display: "flex", flexDirection: "column", background: "#F9F7F2", boxShadow: "-8px 0 40px rgba(28,25,23,0.18)", animation: "slideInRight 0.25s ease" }}>
+
+        {/* Header */}
+        <div style={{ padding: "20px 22px", background: "white", borderBottom: "1px solid rgba(197,160,89,0.18)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(5,150,105,0.1)", border: "1px solid rgba(5,150,105,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <DollarSign size={16} style={{ color: "#059669" }} />
+            </div>
+            <div>
+              <p style={{ fontSize: 14, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Add Proposed Treatment</p>
+              <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>Counselling record · proposed status</p>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <X size={14} style={{ color: "#9C9584" }} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, padding: "20px 22px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Treatment Name */}
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 6 }}>
+              Treatment Name *
+            </label>
+            <input
+              autoFocus
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="e.g. Botox — Forehead, Filler — Nasolabial, Laser Toning…"
+              style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", boxSizing: "border-box" }}
+              onFocus={e => (e.target.style.borderColor = "rgba(5,150,105,0.5)")}
+              onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
+            />
+          </div>
+
+          {/* Price */}
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 6 }}>
+              Quoted Price (₹)
+            </label>
+            <div style={{ position: "relative" }}>
+              <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: "#9C9584", fontWeight: 600 }}>₹</span>
+              <input
+                type="number"
+                value={price}
+                onChange={e => setPrice(e.target.value)}
+                placeholder="0"
+                style={{ width: "100%", padding: "10px 14px 10px 26px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", boxSizing: "border-box" }}
+                onFocus={e => (e.target.style.borderColor = "rgba(5,150,105,0.5)")}
+                onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
+              />
+            </div>
+          </div>
+
+          {/* Counselled By */}
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 6 }}>
+              Counselled By
+            </label>
+            <input
+              value={counselled}
+              onChange={e => setCounselled(e.target.value)}
+              placeholder="Staff name who counselled the patient"
+              style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", boxSizing: "border-box" }}
+              onFocus={e => (e.target.style.borderColor = "rgba(5,150,105,0.5)")}
+              onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
+            />
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 6 }}>
+              Notes
+            </label>
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Additional details, patient concerns, recommendations…"
+              rows={4}
+              style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", resize: "vertical", boxSizing: "border-box" }}
+              onFocus={e => (e.target.style.borderColor = "rgba(5,150,105,0.5)")}
+              onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
+            />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "14px 22px", borderTop: "1px solid rgba(197,160,89,0.18)", background: "white", display: "flex", gap: 10, flexShrink: 0 }}>
+          <button onClick={onClose} style={{ padding: "10px 18px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", fontSize: 13, color: "#9C9584" }}>Cancel</button>
+          <button
+            onClick={handleSave}
+            disabled={saving || !name.trim()}
+            style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: "none", background: saving || !name.trim() ? "rgba(5,150,105,0.3)" : "linear-gradient(135deg, #059669, #047857)", cursor: saving || !name.trim() ? "not-allowed" : "pointer", color: "white", fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+          >
+            {saving ? <><Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> Saving…</> : <><CheckCircle2 size={14} /> Add Treatment</>}
           </button>
         </div>
       </div>

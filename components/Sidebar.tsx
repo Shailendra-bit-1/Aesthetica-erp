@@ -39,7 +39,7 @@ const SIDEBAR_ITEMS = [
   { label: "Overview",            href: "/",                   icon: LayoutDashboard,      permission: null,              module: null              },
   { label: "Patient Records",     href: "/patients",            icon: Users,                permission: "patients.view",   module: "patients"        },
   { label: "Smart Scheduler",     href: "/scheduler",           icon: CalendarDays,         permission: "scheduler.view",  module: "scheduler"       },
-  { label: "Photo Comparison",    href: "/photos",              icon: SplitSquareHorizontal,permission: "photos.view",     module: "photos"          },
+  { label: "Before & After",       href: "/photos",              icon: SplitSquareHorizontal,permission: "photos.view",     module: "photos"          },
   { label: "Inventory",           href: "/inventory",           icon: Package,              permission: "inventory.view",  module: "inventory"       },
   { label: "Services & Packages", href: "/settings/services",   icon: Scissors,             permission: "services.view",   module: "services"        },
   { label: "Billing",             href: "/billing",             icon: Receipt,              permission: "billing.view",    module: "billing"         },

@@ -290,7 +290,9 @@ export default function InventoryPage() {
   }, [activeClinicId, movDateFrom, movDateTo]);
 
   useEffect(() => {
-    if (!profileLoading && activeClinicId) fetchAll();
+    if (profileLoading) return;
+    if (!activeClinicId) { setLoading(false); return; }
+    fetchAll();
   }, [fetchAll, profileLoading, activeClinicId]);
 
   useEffect(() => {
@@ -369,40 +371,50 @@ export default function InventoryPage() {
               Retail products · Consumables · Equipment
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={exportCSV}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium"
-              style={{ background: "rgba(197,160,89,0.08)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.2)" }}>
-              <Download size={12} /> Export
-            </button>
-            <button onClick={() => openDraw("import")}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium"
-              style={{ background: "rgba(42,74,138,0.08)", color: "#2A4A8A", border: "1px solid rgba(42,74,138,0.2)" }}>
-              <Upload size={12} /> Import
-            </button>
-            <button onClick={() => openDraw("supplier")}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium"
-              style={{ background: "rgba(197,160,89,0.08)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.2)" }}>
-              <Building2 size={12} /> Add Supplier
-            </button>
-            <button onClick={() => openDraw("receive")}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium"
-              style={{ background: "rgba(42,74,138,0.1)", color: "#2A4A8A", border: "1px solid rgba(42,74,138,0.2)" }}>
-              <Truck size={12} /> Receive Stock
-            </button>
-            <button onClick={() => openDraw("product")}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold"
-              style={{ background: "var(--gold)", color: "#fff" }}>
-              <Plus size={16} /> Add Product
-            </button>
-          </div>
+          {isAdmin && (
+            <div className="flex items-center gap-2">
+              <button onClick={exportCSV}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium"
+                style={{ background: "rgba(197,160,89,0.08)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.2)" }}>
+                <Download size={12} /> Export
+              </button>
+              <button onClick={() => openDraw("import")}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium"
+                style={{ background: "rgba(42,74,138,0.08)", color: "#2A4A8A", border: "1px solid rgba(42,74,138,0.2)" }}>
+                <Upload size={12} /> Import
+              </button>
+              <button onClick={() => openDraw("supplier")}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium"
+                style={{ background: "rgba(197,160,89,0.08)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.2)" }}>
+                <Building2 size={12} /> Add Supplier
+              </button>
+              <button onClick={() => openDraw("receive")}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium"
+                style={{ background: "rgba(42,74,138,0.1)", color: "#2A4A8A", border: "1px solid rgba(42,74,138,0.2)" }}>
+                <Truck size={12} /> Receive Stock
+              </button>
+              <button onClick={() => openDraw("product")}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold"
+                style={{ background: "var(--gold)", color: "#fff" }}>
+                <Plus size={16} /> Add Product
+              </button>
+            </div>
+          )}
         </div>
 
+        {/* No-clinic empty state (superadmin without clinic selected) */}
+        {!profileLoading && !activeClinicId && (
+          <div className="rounded-2xl p-16 text-center" style={{ background: "var(--card-bg)", border: "1px dashed rgba(197,160,89,0.3)" }}>
+            <Building2 size={36} className="mx-auto mb-3" style={{ color: "rgba(197,160,89,0.4)" }} />
+            <p className="text-sm font-medium" style={{ color: "var(--text-muted)" }}>Select a clinic from the top bar to view inventory</p>
+          </div>
+        )}
+
         {/* Stats row */}
-        <StatsRow stats={stats} loading={loading} />
+        {activeClinicId && <StatsRow stats={stats} loading={loading} />}
 
         {/* Tab panel */}
-        <div className="rounded-2xl overflow-hidden" style={{ background: "var(--card-bg)", border: "1px solid var(--border)" }}>
+        {activeClinicId && <div className="rounded-2xl overflow-hidden" style={{ background: "var(--card-bg)", border: "1px solid var(--border)" }}>
           {/* Tab bar */}
           <div className="flex items-center gap-0.5 px-4 pt-4 border-b overflow-x-auto" style={{ borderColor: "var(--border)" }}>
             {TABS.map(t => (
@@ -463,7 +475,7 @@ export default function InventoryPage() {
               onEdit={s => openDraw("supplier", null, s)}
             />
           )}
-        </div>
+        </div>}
       </div>
 
       {/* ── Drawers ── */}

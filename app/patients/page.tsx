@@ -1,16 +1,28 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import { logAction } from "@/lib/audit";
-import { Users, Search, ChevronRight, Sparkles, Phone, Mail, Calendar, Eye, EyeOff } from "lucide-react";
+import {
+  Users, Search, ChevronRight, Sparkles, Phone, Mail, Calendar, Eye, EyeOff,
+  AlertTriangle, Stethoscope, Building2, UserPlus,
+} from "lucide-react";
 import TopBar from "@/components/TopBar";
+import NewPatientModal from "@/components/NewPatientModal";
 
 interface Patient {
-  id: string; full_name: string; email: string | null; phone: string;
-  primary_concern: string[] | null; created_at: string;
+  id: string;
+  full_name: string;
+  email: string | null;
+  phone: string;
+  primary_concern: string[] | null;
+  created_at: string;
+  date_of_birth: string | null;
+  allergies: string[] | null;
+  fitzpatrick_type: number | null;
+  preferred_provider: string | null;
 }
 
 // ── PHI masking helpers ───────────────────────────────────────────────────────
@@ -18,8 +30,7 @@ interface Patient {
 function maskPhone(phone: string): string {
   const digits = phone.replace(/\D/g, "");
   if (digits.length < 4) return "••••••••";
-  const last2 = digits.slice(-2);
-  return `+•• ••••••${last2}`;
+  return `+•• ••••••${digits.slice(-2)}`;
 }
 
 function maskEmail(email: string | null): string {
@@ -29,76 +40,107 @@ function maskEmail(email: string | null): string {
   return `${local[0]}•••@${domain}`;
 }
 
+function calcAge(dob: string | null): string {
+  if (!dob) return "";
+  const d = new Date(dob);
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  if (now.getMonth() - d.getMonth() < 0 || (now.getMonth() === d.getMonth() && now.getDate() < d.getDate())) age--;
+  return `${age}y`;
+}
+
+const FST_LABEL = ["", "I", "II", "III", "IV", "V", "VI"];
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function PatientsPage() {
   const router = useRouter();
   const { profile, activeClinicId, loading: profileLoading } = useClinic();
+  const isAdmin = ["superadmin", "chain_admin", "clinic_admin"].includes(profile?.role ?? "");
 
   const [patients,    setPatients]    = useState<Patient[]>([]);
   const [query,       setQuery]       = useState("");
   const [loading,     setLoading]     = useState(true);
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
+  const [filterTab,   setFilterTab]   = useState<"all" | "allergy">("all");
+  const [modalOpen,   setModalOpen]   = useState(false);
 
-  // Fetch patients scoped by clinic
+  // Fetch patients
   useEffect(() => {
-    if (profileLoading) return; // wait for profile
+    if (profileLoading) return;
+    if (!activeClinicId) { setLoading(false); return; }
     (async () => {
       setLoading(true);
-      let q = supabase
+      const { data } = await supabase
         .from("patients")
-        .select("id, full_name, email, phone, primary_concern, created_at")
+        .select(`
+          id, full_name, email, phone, primary_concern, created_at,
+          date_of_birth, allergies, fitzpatrick_type,
+          provider:profiles!preferred_provider_id(full_name)
+        `)
+        .eq("clinic_id", activeClinicId)
         .order("created_at", { ascending: false })
-        .limit(200);
+        .limit(300);
 
-      // Non-superadmins see only their clinic's patients
-      // Superadmins see all clinics, or a single clinic when switcher is active
-      if (profile?.role !== "superadmin" && activeClinicId) {
-        q = q.eq("clinic_id", activeClinicId);
-      } else if (profile?.role === "superadmin" && activeClinicId) {
-        q = q.eq("clinic_id", activeClinicId);
-      }
-
-      const { data } = await q;
-      setPatients(data ?? []);
+      setPatients(
+        (data ?? []).map((p: Record<string, unknown>) => ({
+          ...(p as Omit<Patient, "preferred_provider">),
+          preferred_provider: (p.provider as { full_name: string } | null)?.full_name ?? null,
+        }))
+      );
       setLoading(false);
     })();
   }, [profile, activeClinicId, profileLoading]);
 
   function toggleReveal(id: string, name: string, e: React.MouseEvent) {
-    e.stopPropagation(); // don't navigate to EMR
+    e.stopPropagation();
     const alreadyRevealed = revealedIds.has(id);
     setRevealedIds(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
-    // HIPAA Audit: log every contact-detail reveal
     if (!alreadyRevealed) {
-      logAction({
-        action:     "reveal_contact_details",
-        targetId:   id,
-        targetName: name,
-        metadata:   { page: "patient_list" },
-      });
+      logAction({ action: "reveal_contact_details", targetId: id, targetName: name, metadata: { page: "patient_list" } });
     }
   }
 
-  const filtered = patients.filter(p =>
-    p.full_name.toLowerCase().includes(query.toLowerCase()) ||
-    p.email?.toLowerCase().includes(query.toLowerCase()) ||
-    p.phone.includes(query)
-  );
+  // Stats
+  const firstOfMonth = useMemo(() => {
+    const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0);
+    return d.toISOString();
+  }, []);
+
+  const stats = useMemo(() => ({
+    total:     patients.length,
+    newMonth:  patients.filter(p => p.created_at >= firstOfMonth).length,
+    allergies: patients.filter(p => (p.allergies?.filter(Boolean).length ?? 0) > 0).length,
+  }), [patients, firstOfMonth]);
+
+  // Filter + search
+  const filtered = useMemo(() => patients.filter(p => {
+    if (filterTab === "allergy" && !(p.allergies?.filter(Boolean).length)) return false;
+    if (!query) return true;
+    const q = query.toLowerCase();
+    return (
+      p.full_name.toLowerCase().includes(q) ||
+      (p.email ?? "").toLowerCase().includes(q) ||
+      p.phone.includes(q)
+    );
+  }), [patients, query, filterTab]);
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
       <TopBar />
-      <div className="px-8 py-6">
+      <div className="px-6 py-6 max-w-[1440px] mx-auto space-y-5">
 
-        {/* Hero */}
-        <div className="flex items-center justify-between mb-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "rgba(197,160,89,0.12)", border: "1px solid rgba(197,160,89,0.25)" }}>
+            <div
+              className="w-10 h-10 rounded-xl flex items-center justify-center"
+              style={{ background: "rgba(197,160,89,0.12)", border: "1px solid rgba(197,160,89,0.25)" }}
+            >
               <Users size={18} style={{ color: "var(--gold)" }} />
             </div>
             <div>
@@ -116,11 +158,13 @@ export default function PatientsPage() {
             </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div className="flex items-center gap-3">
             {/* HIPAA notice */}
             <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, background: "rgba(197,160,89,0.06)", border: "1px solid rgba(197,160,89,0.18)" }}>
               <EyeOff size={11} style={{ color: "#9C9584" }} />
-              <span style={{ fontSize: 10, color: "#9C9584", fontFamily: "Georgia, serif" }}>Contact details masked · Click <strong style={{ color: "#C5A059" }}>View</strong> to reveal</span>
+              <span style={{ fontSize: 10, color: "#9C9584", fontFamily: "Georgia, serif" }}>
+                Contact details masked · Click <strong style={{ color: "#C5A059" }}>View</strong> to reveal
+              </span>
             </div>
 
             {/* Search */}
@@ -132,138 +176,277 @@ export default function PatientsPage() {
                 value={query}
                 onChange={e => setQuery(e.target.value)}
                 className="pl-9 pr-4 py-2.5 rounded-xl text-sm outline-none"
-                style={{ background: "white", border: "1px solid rgba(197,160,89,0.25)", color: "#1C1917", width: 280, fontFamily: "Georgia, serif" }}
+                style={{ background: "white", border: "1px solid rgba(197,160,89,0.25)", color: "#1C1917", width: 260, fontFamily: "Georgia, serif" }}
               />
             </div>
+
+            {/* New Patient */}
+            {isAdmin && (
+              <button
+                onClick={() => setModalOpen(true)}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold"
+                style={{ background: "var(--gold)", color: "#fff" }}
+              >
+                <UserPlus size={15} /> New Patient
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Table */}
-        <div className="rounded-2xl overflow-hidden" style={{ background: "white", border: "1px solid rgba(197,160,89,0.15)", boxShadow: "0 1px 4px rgba(28,25,23,0.05)" }}>
-          <table className="w-full">
-            <thead>
-              <tr style={{ background: "rgba(249,247,242,0.8)" }}>
-                {["Patient", "Contact", "Primary Concern", "Registered", ""].map(h => (
-                  <th key={h} className="px-6 py-3 text-left text-xs uppercase tracking-widest font-medium" style={{ color: "#9C9584" }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y" style={{ borderColor: "rgba(197,160,89,0.07)" }}>
-              {loading ? (
-                Array.from({ length: 6 }).map((_, i) => (
-                  <tr key={i}>
-                    {[140, 100, 90, 80, 20].map((w, j) => (
-                      <td key={j} className="px-6 py-4">
-                        <div className="h-4 rounded animate-pulse" style={{ background: "rgba(197,160,89,0.07)", width: w }} />
-                      </td>
+        {/* No-clinic empty state */}
+        {!profileLoading && !activeClinicId && (
+          <div
+            className="rounded-2xl p-16 text-center"
+            style={{ background: "white", border: "1px dashed rgba(197,160,89,0.3)" }}
+          >
+            <Building2 size={36} className="mx-auto mb-3" style={{ color: "rgba(197,160,89,0.4)" }} />
+            <p className="text-sm font-medium" style={{ color: "#9C9584" }}>
+              Select a clinic from the top bar to view patients
+            </p>
+          </div>
+        )}
+
+        {activeClinicId && (
+          <>
+            {/* Stats row */}
+            <div className="grid grid-cols-3 gap-4">
+              {[
+                { label: "Total Patients", value: stats.total,     Icon: Users,          color: "#C5A059", bg: "rgba(197,160,89,0.08)" },
+                { label: "New This Month", value: stats.newMonth,  Icon: UserPlus,       color: "#4A8A4A", bg: "rgba(74,138,74,0.08)"  },
+                { label: "Allergy Flags",  value: stats.allergies, Icon: AlertTriangle,  color: "#D97706", bg: "#FFFBEB"               },
+              ].map(c => (
+                <div key={c.label} className="rounded-2xl p-5" style={{ background: "white", border: "1px solid rgba(197,160,89,0.15)" }}>
+                  <div className="flex items-start justify-between mb-3">
+                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "#9C9584" }}>{c.label}</p>
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: c.bg }}>
+                      <c.Icon size={16} style={{ color: c.color }} />
+                    </div>
+                  </div>
+                  {loading ? (
+                    <div className="h-7 w-12 rounded animate-pulse" style={{ background: "rgba(197,160,89,0.08)" }} />
+                  ) : (
+                    <p className="text-2xl font-bold" style={{ color: "#1C1917", fontFamily: "Georgia, serif" }}>{c.value}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Filter tabs */}
+            <div className="flex items-center gap-2">
+              {([
+                { key: "all",     label: `All (${patients.length})`               },
+                { key: "allergy", label: `⚠ Allergy Flags (${stats.allergies})`  },
+              ] as const).map(t => (
+                <button
+                  key={t.key}
+                  onClick={() => setFilterTab(t.key)}
+                  className="px-4 py-1.5 rounded-full text-xs font-medium transition-all"
+                  style={{
+                    background: filterTab === t.key ? "rgba(197,160,89,0.15)" : "white",
+                    border:     `1px solid ${filterTab === t.key ? "rgba(197,160,89,0.4)" : "rgba(197,160,89,0.2)"}`,
+                    color:      filterTab === t.key ? "#8B6914" : "#9C9584",
+                  }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Table */}
+            <div
+              className="rounded-2xl overflow-hidden"
+              style={{ background: "white", border: "1px solid rgba(197,160,89,0.15)", boxShadow: "0 1px 4px rgba(28,25,23,0.05)" }}
+            >
+              <table className="w-full">
+                <thead>
+                  <tr style={{ background: "rgba(249,247,242,0.8)" }}>
+                    {["Patient", "Contact", "Primary Concern", "Provider", "Registered", ""].map(h => (
+                      <th
+                        key={h}
+                        className="px-5 py-3 text-left text-xs uppercase tracking-widest font-medium"
+                        style={{ color: "#9C9584" }}
+                      >
+                        {h}
+                      </th>
                     ))}
                   </tr>
-                ))
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-6 py-16 text-center">
-                    <Sparkles size={28} style={{ color: "rgba(197,160,89,0.3)", margin: "0 auto 12px" }} />
-                    <p style={{ color: "#9C9584", fontFamily: "Georgia, serif" }}>
-                      {query ? "No patients match your search." : "No patients on record yet."}
-                    </p>
-                  </td>
-                </tr>
-              ) : (
-                filtered.map(p => {
-                  const revealed = revealedIds.has(p.id);
-                  return (
-                    <tr
-                      key={p.id}
-                      className="group hover:bg-amber-50/30 transition-colors cursor-pointer"
-                      onClick={() => router.push(`/patients/${p.id}`)}
-                    >
-                      {/* Name — always visible */}
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div
-                            className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-                            style={{ background: "rgba(197,160,89,0.15)", color: "var(--gold)" }}
-                          >
-                            {p.full_name.split(" ").map(n => n[0]).slice(0, 2).join("")}
-                          </div>
-                          <span className="text-sm font-medium" style={{ color: "#1C1917", fontFamily: "Georgia, serif" }}>
-                            {p.full_name}
-                          </span>
-                        </div>
-                      </td>
-
-                      {/* Contact — MASKED unless revealed */}
-                      <td className="px-6 py-4">
-                        <div className="flex flex-col gap-0.5">
-                          <span className="flex items-center gap-1.5 text-xs" style={{ color: revealed ? "#6B6358" : "#B8AE9C", fontFamily: revealed ? "Georgia, serif" : "monospace" }}>
-                            <Phone size={10} />
-                            {revealed ? p.phone : maskPhone(p.phone)}
-                          </span>
-                          {(revealed ? p.email : true) && (
-                            <span className="flex items-center gap-1.5 text-xs" style={{ color: revealed ? "#9C9584" : "#B8AE9C", fontFamily: revealed ? "Georgia, serif" : "monospace" }}>
-                              <Mail size={10} />
-                              {revealed ? (p.email ?? "—") : maskEmail(p.email)}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Concern */}
-                      <td className="px-6 py-4">
-                        {p.primary_concern?.[0] ? (
-                          <span
-                            className="text-xs px-2.5 py-1 rounded-full"
-                            style={{ background: "rgba(197,160,89,0.08)", color: "#7A5C14", border: "1px solid rgba(197,160,89,0.2)" }}
-                          >
-                            {p.primary_concern[0]}
-                          </span>
-                        ) : (
-                          <span className="text-xs" style={{ color: "#B8AE9C" }}>—</span>
-                        )}
-                      </td>
-
-                      {/* Date */}
-                      <td className="px-6 py-4">
-                        <span className="flex items-center gap-1.5 text-xs" style={{ color: "#9C9584" }}>
-                          <Calendar size={10} />
-                          {new Date(p.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
-                        </span>
-                      </td>
-
-                      {/* View / Hide + Arrow */}
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={e => toggleReveal(p.id, p.full_name, e)}
-                            title={revealed ? "Hide contact details" : "View contact details"}
-                            style={{
-                              display: "flex", alignItems: "center", gap: 4,
-                              padding: "3px 9px", borderRadius: 7,
-                              border: `1px solid ${revealed ? "rgba(197,160,89,0.45)" : "rgba(197,160,89,0.2)"}`,
-                              background: revealed ? "rgba(197,160,89,0.1)" : "transparent",
-                              cursor: "pointer", fontSize: 10, fontWeight: 600,
-                              color: revealed ? "#C5A059" : "#9C9584",
-                              transition: "all 0.15s",
-                            }}
-                          >
-                            {revealed
-                              ? <><EyeOff size={9} /> Hide</>
-                              : <><Eye size={9} /> View</>
-                            }
-                          </button>
-                          <ChevronRight size={14} className="opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: "var(--gold)" }} />
-                        </div>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    Array.from({ length: 6 }).map((_, i) => (
+                      <tr key={i} style={{ borderTop: "1px solid rgba(197,160,89,0.07)" }}>
+                        {[140, 110, 80, 90, 80, 20].map((w, j) => (
+                          <td key={j} className="px-5 py-4">
+                            <div className="h-4 rounded animate-pulse" style={{ background: "rgba(197,160,89,0.07)", width: w }} />
+                          </td>
+                        ))}
+                      </tr>
+                    ))
+                  ) : filtered.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-16 text-center">
+                        <Sparkles size={28} style={{ color: "rgba(197,160,89,0.3)", margin: "0 auto 12px" }} />
+                        <p style={{ color: "#9C9584", fontFamily: "Georgia, serif" }}>
+                          {query
+                            ? "No patients match your search."
+                            : filterTab === "allergy"
+                            ? "No patients with allergy flags."
+                            : "No patients on record yet."}
+                        </p>
                       </td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                  ) : (
+                    filtered.map((p, idx) => {
+                      const revealed    = revealedIds.has(p.id);
+                      const hasAllergy  = (p.allergies?.filter(Boolean).length ?? 0) > 0;
+                      const age         = calcAge(p.date_of_birth);
+                      const fst         = p.fitzpatrick_type ? FST_LABEL[p.fitzpatrick_type] : null;
+                      return (
+                        <tr
+                          key={p.id}
+                          className="group hover:bg-amber-50/30 transition-colors cursor-pointer"
+                          style={{ borderTop: idx > 0 ? "1px solid rgba(197,160,89,0.07)" : "none" }}
+                          onClick={() => router.push(`/patients/${p.id}`)}
+                        >
+                          {/* Patient */}
+                          <td className="px-5 py-3.5">
+                            <div className="flex items-center gap-3">
+                              <div className="relative flex-shrink-0">
+                                <div
+                                  className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold"
+                                  style={{ background: "rgba(197,160,89,0.15)", color: "var(--gold)" }}
+                                >
+                                  {p.full_name.split(" ").map(n => n[0]).slice(0, 2).join("")}
+                                </div>
+                                {hasAllergy && (
+                                  <div
+                                    className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full flex items-center justify-center"
+                                    style={{ background: "#E85555", border: "2px solid white" }}
+                                  >
+                                    <span style={{ fontSize: 7, color: "white", fontWeight: 900 }}>!</span>
+                                  </div>
+                                )}
+                              </div>
+                              <div>
+                                <span className="text-sm font-medium block" style={{ color: "#1C1917", fontFamily: "Georgia, serif" }}>
+                                  {p.full_name}
+                                </span>
+                                <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                  {age && (
+                                    <span className="text-xs" style={{ color: "#9C9584" }}>{age}</span>
+                                  )}
+                                  {fst && (
+                                    <span
+                                      className="text-xs px-1.5 py-px rounded"
+                                      style={{ background: "rgba(197,160,89,0.08)", color: "#9C9584", fontSize: 10 }}
+                                    >
+                                      FST {fst}
+                                    </span>
+                                  )}
+                                  {hasAllergy && (
+                                    <span className="flex items-center gap-0.5" style={{ fontSize: 10, color: "#B43C3C" }}>
+                                      <AlertTriangle size={9} />
+                                      {p.allergies!.filter(Boolean).slice(0, 2).join(", ")}
+                                      {(p.allergies!.filter(Boolean).length ?? 0) > 2 && ` +${p.allergies!.filter(Boolean).length - 2}`}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Contact */}
+                          <td className="px-5 py-3.5">
+                            <div className="flex flex-col gap-0.5">
+                              <span
+                                className="flex items-center gap-1.5 text-xs"
+                                style={{ color: revealed ? "#6B6358" : "#B8AE9C", fontFamily: revealed ? "Georgia, serif" : "monospace" }}
+                              >
+                                <Phone size={10} />
+                                {revealed ? p.phone : maskPhone(p.phone)}
+                              </span>
+                              <span
+                                className="flex items-center gap-1.5 text-xs"
+                                style={{ color: revealed ? "#9C9584" : "#B8AE9C", fontFamily: revealed ? "Georgia, serif" : "monospace" }}
+                              >
+                                <Mail size={10} />
+                                {revealed ? (p.email ?? "—") : maskEmail(p.email)}
+                              </span>
+                            </div>
+                          </td>
+
+                          {/* Concern */}
+                          <td className="px-5 py-3.5">
+                            {p.primary_concern?.[0] ? (
+                              <span
+                                className="text-xs px-2.5 py-1 rounded-full"
+                                style={{ background: "rgba(197,160,89,0.08)", color: "#7A5C14", border: "1px solid rgba(197,160,89,0.2)" }}
+                              >
+                                {p.primary_concern[0]}
+                              </span>
+                            ) : (
+                              <span className="text-xs" style={{ color: "#B8AE9C" }}>—</span>
+                            )}
+                          </td>
+
+                          {/* Provider */}
+                          <td className="px-5 py-3.5">
+                            {p.preferred_provider ? (
+                              <span className="flex items-center gap-1.5 text-xs" style={{ color: "#6B6358" }}>
+                                <Stethoscope size={10} style={{ color: "#C5A059" }} />
+                                {p.preferred_provider}
+                              </span>
+                            ) : (
+                              <span className="text-xs" style={{ color: "#B8AE9C" }}>—</span>
+                            )}
+                          </td>
+
+                          {/* Registered */}
+                          <td className="px-5 py-3.5">
+                            <span className="flex items-center gap-1.5 text-xs" style={{ color: "#9C9584" }}>
+                              <Calendar size={10} />
+                              {new Date(p.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                            </span>
+                          </td>
+
+                          {/* Actions */}
+                          <td className="px-5 py-3.5">
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={e => toggleReveal(p.id, p.full_name, e)}
+                                title={revealed ? "Hide contact details" : "View contact details"}
+                                style={{
+                                  display: "flex", alignItems: "center", gap: 4,
+                                  padding: "3px 9px", borderRadius: 7,
+                                  border: `1px solid ${revealed ? "rgba(197,160,89,0.45)" : "rgba(197,160,89,0.2)"}`,
+                                  background: revealed ? "rgba(197,160,89,0.1)" : "transparent",
+                                  cursor: "pointer", fontSize: 10, fontWeight: 600,
+                                  color: revealed ? "#C5A059" : "#9C9584",
+                                  transition: "all 0.15s",
+                                }}
+                              >
+                                {revealed ? <><EyeOff size={9} /> Hide</> : <><Eye size={9} /> View</>}
+                              </button>
+                              <ChevronRight
+                                size={14}
+                                className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                style={{ color: "var(--gold)" }}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
+
+      {/* New Patient Modal */}
+      {modalOpen && <NewPatientModal isOpen={modalOpen} onClose={() => { setModalOpen(false); }} />}
     </div>
   );
 }
