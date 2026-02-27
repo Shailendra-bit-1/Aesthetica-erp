@@ -12,27 +12,20 @@
  * ──────────────────────────────────────────────────────────────────────────────
  */
 
-function require(key: string): string {
-  const v = process.env[key];
-  if (!v) throw new Error(`[env] Missing required environment variable: ${key}`);
-  return v;
-}
-
-function optional(key: string, fallback = ""): string {
-  return process.env[key] ?? fallback;
-}
-
 // ─── Supabase ─────────────────────────────────────────────────────────────────
+// IMPORTANT: Next.js / Turbopack only inlines NEXT_PUBLIC_* vars when accessed
+// via literal property access (process.env.NEXT_PUBLIC_FOO).
+// Dynamic lookups (process.env[key]) return undefined in the browser.
 
 export const supabaseEnv = {
   /** Public anon key — safe to expose in browser */
-  url:     require("NEXT_PUBLIC_SUPABASE_URL"),
-  anonKey: require("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
+  url:     process.env.NEXT_PUBLIC_SUPABASE_URL     ?? "",
+  anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
   /**
    * Service-role key — ONLY used in server-side API routes (route.ts).
    * Never import this in "use client" components.
    */
-  serviceRoleKey: optional("SUPABASE_SERVICE_ROLE_KEY"),
+  serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
 } as const;
 
 // ─── Application ──────────────────────────────────────────────────────────────
@@ -40,10 +33,10 @@ export const supabaseEnv = {
 export const appEnv = {
   name:        "Aesthetica Clinic Suite",
   version:     "1.0.0",
-  environment: (optional("NODE_ENV", "development") as "development" | "test" | "production"),
-  baseUrl:     optional("NEXT_PUBLIC_APP_URL", "http://localhost:3000"),
-  isProd:      optional("NODE_ENV") === "production",
-  isDev:       optional("NODE_ENV", "development") === "development",
+  environment: (process.env.NODE_ENV ?? "development") as "development" | "test" | "production",
+  baseUrl:     process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+  isProd:      process.env.NODE_ENV === "production",
+  isDev:       process.env.NODE_ENV !== "production",
 } as const;
 
 // ─── Feature Flags (compile-time defaults, overridden by DB at runtime) ───────
@@ -97,7 +90,7 @@ export const integrationsEnv = {
     apiKeyEnvVar: "WHATSAPP_BUSINESS_API_KEY",
   },
   smtp: {
-    fromAddress: optional("SMTP_FROM", "noreply@aesthetica.app"),
+    fromAddress: process.env.SMTP_FROM ?? "noreply@aesthetica.app",
   },
 } as const;
 
