@@ -135,7 +135,10 @@ export default function MembershipPage() {
   useEffect(() => {
     if (!clinicId) return;
     setLoading(true);
-    Promise.all([fetchPlans(), fetchMemberships(), fetchWalletTxns()]).finally(() => setLoading(false));
+    // Auto-expire memberships past their expires_at before fetching
+    supabase.rpc("update_expired_memberships").then(() => {
+      Promise.all([fetchPlans(), fetchMemberships(), fetchWalletTxns()]).finally(() => setLoading(false));
+    });
   }, [clinicId, fetchPlans, fetchMemberships, fetchWalletTxns]);
 
   const openNewPlan = () => {

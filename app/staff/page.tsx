@@ -91,6 +91,7 @@ export default function StaffHRPage() {
   const [leaveForm, setLeaveForm] = useState({
     staff_id: "", leave_type: "casual" as LeaveType, from_date: "", to_date: "", reason: "",
   });
+  const [clockModal, setClockModal] = useState<{ staffId: string; staffName: string; date: string; clock_in: string; clock_out: string } | null>(null);
 
   const clinicId = activeClinicId || profile?.clinic_id;
   const isAdmin = profile?.role === "clinic_admin" || profile?.role === "chain_admin" || profile?.role === "superadmin";
@@ -141,6 +142,28 @@ export default function StaffHRPage() {
     await supabase.from("staff_attendance").upsert({
       clinic_id: clinicId, staff_id: staffId, date: dateStr, status,
     }, { onConflict: "clinic_id,staff_id,date" });
+    fetchAttendance();
+  };
+
+  const openClockModal = (staffId: string, staffName: string, day: number) => {
+    const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const rec = attendance.find(a => a.staff_id === staffId && a.date === dateStr);
+    setClockModal({
+      staffId, staffName, date: dateStr,
+      clock_in:  rec?.clock_in  ? rec.clock_in.slice(11, 16)  : "",
+      clock_out: rec?.clock_out ? rec.clock_out.slice(11, 16) : "",
+    });
+  };
+
+  const saveClockTime = async () => {
+    if (!clockModal || !clinicId) return;
+    const { staffId, date, clock_in, clock_out } = clockModal;
+    await supabase.from("staff_attendance").upsert({
+      clinic_id: clinicId, staff_id: staffId, date,
+      ...(clock_in  ? { clock_in:  `${date}T${clock_in}:00`  } : {}),
+      ...(clock_out ? { clock_out: `${date}T${clock_out}:00` } : {}),
+    }, { onConflict: "clinic_id,staff_id,date" });
+    setClockModal(null);
     fetchAttendance();
   };
 
@@ -298,22 +321,32 @@ export default function StaffHRPage() {
                         if (isFuture) return <td key={d} className="py-2 text-center" />;
                         const cfg = rec ? ATTENDANCE_CONFIG[rec.status] : null;
                         return (
-                          <td key={d} className="py-2 text-center">
+                          <td key={d} className="py-2 text-center" style={{ position: "relative" }}>
                             {isAdmin ? (
-                              <select
-                                value={rec?.status || ""}
-                                onChange={e => e.target.value && setAttendanceStatus(s.id, d, e.target.value as AttendanceStatus)}
-                                className="w-7 h-7 rounded text-center text-xs font-bold cursor-pointer border-none outline-none"
-                                style={{
-                                  background: cfg ? cfg.bg : isWeekend ? "rgba(107,114,128,0.06)" : "rgba(197,160,89,0.04)",
-                                  color: cfg ? cfg.color : "#d1d5db",
-                                  appearance: "none", WebkitAppearance: "none",
-                                }}>
-                                <option value="">—</option>
-                                {Object.entries(ATTENDANCE_CONFIG).map(([k, v]) => (
-                                  <option key={k} value={k}>{v.short}</option>
-                                ))}
-                              </select>
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+                                <select
+                                  value={rec?.status || ""}
+                                  onChange={e => e.target.value && setAttendanceStatus(s.id, d, e.target.value as AttendanceStatus)}
+                                  className="w-7 h-7 rounded text-center text-xs font-bold cursor-pointer border-none outline-none"
+                                  style={{
+                                    background: cfg ? cfg.bg : isWeekend ? "rgba(107,114,128,0.06)" : "rgba(197,160,89,0.04)",
+                                    color: cfg ? cfg.color : "#d1d5db",
+                                    appearance: "none", WebkitAppearance: "none",
+                                  }}>
+                                  <option value="">—</option>
+                                  {Object.entries(ATTENDANCE_CONFIG).map(([k, v]) => (
+                                    <option key={k} value={k}>{v.short}</option>
+                                  ))}
+                                </select>
+                                {rec && (rec.status === "present" || rec.status === "late") && (
+                                  <button
+                                    onClick={() => openClockModal(s.id, s.full_name, d)}
+                                    title={rec.clock_in ? `${rec.clock_in.slice(11,16)} – ${rec.clock_out?.slice(11,16) ?? "?"}` : "Set times"}
+                                    style={{ width: 14, height: 14, borderRadius: 3, border: "none", background: rec.clock_in ? "rgba(34,197,94,0.2)" : "rgba(197,160,89,0.12)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
+                                    <Clock size={8} style={{ color: rec.clock_in ? "#16a34a" : "#C5A059" }} />
+                                  </button>
+                                )}
+                              </div>
                             ) : (
                               <div className="w-7 h-7 rounded text-xs flex items-center justify-center font-bold mx-auto"
                                 style={{ background: cfg ? cfg.bg : "transparent", color: cfg ? cfg.color : "#d1d5db" }}>
@@ -392,6 +425,39 @@ export default function StaffHRPage() {
           </div>
         )}
       </div>
+
+      {/* CLOCK IN/OUT MODAL */}
+      {clockModal && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.5)" }}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 24, width: 320, border: "1px solid rgba(197,160,89,0.25)", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div>
+                <p style={{ fontFamily: "Georgia, serif", fontWeight: 600, fontSize: 14, color: "#1C1917" }}>Set Times</p>
+                <p style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{clockModal.staffName} · {clockModal.date}</p>
+              </div>
+              <button onClick={() => setClockModal(null)} style={{ border: "none", background: "none", cursor: "pointer", color: "#9ca3af" }}><X size={16} /></button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 4 }}>Clock In</label>
+                <input type="time" value={clockModal.clock_in}
+                  onChange={e => setClockModal(m => m ? { ...m, clock_in: e.target.value } : m)}
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", fontSize: 13, outline: "none" }} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 4 }}>Clock Out</label>
+                <input type="time" value={clockModal.clock_out}
+                  onChange={e => setClockModal(m => m ? { ...m, clock_out: e.target.value } : m)}
+                  style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", fontSize: 13, outline: "none" }} />
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setClockModal(null)} style={{ flex: 1, padding: "9px 0", borderRadius: 10, background: "#f9f7f2", color: "#6b7280", border: "1px solid rgba(197,160,89,0.2)", cursor: "pointer", fontSize: 13 }}>Cancel</button>
+              <button onClick={saveClockTime} style={{ flex: 1, padding: "9px 0", borderRadius: 10, background: "var(--gold)", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* LEAVE REQUEST DRAWER */}
       {leaveDrawer && (

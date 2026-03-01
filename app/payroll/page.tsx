@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
-import { Banknote, Plus, X, ChevronDown, Download, Check, Clock, FileText, Eye } from "lucide-react";
+import { Banknote, Plus, X, ChevronDown, Download, Check, Clock, FileText, Eye, Pencil } from "lucide-react";
 
 type RunStatus = "draft" | "processing" | "approved" | "paid";
 
@@ -61,6 +61,9 @@ export default function PayrollPage() {
   const [selectedRun, setSelectedRun] = useState<PayrollRun | null>(null);
   const [runPayslips, setRunPayslips] = useState<Payslip[]>([]);
   const [viewPayslip, setViewPayslip] = useState<Payslip | null>(null);
+  const [editPayslip, setEditPayslip] = useState<Payslip | null>(null);
+  const [editForm, setEditForm] = useState({ allowances: "0", deductions: "0", tds: "0" });
+  const [editSaving, setEditSaving] = useState(false);
 
   const [newRunDrawer, setNewRunDrawer] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -213,6 +216,45 @@ export default function PayrollPage() {
     await supabase.from("payroll_runs").update({ status: "paid" }).eq("id", runId);
     fetchRuns();
     if (selectedRun?.id === runId) setSelectedRun(prev => prev ? { ...prev, status: "paid" } : null);
+  };
+
+  const openEditPayslip = (p: Payslip) => {
+    setEditPayslip(p);
+    setEditForm({
+      allowances: String(p.allowances || 0),
+      deductions: String(p.deductions || 0),
+      tds:        String(p.tds || 0),
+    });
+  };
+
+  const savePayslipEdits = async () => {
+    if (!editPayslip) return;
+    setEditSaving(true);
+    const allowances = parseFloat(editForm.allowances) || 0;
+    const deductions = parseFloat(editForm.deductions) || 0;
+    const tds        = parseFloat(editForm.tds)        || 0;
+    const net_pay    = (editPayslip.basic_salary || 0) + (editPayslip.commission_total || 0) + allowances - deductions - tds;
+
+    await supabase.from("payslips").update({ allowances, deductions, tds, net_pay }).eq("id", editPayslip.id);
+
+    // Recalculate run totals from all payslips
+    const { data: allSlips } = await supabase.from("payslips")
+      .select("basic_salary, commission_total, allowances, deductions, tds, net_pay")
+      .eq("run_id", editPayslip.run_id);
+
+    if (allSlips && allSlips.length > 0) {
+      const total_gross      = allSlips.reduce((s, x) => s + (x.basic_salary || 0) + (x.commission_total || 0) + (x.allowances || 0), 0);
+      const total_deductions = allSlips.reduce((s, x) => s + (x.deductions || 0) + (x.tds || 0), 0);
+      const total_net        = allSlips.reduce((s, x) => s + (x.net_pay || 0), 0);
+      await supabase.from("payroll_runs").update({ total_gross, total_deductions, total_net }).eq("id", editPayslip.run_id);
+    }
+
+    setEditPayslip(null);
+    setEditSaving(false);
+    // Refresh payslips for the current run and global list
+    if (selectedRun?.id === editPayslip.run_id) loadRunPayslips(selectedRun);
+    fetchPayslips();
+    fetchRuns();
   };
 
   const exportCSV = (slips: Payslip[]) => {
@@ -369,8 +411,12 @@ export default function PayrollPage() {
                         <p className="text-sm font-medium" style={{ color: "#1a1714" }}>{p.profiles?.full_name}</p>
                         <p className="text-xs capitalize" style={{ color: "#9ca3af" }}>{p.profiles?.role?.replace("_", " ")} · {p.attendance_days}d</p>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-bold" style={{ color: "var(--gold)" }}>₹{(p.net_pay || 0).toLocaleString()}</p>
+                      <div className="flex items-center gap-1">
+                        <p className="text-sm font-bold mr-1" style={{ color: "var(--gold)" }}>₹{(p.net_pay || 0).toLocaleString()}</p>
+                        <button onClick={() => openEditPayslip(p)} title="Edit adjustments"
+                          className="p-1.5 rounded hover:bg-amber-50 transition-colors">
+                          <Pencil size={13} style={{ color: "#9ca3af" }} />
+                        </button>
                         <button onClick={() => { setViewPayslip(p); printPayslip(p); }}
                           className="p-1.5 rounded hover:bg-amber-50 transition-colors">
                           <Eye size={14} style={{ color: "var(--gold)" }} />
@@ -423,9 +469,14 @@ export default function PayrollPage() {
                       <td className="px-4 py-3 text-sm" style={{ color: "#dc2626" }}>-₹{(p.tds || 0).toLocaleString()}</td>
                       <td className="px-4 py-3 text-sm font-bold" style={{ color: "var(--gold)" }}>₹{(p.net_pay || 0).toLocaleString()}</td>
                       <td className="px-4 py-3">
-                        <button onClick={() => printPayslip(p)} className="p-1.5 rounded hover:bg-amber-50 transition-colors">
-                          <FileText size={14} style={{ color: "var(--gold)" }} />
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => openEditPayslip(p)} title="Edit adjustments" className="p-1.5 rounded hover:bg-amber-50 transition-colors">
+                            <Pencil size={13} style={{ color: "#9ca3af" }} />
+                          </button>
+                          <button onClick={() => printPayslip(p)} className="p-1.5 rounded hover:bg-amber-50 transition-colors">
+                            <FileText size={14} style={{ color: "var(--gold)" }} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -435,6 +486,63 @@ export default function PayrollPage() {
           </div>
         )}
       </div>
+
+      {/* EDIT PAYSLIP MODAL */}
+      {editPayslip && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.45)" }}>
+          <div className="w-[420px] rounded-2xl overflow-hidden flex flex-col" style={{ background: "#fff" }}>
+            <div className="flex justify-between items-center px-6 py-4" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
+              <div>
+                <h3 className="text-base font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>
+                  Edit Payslip — {editPayslip.profiles?.full_name}
+                </h3>
+                <p className="text-xs mt-0.5" style={{ color: "#9ca3af" }}>
+                  Basic ₹{(editPayslip.basic_salary || 0).toLocaleString()} + Commission ₹{(editPayslip.commission_total || 0).toLocaleString()}
+                </p>
+              </div>
+              <button onClick={() => setEditPayslip(null)} className="p-1.5 rounded-lg hover:bg-gray-100"><X size={16} /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              {[
+                { key: "allowances", label: "Allowances (₹)", hint: "HRA, travel, meals, etc.", color: "#16a34a" },
+                { key: "deductions", label: "Deductions (₹)", hint: "PF, ESI, advance recovery", color: "#dc2626" },
+                { key: "tds",        label: "TDS (₹)",        hint: "Income tax withheld",      color: "#dc2626" },
+              ].map(({ key, label, hint, color }) => (
+                <div key={key}>
+                  <label className="block text-xs font-medium mb-1" style={{ color: "#4b5563" }}>{label}</label>
+                  <input
+                    type="number" min="0" step="1"
+                    value={editForm[key as keyof typeof editForm]}
+                    onChange={e => setEditForm(f => ({ ...f, [key]: e.target.value }))}
+                    className="w-full px-3 py-2 rounded-lg border outline-none text-sm"
+                    style={{ borderColor: "rgba(197,160,89,0.3)", color }}
+                  />
+                  <p className="text-xs mt-1" style={{ color: "#9ca3af" }}>{hint}</p>
+                </div>
+              ))}
+              {/* Preview net pay */}
+              <div className="rounded-lg p-3 flex justify-between items-center" style={{ background: "rgba(197,160,89,0.06)", border: "1px solid rgba(197,160,89,0.15)" }}>
+                <span className="text-xs font-medium" style={{ color: "#4b5563" }}>Calculated Net Pay</span>
+                <span className="text-base font-bold" style={{ color: "var(--gold)", fontFamily: "Georgia, serif" }}>
+                  ₹{(
+                    (editPayslip.basic_salary || 0) +
+                    (editPayslip.commission_total || 0) +
+                    (parseFloat(editForm.allowances) || 0) -
+                    (parseFloat(editForm.deductions) || 0) -
+                    (parseFloat(editForm.tds) || 0)
+                  ).toLocaleString()}
+                </span>
+              </div>
+            </div>
+            <div className="px-6 py-4 flex gap-3" style={{ borderTop: "1px solid rgba(197,160,89,0.15)" }}>
+              <button onClick={() => setEditPayslip(null)} className="flex-1 px-4 py-2 rounded-lg text-sm border" style={{ borderColor: "rgba(197,160,89,0.2)", color: "#6b7280" }}>Cancel</button>
+              <button onClick={savePayslipEdits} disabled={editSaving}
+                className="flex-1 px-4 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+                style={{ background: "var(--gold)" }}>{editSaving ? "Saving…" : "Save Changes"}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* NEW RUN DRAWER */}
       {newRunDrawer && (

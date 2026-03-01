@@ -199,8 +199,11 @@ export default function BillingPage() {
 
   useEffect(() => {
     if (!profileLoading && activeClinicId) {
-      fetchInvoices();
-      fetchCommOwed();
+      // Persist overdue status for past-due invoices before loading
+      supabase.rpc("mark_overdue_invoices").then(() => {
+        fetchInvoices();
+        fetchCommOwed();
+      });
     }
   }, [fetchInvoices, fetchCommOwed, profileLoading, activeClinicId]);
 
