@@ -5,11 +5,11 @@ import { useImpersonation } from "@/contexts/ImpersonationContext";
 import { useClinic } from "@/contexts/ClinicContext";
 
 export default function ImpersonationBanner() {
-  const { impersonating, stopImpersonation } = useImpersonation();
+  const { isImpersonating, impersonated, stopImpersonation } = useImpersonation();
   const { profile } = useClinic();
 
   // Only superadmin sees this; only show when actively impersonating
-  if (!impersonating || profile?.role !== "superadmin") return null;
+  if (!isImpersonating || !impersonated || profile?.role !== "superadmin") return null;
 
   return (
     <div style={{
@@ -33,7 +33,7 @@ export default function ImpersonationBanner() {
           God Mode — Viewing as:
         </span>
         <span style={{ fontSize: 12, color: "rgba(255,255,255,0.9)", marginLeft: 8, fontFamily: "Georgia, serif" }}>
-          {impersonating.clinicName}
+          {impersonated.clinicName}
         </span>
         <span style={{ fontSize: 10, color: "rgba(255,255,255,0.45)", marginLeft: 10 }}>
           All actions are logged with your superadmin ID

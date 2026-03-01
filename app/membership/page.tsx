@@ -233,24 +233,32 @@ export default function MembershipPage() {
   const addWalletCredit = async () => {
     if (!clinicId || !walletForm.patient_id || !walletForm.amount) return;
     setSaving(true);
-    const amount = parseFloat(walletForm.amount);
-    // Get current balance
-    const { data: patient } = await supabase.from("patients").select("wallet_balance").eq("id", walletForm.patient_id).single();
-    const currentBalance = patient?.wallet_balance || 0;
-    const newBalance = currentBalance + amount;
-    // Update wallet balance
-    await supabase.from("patients").update({ wallet_balance: newBalance }).eq("id", walletForm.patient_id);
-    // Insert transaction
-    await supabase.from("wallet_transactions").insert({
-      clinic_id: clinicId, patient_id: walletForm.patient_id, type: "credit",
-      amount, balance_after: newBalance, reason: walletForm.reason || null,
-      created_by: profile?.id,
-    });
-    setSaving(false);
-    setWalletDrawer(false);
-    setWalletForm({ patient_search: "", patient_id: "", patient_name: "", amount: "", reason: "" });
-    fetchWalletTxns();
-    fetchMemberships();
+    try {
+      const amount = parseFloat(walletForm.amount);
+      if (isNaN(amount) || amount <= 0) throw new Error("Amount must be a positive number");
+
+      // Atomic read-modify-write via DB function (GAP-4: eliminates race condition)
+      const { error } = await supabase.rpc("add_wallet_credit", {
+        p_patient_id:     walletForm.patient_id,
+        p_clinic_id:      clinicId,
+        p_amount:         amount,
+        p_reason:         walletForm.reason || "Manual credit",
+        p_reference_id:   null,
+        p_reference_type: "manual",
+        p_actor_id:       profile?.id ?? null,
+      });
+      if (error) throw error;
+
+      setWalletDrawer(false);
+      setWalletForm({ patient_search: "", patient_id: "", patient_name: "", amount: "", reason: "" });
+      fetchWalletTxns();
+      fetchMemberships();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to add wallet credit";
+      alert(msg);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const filteredMembers = memberships.filter(m =>

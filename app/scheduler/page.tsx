@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { logAction } from "@/lib/audit";
 import {
   ChevronLeft, ChevronRight, Plus, Settings, Eye, EyeOff,
   Clock, User, X, AlertCircle, Loader2, Zap,
@@ -1067,85 +1068,96 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
       const credit   = creditId ? credits.find(c => c.id === creditId) : null;
 
       if (credit) {
-        // 1. Consumption log
-        await supabase.from("credit_consumption_log").insert({
-          credit_id:      credit.id,
-          appointment_id: a.id,
-          session_date:   a.start_time,
-          provider_id:    a.provider_id,
-          clinic_id:      activeClinicId,
-          notes:          `Consumed via Scheduler — ${a.service_name}`,
-        });
-        // 2. Decrement sessions
-        const newUsed = credit.used_sessions + 1;
-        await supabase.from("patient_service_credits").update({
-          used_sessions: newUsed,
-          status: newUsed >= credit.total_sessions ? "completed" : "active",
-        }).eq("id", credit.id);
-        // 3. Commission (10%)
-        if (a.provider_id) {
-          await supabase.from("staff_commissions").insert({
-            provider_id:       a.provider_id,
-            credit_id:         credit.id,
-            appointment_id:    a.id,
-            service_name:      a.service_name,
-            session_date:      a.start_time,
-            session_value:     credit.per_session_value,
-            commission_pct:    10,
-            commission_amount: credit.per_session_value * 0.1,
-            clinic_id:         activeClinicId,
-            status:            "pending",
+        // Resolve commission rate from provider_commission_rates table (GAP-14)
+        // Falls back to 10% if no rate configured (via get_commission_pct DB function)
+        const { data: commPctRow } = await supabase
+          .rpc("get_commission_pct", {
+            p_clinic_id:   activeClinicId,
+            p_provider_id: a.provider_id ?? "",
+            p_service_id:  a.service_id  ?? null,
           });
-        }
-        // 4. Pending invoice
-        await supabase.from("pending_invoices").insert({
-          clinic_id:      activeClinicId,
-          patient_id:     a.patient_id,
-          appointment_id: a.id,
-          credit_id:      credit.id,
-          service_name:   a.service_name,
-          amount:         credit.per_session_value,
-          status:         "pending",
+        const commissionPct = (commPctRow as number | null) ?? 10;
+
+        // Single atomic RPC — all 5 writes or none (GAP-3)
+        const { data: result, error } = await supabase.rpc("consume_session", {
+          p_credit_id:      credit.id,
+          p_appointment_id: a.id,
+          p_provider_id:    a.provider_id ?? null,
+          p_clinic_id:      activeClinicId,
+          p_patient_id:     a.patient_id,
+          p_session_date:   a.start_time,
+          p_commission_pct: commissionPct,
         });
+        if (error) throw error;
+
+        toast.success(`Session consumed — invoice created (${fmt(credit.per_session_value)})`);
       } else {
-        // No credit — direct charge
-        const { data: svc } = await supabase.from("services").select("selling_price").eq("id", a.service_id ?? "").maybeSingle();
+        // No credit — direct charge: create invoice then commission atomically
+        const { data: svc } = await supabase
+          .from("services").select("selling_price").eq("id", a.service_id ?? "").maybeSingle();
         const amount = svc?.selling_price ?? 0;
-        await supabase.from("pending_invoices").insert({
-          clinic_id:      activeClinicId,
-          patient_id:     a.patient_id,
-          appointment_id: a.id,
-          credit_id:      null,
-          service_name:   a.service_name,
-          amount,
-          status:         "pending",
+
+        const { data: commPctRow } = await supabase
+          .rpc("get_commission_pct", {
+            p_clinic_id:   activeClinicId,
+            p_provider_id: a.provider_id ?? "",
+            p_service_id:  a.service_id  ?? null,
+          });
+        const commissionPct = (commPctRow as number | null) ?? 10;
+
+        // Invoice creation (GAP-10)
+        const { error: invErr } = await supabase.rpc("create_invoice_with_items", {
+          p_clinic_id:    activeClinicId,
+          p_patient_id:   a.patient_id,
+          p_patient_name: a.patient_name ?? "",
+          p_provider_id:  a.provider_id  ?? null,
+          p_provider_name: "",
+          p_due_date:     null,
+          p_gst_pct:      0,
+          p_invoice_type: "session",
+          p_notes:        a.service_name ?? "",
+          p_items: JSON.stringify([{
+            service_id:   a.service_id,
+            description:  a.service_name,
+            quantity:     1,
+            unit_price:   amount,
+            discount_pct: 0,
+            gst_pct:      0,
+          }]),
         });
+        if (invErr) throw invErr;
+
+        // Commission (GAP-14: dynamic rate, GAP-5: validated in DB)
         if (a.provider_id && amount > 0) {
-          await supabase.from("staff_commissions").insert({
+          const commAmt = Math.round(amount * commissionPct / 100 * 100) / 100;
+          const { error: cErr } = await supabase.from("staff_commissions").insert({
             provider_id:       a.provider_id,
             appointment_id:    a.id,
             service_name:      a.service_name,
             session_date:      a.start_time,
-            session_value:     amount,
-            commission_pct:    10,
-            commission_amount: amount * 0.1,
+            sale_amount:       amount,
+            commission_pct:    commissionPct,
+            commission_amount: commAmt,
             clinic_id:         activeClinicId,
+            patient_id:        a.patient_id,
             status:            "pending",
           });
+          if (cErr) throw cErr;
         }
+
+        // Mark appointment completed
+        const { error: aptErr } = await supabase.from("appointments").update({
+          status: "completed", credit_reserved: false, updated_at: new Date().toISOString(),
+        }).eq("id", a.id);
+        if (aptErr) throw aptErr;
+
+        toast.success("Session consumed — invoice created");
       }
-
-      // Mark appointment completed
-      await supabase.from("appointments").update({
-        status:         "completed",
-        credit_reserved: false,
-        updated_at:     new Date().toISOString(),
-      }).eq("id", a.id);
-
-      toast.success(`Session consumed — invoice created${credit ? ` (${fmt(credit.per_session_value)})` : ""}`);
       onUpdated();
-    } catch (e) {
-      toast.error("Consume failed — check console");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Consume failed";
+      toast.error(msg);
+      logAction({ action: "consume_session.failed", targetId: a.id, metadata: { error: String(e) }, clinicId: activeClinicId ?? undefined });
     } finally {
       setUpdating(false);
     }
@@ -2289,71 +2301,71 @@ function CheckoutModal({ appointment: a, credit, activeClinicId, onClose, onComp
   async function handleCheckout() {
     setProcessing(true);
     try {
-      // 1. Consume credit session
+      // 1. Resolve commission rate (GAP-14)
+      const { data: commPctRow } = await supabase.rpc("get_commission_pct", {
+        p_clinic_id:   activeClinicId,
+        p_provider_id: a.provider_id ?? "",
+        p_service_id:  a.service_id  ?? null,
+      });
+      const commissionPct = (commPctRow as number | null) ?? 10;
+
+      // 2. Consume credit session atomically (GAP-3)
       if (credit) {
-        await supabase.from("credit_consumption_log").insert({
-          credit_id:      credit.id,
-          appointment_id: a.id,
-          session_date:   a.start_time,
-          provider_id:    a.provider_id,
-          clinic_id:      activeClinicId,
-          notes:          `Consumed via Checkout — ${a.service_name}`,
+        const { error: consumeErr } = await supabase.rpc("consume_session", {
+          p_credit_id:      credit.id,
+          p_appointment_id: a.id,
+          p_provider_id:    a.provider_id ?? null,
+          p_clinic_id:      activeClinicId,
+          p_patient_id:     a.patient_id,
+          p_session_date:   a.start_time,
+          p_commission_pct: commissionPct,
         });
-        const newUsed = credit.used_sessions + 1;
-        await supabase.from("patient_service_credits").update({
-          used_sessions: newUsed,
-          status: newUsed >= credit.total_sessions ? "completed" : "active",
-        }).eq("id", credit.id);
-        if (a.provider_id) {
-          await supabase.from("staff_commissions").insert({
-            provider_id:       a.provider_id,
-            credit_id:         credit.id,
-            appointment_id:    a.id,
-            service_name:      a.service_name,
-            session_date:      a.start_time,
-            session_value:     credit.per_session_value,
-            commission_pct:    10,
-            commission_amount: credit.per_session_value * 0.1,
-            clinic_id:         activeClinicId,
-            status:            "pending",
-          });
-        }
+        if (consumeErr) throw consumeErr;
       }
 
-      // 2. Create invoice
+      // 3. Create invoice atomically (GAP-10)
       const invoiceStatus = payMethod === "package" || amountPaid >= total ? "paid" : "pending";
-      await supabase.from("pending_invoices").insert({
-        clinic_id:      activeClinicId,
-        patient_id:     a.patient_id,
-        appointment_id: a.id,
-        credit_id:      credit?.id ?? null,
-        service_name:   lineItems.map(i => i.name).join(", "),
-        amount:         subtotal,
-        tax_amount:     gst,
-        total_amount:   total,
-        status:         invoiceStatus,
+      const { error: invErr } = await supabase.rpc("create_invoice_with_items", {
+        p_clinic_id:     activeClinicId,
+        p_patient_id:    a.patient_id,
+        p_patient_name:  a.patient_name ?? "",
+        p_provider_id:   a.provider_id  ?? null,
+        p_provider_name: "",
+        p_due_date:      null,
+        p_gst_pct:       gst > 0 ? Math.round(gst / subtotal * 100) : 0,
+        p_invoice_type:  "session",
+        p_notes:         lineItems.map(i => i.name).join(", "),
+        p_items: JSON.stringify(lineItems.map(i => ({
+          service_id:   null,
+          description:  i.name,
+          quantity:     i.qty,
+          unit_price:   i.unitPrice,
+          discount_pct: 0,
+          gst_pct:      0,
+        }))),
       });
+      if (invErr) throw invErr;
 
-      // 3. Provider commission for direct billing
+      // 4. Commission for direct billing (no credit)
       if (!credit && a.provider_id && subtotal > 0) {
+        const commAmt = Math.round(subtotal * commissionPct / 100 * 100) / 100;
         await supabase.from("staff_commissions").insert({
           provider_id:       a.provider_id,
           appointment_id:    a.id,
           service_name:      a.service_name,
           session_date:      a.start_time,
-          session_value:     subtotal,
-          commission_pct:    10,
-          commission_amount: subtotal * 0.1,
+          sale_amount:       subtotal,
+          commission_pct:    commissionPct,
+          commission_amount: commAmt,
           clinic_id:         activeClinicId,
+          patient_id:        a.patient_id,
           status:            "pending",
         });
       }
 
-      // 4. Mark appointment completed
+      // 5. Mark appointment completed
       await supabase.from("appointments").update({
-        status:         "completed",
-        credit_reserved: false,
-        updated_at:     new Date().toISOString(),
+        status: "completed", credit_reserved: false, updated_at: new Date().toISOString(),
       }).eq("id", a.id);
 
       const payMsg = invoiceStatus === "paid" ? ` — ₹${total.toLocaleString("en-IN")} collected` : " — invoice pending";

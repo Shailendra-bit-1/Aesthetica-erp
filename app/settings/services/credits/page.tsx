@@ -40,6 +40,7 @@ interface ServiceCredit {
 interface PendingRefund {
   id: string;
   credit_id: string;
+  clinic_id: string;
   patient_name: string;
   service_name: string;
   clinic_name: string;
@@ -59,6 +60,7 @@ interface PendingTransfer {
   credit_id: string;
   patient_name: string;
   service_name: string;
+  from_clinic_id: string;
   from_clinic_name: string;
   to_clinic_name: string;
   sessions_transferred: number;
@@ -502,15 +504,24 @@ function ApprovalsTab({ refunds, transfers, onRefresh, profile }: {
 
   async function approveRefund(refund: PendingRefund) {
     setProcessing(refund.id);
-    const { data: user } = await supabase.auth.getUser();
-    await supabase.from("service_refunds").update({
-      status: "approved", approved_by: user.user?.id, resolved_at: new Date().toISOString(),
-    }).eq("id", refund.id);
-    await supabase.from("patient_service_credits").update({ status: "refunded", updated_at: new Date().toISOString() }).eq("id", refund.credit_id);
-    logAction({ action: "refund_approved", targetId: refund.credit_id, targetName: `${refund.patient_name} — ${refund.service_name}`, metadata: { refund_amount: refund.refund_amount } });
-    toast.success(`Refund of ${fmt(refund.refund_amount)} approved for ${refund.patient_name}`);
-    setProcessing(null);
-    onRefresh();
+    try {
+      const { data: user } = await supabase.auth.getUser();
+      // Atomic: approves refund + marks credit refunded + reverses commissions + credits wallet (GAP-8)
+      const { error } = await supabase.rpc("approve_refund", {
+        p_refund_id:     refund.id,
+        p_clinic_id:     refund.clinic_id,
+        p_approved_by:   user.user?.id ?? null,
+        p_credit_amount: refund.refund_amount ?? 0,
+      });
+      if (error) throw error;
+      logAction({ action: "refund_approved", targetId: refund.credit_id, targetName: `${refund.patient_name} — ${refund.service_name}`, metadata: { refund_amount: refund.refund_amount } });
+      toast.success(`Refund of ${fmt(refund.refund_amount)} approved — commissions reversed, wallet credited`);
+      onRefresh();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Refund approval failed");
+    } finally {
+      setProcessing(null);
+    }
   }
 
   async function rejectRefund(refund: PendingRefund, note: string) {
@@ -526,18 +537,23 @@ function ApprovalsTab({ refunds, transfers, onRefresh, profile }: {
 
   async function approveTransfer(t: PendingTransfer) {
     setProcessing(t.id);
-    const { data: user } = await supabase.auth.getUser();
-    await supabase.from("service_transfers").update({
-      status: "approved", approved_by: user.user?.id, approved_at: new Date().toISOString(),
-    }).eq("id", t.id);
-    await supabase.from("patient_service_credits").update({
-      current_clinic_id: (await supabase.from("service_transfers").select("to_clinic_id").eq("id", t.id).single()).data?.to_clinic_id,
-      status: "transferred", updated_at: new Date().toISOString(),
-    }).eq("id", t.credit_id);
-    logAction({ action: "transfer_approved", targetId: t.credit_id, targetName: `${t.patient_name} — ${t.service_name}`, metadata: { from: t.from_clinic_name, to: t.to_clinic_name } });
-    toast.success(`Transfer approved: ${t.from_clinic_name} → ${t.to_clinic_name}`);
-    setProcessing(null);
-    onRefresh();
+    try {
+      const { data: user } = await supabase.auth.getUser();
+      // Atomic: approves transfer + moves credit to destination clinic in one transaction (GAP-12)
+      const { error } = await supabase.rpc("approve_transfer", {
+        p_transfer_id: t.id,
+        p_clinic_id:   t.from_clinic_id,
+        p_approved_by: user.user?.id ?? null,
+      });
+      if (error) throw error;
+      logAction({ action: "transfer_approved", targetId: t.credit_id, targetName: `${t.patient_name} — ${t.service_name}`, metadata: { from: t.from_clinic_name, to: t.to_clinic_name } });
+      toast.success(`Transfer approved: ${t.from_clinic_name} → ${t.to_clinic_name}`);
+      onRefresh();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Transfer approval failed");
+    } finally {
+      setProcessing(null);
+    }
   }
 
   if (pending.length === 0) {

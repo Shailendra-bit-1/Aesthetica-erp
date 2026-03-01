@@ -1114,41 +1114,31 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
     setSaving(true);
     try {
       const svcNames = items.filter(it => it.description).map(it => it.description).join(", ");
-      const { data: inv, error: ie } = await supabase.from("pending_invoices").insert({
-        clinic_id:       clinicId,
-        patient_id:      selPat?.id             ?? null,
-        patient_name:    selPat?.full_name       ?? "Walk-in",
-        service_name:    svcNames,
-        amount:          Math.round(subtotal   * 100) / 100,
-        tax_amount:      Math.round(totalGst   * 100) / 100,
-        discount_amount: Math.round(totalDisc  * 100) / 100,
-        total_amount:    Math.round(grandTotal * 100) / 100,
-        gst_pct:         18,
-        status:          "pending",
-        invoice_type:    "ad_hoc",
-        notes:           notes   || null,
-        due_date:        dueDate || null,
-      }).select().single();
+      // Atomic invoice + line items in single DB transaction (GAP-10)
+      const validItems = items.filter(it => it.description.trim() && it.unit_price > 0);
+      const { data: result, error: ie } = await supabase.rpc("create_invoice_with_items", {
+        p_clinic_id:     clinicId,
+        p_patient_id:    selPat?.id   ?? null,
+        p_patient_name:  selPat?.full_name ?? "Walk-in",
+        p_provider_id:   null,
+        p_provider_name: "",
+        p_due_date:      dueDate || null,
+        p_gst_pct:       18,
+        p_invoice_type:  "ad_hoc",
+        p_notes:         notes || null,
+        p_items: JSON.stringify(validItems.map(it => ({
+          service_id:   it.service_id ?? null,
+          description:  it.description,
+          quantity:     it.quantity,
+          unit_price:   it.unit_price,
+          discount_pct: it.discount_pct,
+          gst_pct:      it.gst_pct,
+        }))),
+      });
       if (ie) throw ie;
+      const inv = result as { invoice_id: string } | null;
 
-      if (inv) {
-        const lineRows = items
-          .filter(it => it.description.trim())
-          .map(it => ({
-            invoice_id:   inv.id,
-            clinic_id:    clinicId,
-            service_id:   it.service_id,
-            description:  it.description,
-            quantity:     it.quantity,
-            unit_price:   it.unit_price,
-            discount_pct: it.discount_pct,
-            gst_pct:      it.gst_pct,
-            line_total:   it.line_total,
-          }));
-        await supabase.from("invoice_line_items").insert(lineRows);
-      }
-
-      await logAction({ action: "create_invoice", targetId: inv?.id, targetName: svcNames });
+      await logAction({ action: "create_invoice", targetId: inv?.invoice_id, targetName: svcNames });
       toast.success("Invoice created!");
       onSuccess();
     } catch (e: any) {

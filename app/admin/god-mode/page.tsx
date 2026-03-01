@@ -65,7 +65,7 @@ type FeatureMap = Record<string, boolean>; // slug → enabled
 
 export default function GodModePage() {
   const { profile }                           = useClinic();
-  const { startImpersonation, impersonating } = useImpersonation();
+  const { startImpersonation, isImpersonating, impersonated } = useImpersonation();
 
   const [clinics,     setClinics]     = useState<ClinicRow[]>([]);
   const [featureMap,  setFeatureMap]  = useState<Record<string, FeatureMap>>({}); // clinicId → FeatureMap
@@ -206,7 +206,7 @@ export default function GodModePage() {
 
   // ── Impersonation ────────────────────────────────────────────────────────────
   function handleImpersonate(clinic: ClinicRow) {
-    startImpersonation({ clinicId: clinic.id, clinicName: clinic.name });
+    startImpersonation(clinic.id, clinic.name);
     toast.success(`Now viewing as ${clinic.name}`);
     window.location.href = "/";
   }
@@ -216,11 +216,11 @@ export default function GodModePage() {
       <TopBar />
 
       {/* Impersonation active banner */}
-      {impersonating && (
+      {isImpersonating && impersonated && (
         <div style={{ background: "linear-gradient(90deg, #1C0A00, #2E1000)", borderBottom: "2px solid #C5A059", padding: "8px 40px", display: "flex", alignItems: "center", gap: 10 }}>
           <Eye size={14} style={{ color: "#C5A059" }} />
           <span style={{ fontSize: 12, color: "#C5A059", fontWeight: 600, fontFamily: "Georgia, serif" }}>
-            Currently viewing as: {impersonating.clinicName}
+            Currently viewing as: {impersonated.clinicName}
           </span>
           <button onClick={() => { window.location.href = "/admin/god-mode"; }} style={{ marginLeft: "auto", fontSize: 11, color: "#C5A059", background: "none", border: "1px solid rgba(197,160,89,0.3)", padding: "3px 10px", borderRadius: 6, cursor: "pointer" }}>
             Back to God Mode

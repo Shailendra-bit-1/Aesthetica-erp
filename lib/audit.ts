@@ -1,15 +1,6 @@
 import { supabase } from "./supabase";
 
-/**
- * HIPAA Audit Logger
- * Writes an immutable entry to audit_logs every time a patient record
- * is accessed or a privileged action is performed.
- * Failures are silently swallowed — never block the UI.
- *
- * Demo suppression: if the acting user's clinic has is_demo=true, the
- * insert is skipped entirely to avoid polluting audit history.
- */
-export async function logAction(opts: {
+interface AuditOpts {
   action: string;
   targetId?: string;
   targetName?: string;
@@ -21,7 +12,18 @@ export async function logAction(opts: {
   /** Passed when a superadmin is impersonating a clinic */
   impersonatedClinicId?: string;
   impersonatedClinicName?: string;
-}) {
+}
+
+/**
+ * HIPAA Audit Logger — successful operations
+ * Writes an immutable entry to audit_logs every time a patient record
+ * is accessed or a privileged action is performed.
+ * Failures are silently swallowed — never block the UI.
+ *
+ * Demo suppression: if the acting user's clinic has is_demo=true, the
+ * insert is skipped entirely to avoid polluting audit history.
+ */
+export async function logAction(opts: AuditOpts) {
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -62,4 +64,22 @@ export async function logAction(opts: {
   } catch {
     // Audit failures are non-fatal — never interrupt clinical workflow
   }
+}
+
+/**
+ * GAP-16: HIPAA Audit Logger — failed operations
+ * Logs attempted-but-failed privileged actions for security visibility.
+ * Prefixes action with "FAILED." so they are queryable separately.
+ * Also never throws — safe to call from catch blocks.
+ */
+export async function logFailure(opts: AuditOpts & { error?: string }) {
+  await logAction({
+    ...opts,
+    action: `FAILED.${opts.action}`,
+    metadata: {
+      ...(opts.metadata ?? {}),
+      ...(opts.error ? { error_message: opts.error } : {}),
+      failed_at: new Date().toISOString(),
+    },
+  });
 }
