@@ -47,7 +47,10 @@ interface Encounter {
 }
 interface Treatment {
   id: string; treatment_name: string; status: string;
-  price: number | null; counselled_by: string | null;
+  price: number | null; quoted_price: number | null;
+  mrp: number | null; discount_pct: number | null;
+  package_type: string | null;
+  counselled_by: string | null; counselling_session_id: string | null;
   notes: string | null; created_at: string;
 }
 interface PatientPackage {
@@ -806,7 +809,10 @@ function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { t
           <>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {proposed.map(t => {
-                const isHighValue = (t.price ?? 0) > 500;
+                const displayPrice = t.quoted_price ?? t.price;
+                const isHighValue  = (displayPrice ?? 0) > 500;
+                const pkgLabel: Record<string, string> = { single_service: "Single", custom_package: "Custom Pkg", fixed_package: "Fixed Pkg" };
+                const viaCouns = !!t.counselling_session_id;
                 return (
                   <div key={t.id} style={{
                     padding: "10px 12px", borderRadius: 10,
@@ -814,26 +820,48 @@ function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { t
                     border: isHighValue ? "1px solid rgba(197,160,89,0.4)" : "1px solid rgba(197,160,89,0.12)",
                     position: "relative",
                   }}>
-                    {isHighValue && (
-                      <span style={{
-                        position: "absolute", top: 8, right: 8,
-                        fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 6,
-                        background: "rgba(197,160,89,0.2)", color: "#8B6914", textTransform: "uppercase", letterSpacing: "0.06em",
-                      }}>
-                        <Star size={8} style={{ display: "inline", verticalAlign: "middle", marginRight: 2 }} />High Value
-                      </span>
-                    )}
-                    <p style={{ fontSize: 12, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0, paddingRight: isHighValue ? 60 : 0 }}>
+                    {/* Top-right badges */}
+                    <div style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4, alignItems: "center" }}>
+                      {t.package_type && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 6, background: "rgba(197,160,89,0.2)", color: "#8B6914", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                          {pkgLabel[t.package_type] ?? t.package_type}
+                        </span>
+                      )}
+                      {isHighValue && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 6, background: "rgba(197,160,89,0.2)", color: "#8B6914", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                          <Star size={8} style={{ display: "inline", verticalAlign: "middle", marginRight: 2 }} />High Value
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ fontSize: 12, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0, paddingRight: 90 }}>
                       {t.treatment_name}
                     </p>
-                    {t.counselled_by && (
-                      <p style={{ fontSize: 10, color: "#9C9584", margin: "2px 0 0" }}>Counselled by {t.counselled_by}</p>
-                    )}
-                    {t.price != null && (
-                      <p style={{ fontSize: 14, fontWeight: 700, color: isHighValue ? "#C5A059" : "#1C1917", marginTop: 5, fontFamily: "Georgia, serif" }}>
-                        ₹{t.price.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
+                    {/* Origin tag */}
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 3 }}>
+                      {viaCouns ? (
+                        <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 4, background: "rgba(5,150,105,0.1)", color: "#059669", textTransform: "uppercase", letterSpacing: "0.05em" }}>Via Counselling</span>
+                      ) : (
+                        <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 4, background: "rgba(59,130,246,0.1)", color: "#2563eb", textTransform: "uppercase", letterSpacing: "0.05em" }}>Added by Doctor</span>
+                      )}
+                      {t.counselled_by && (
+                        <span style={{ fontSize: 10, color: "#9C9584" }}>by {t.counselled_by}</span>
+                      )}
+                    </div>
+                    {/* Pricing breakdown */}
+                    {t.mrp != null && t.quoted_price != null ? (
+                      <p style={{ fontSize: 12, color: "#6B6358", marginTop: 5 }}>
+                        <span style={{ textDecoration: "line-through", color: "#9C9584" }}>₹{t.mrp.toLocaleString("en-IN")}</span>
+                        {" → "}
+                        <span style={{ fontWeight: 700, color: isHighValue ? "#C5A059" : "#1C1917", fontFamily: "Georgia, serif" }}>₹{t.quoted_price.toLocaleString("en-IN")}</span>
+                        {t.discount_pct != null && t.discount_pct > 0 && (
+                          <span style={{ marginLeft: 4, fontSize: 10, color: "#16a34a", fontWeight: 600 }}>({t.discount_pct.toFixed(1)}% off)</span>
+                        )}
                       </p>
-                    )}
+                    ) : displayPrice != null ? (
+                      <p style={{ fontSize: 14, fontWeight: 700, color: isHighValue ? "#C5A059" : "#1C1917", marginTop: 5, fontFamily: "Georgia, serif" }}>
+                        ₹{displayPrice.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
+                      </p>
+                    ) : null}
                   </div>
                 );
               })}
@@ -1318,11 +1346,19 @@ function NoteDrawer({ patientId, onClose }: { patientId: string; onClose: () => 
 
 // ─────────────────────────────────────── Add Treatment Drawer ────────────────
 
+type DrTreatmentPkgType = "single_service" | "custom_package" | "fixed_package";
+const DR_PKG_OPTIONS: { key: DrTreatmentPkgType; label: string }[] = [
+  { key: "single_service", label: "Single Service" },
+  { key: "custom_package", label: "Custom Package" },
+  { key: "fixed_package",  label: "Fixed Package"  },
+];
+
 function TreatmentDrawer({ patientId, onClose }: { patientId: string; onClose: () => void }) {
   const [name,       setName]       = useState("");
   const [price,      setPrice]      = useState("");
   const [counselled, setCounselled] = useState("");
   const [notes,      setNotes]      = useState("");
+  const [pkgType,    setPkgType]    = useState<DrTreatmentPkgType>("single_service");
   const [saving,     setSaving]     = useState(false);
 
   async function handleSave() {
@@ -1331,7 +1367,7 @@ function TreatmentDrawer({ patientId, onClose }: { patientId: string; onClose: (
     const res = await fetch(`/api/patients/${patientId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "add_treatment", treatment_name: name.trim(), price: price || null, counselled_by: counselled.trim() || null, notes: notes.trim() || null }),
+      body: JSON.stringify({ action: "add_treatment", treatment_name: name.trim(), price: price || null, counselled_by: counselled.trim() || null, notes: notes.trim() || null, package_type: pkgType }),
     });
     const data = await res.json();
     setSaving(false);
@@ -1394,6 +1430,26 @@ function TreatmentDrawer({ patientId, onClose }: { patientId: string; onClose: (
                 onFocus={e => (e.target.style.borderColor = "rgba(5,150,105,0.5)")}
                 onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
               />
+            </div>
+          </div>
+
+          {/* Package Type */}
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 8 }}>
+              Package Type
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              {DR_PKG_OPTIONS.map(opt => (
+                <button key={opt.key} type="button" onClick={() => setPkgType(opt.key)}
+                  style={{
+                    flex: 1, padding: "8px 4px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.15s",
+                    background: pkgType === opt.key ? "var(--gold)" : "transparent",
+                    color: pkgType === opt.key ? "#fff" : "#9C9584",
+                    border: pkgType === opt.key ? "1px solid var(--gold)" : "1px solid rgba(197,160,89,0.2)",
+                  }}>
+                  {opt.label}
+                </button>
+              ))}
             </div>
           </div>
 

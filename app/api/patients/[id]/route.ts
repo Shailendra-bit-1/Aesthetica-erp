@@ -179,14 +179,21 @@ export async function POST(
 
   // ── Add proposed treatment ───────────────────────────────────────────────
   if (body.action === "add_treatment") {
-    const { treatment_name, price, counselled_by } = body;
+    const { treatment_name, price, quoted_price, mrp, discount_pct,
+            package_type, counselled_by, counselling_session_id, notes } = body;
     const { error } = await supabase.from("patient_treatments").insert({
-      patient_id:    id,
-      clinic_id:     caller?.clinic_id ?? null,
+      patient_id:              id,
+      clinic_id:               caller?.clinic_id ?? null,
       treatment_name,
-      price:         price ? parseFloat(price) : null,
-      counselled_by: counselled_by || null,
-      status:        "proposed",
+      status:                  "proposed",
+      price:                   price         ? parseFloat(price)         : null,
+      quoted_price:            quoted_price  ? parseFloat(quoted_price)  : null,
+      mrp:                     mrp           ? parseFloat(mrp)           : null,
+      discount_pct:            discount_pct  ? parseFloat(discount_pct)  : null,
+      package_type:            package_type  || null,
+      counselled_by:           counselled_by || null,
+      counselling_session_id:  counselling_session_id || null,
+      notes:                   notes         || null,
     });
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ success: true });
