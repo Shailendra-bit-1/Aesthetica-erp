@@ -64,6 +64,7 @@ export default function NewPatientModal({ isOpen, onClose }: NewPatientModalProp
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [specialists, setSpecialists] = useState<Specialist[]>([]);
   const [clinicId, setClinicId] = useState<string | null>(null);
+  const [dupPatient, setDupPatient] = useState<{ id: string; full_name: string; phone: string } | null>(null);
   const firstInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setMounted(true); }, []);
@@ -120,8 +121,8 @@ export default function NewPatientModal({ isOpen, onClose }: NewPatientModalProp
     return () => document.removeEventListener("keydown", handler);
   }, [isOpen, onClose]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const doInsert = async () => {
+    setDupPatient(null);
     setSubmitState("loading");
     setErrorMsg(null);
 
@@ -169,6 +170,30 @@ export default function NewPatientModal({ isOpen, onClose }: NewPatientModalProp
     }, 800);
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitState("loading");
+    setErrorMsg(null);
+
+    // Duplicate phone check within this clinic
+    if (clinicId && form.phone.trim()) {
+      const { data: existing } = await supabase
+        .from("patients")
+        .select("id, full_name, phone")
+        .eq("clinic_id", clinicId)
+        .eq("phone", form.phone.trim())
+        .limit(1)
+        .maybeSingle();
+      if (existing) {
+        setSubmitState("idle");
+        setDupPatient(existing);
+        return;
+      }
+    }
+
+    await doInsert();
+  };
+
   const inputClass =
     "w-full px-4 py-2.5 rounded-xl text-sm outline-none transition-all duration-200";
   const inputStyle = {
@@ -193,6 +218,33 @@ export default function NewPatientModal({ isOpen, onClose }: NewPatientModalProp
 
   return createPortal(
     <>
+      {/* ── Duplicate patient warning dialog ── */}
+      {dupPatient && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)" }}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 28, maxWidth: 400, width: "90vw", border: "1px solid rgba(197,160,89,0.3)", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+              <AlertCircle size={20} color="#D97706" />
+              <p style={{ fontFamily: "Georgia, serif", fontWeight: 600, fontSize: 15, color: "#1C1917" }}>Patient Already Exists</p>
+            </div>
+            <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 18, lineHeight: 1.5 }}>
+              A patient named <strong style={{ color: "#1C1917" }}>{dupPatient.full_name}</strong> is already registered with phone <strong style={{ color: "#1C1917" }}>{dupPatient.phone}</strong>.
+            </p>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={() => { setDupPatient(null); onClose(); router.push(`/patients/${dupPatient.id}`); }}
+                style={{ flex: 1, padding: "9px 0", borderRadius: 10, background: "var(--gold)", color: "#fff", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "Georgia, serif" }}>
+                View Existing Patient
+              </button>
+              <button
+                onClick={doInsert}
+                style={{ flex: 1, padding: "9px 0", borderRadius: 10, background: "#fff", color: "#6B7280", fontWeight: 600, fontSize: 13, border: "1px solid rgba(197,160,89,0.3)", cursor: "pointer" }}>
+                Create Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Backdrop ── */}
       <div
         onClick={onClose}

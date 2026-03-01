@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { logAction } from "@/lib/audit";
 
 function adminClient() {
   return createClient(
@@ -12,7 +13,7 @@ function adminClient() {
 }
 
 // Resolve caller's role + clinic_id from their session cookie
-async function getCallerProfile(): Promise<{ role: string; clinic_id: string | null } | null> {
+async function getCallerProfile(): Promise<{ id: string; full_name: string | null; role: string; clinic_id: string | null } | null> {
   try {
     const cookieStore = await cookies();
     const sb = createServerClient(
@@ -33,7 +34,7 @@ async function getCallerProfile(): Promise<{ role: string; clinic_id: string | n
 
     const { data: profile } = await adminClient()
       .from("profiles")
-      .select("role, clinic_id")
+      .select("id, full_name, role, clinic_id")
       .eq("id", user.id)
       .single();
 
@@ -131,13 +132,14 @@ export async function POST(
 
   // ── Save SOAP encounter ──────────────────────────────────────────────────
   if (body.action === "save_encounter") {
-    const { subjective, objective, assessment, plan, photos, created_by_name } = body as {
+    const { subjective, objective, assessment, plan, photos, created_by_name, cpt_codes } = body as {
       subjective?: string;
       objective?: string;
       assessment?: string;
       plan?: string;
       photos?: { url: string; type: string; caption?: string }[];
       created_by_name?: string;
+      cpt_codes?: string[];
     };
 
     const { data, error } = await supabase
@@ -150,12 +152,19 @@ export async function POST(
         assessment:       assessment?.trim()  || null,
         plan:             plan?.trim()        || null,
         photos:           photos ?? [],
+        cpt_codes:        cpt_codes ?? [],
         created_by_name:  created_by_name?.trim() || "Provider",
       })
       .select("id")
       .single();
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    logAction({
+      clinicId:   caller?.clinic_id ?? undefined,
+      action:     "encounter.create",
+      targetId:   id,
+      targetName: `SOAP by ${created_by_name ?? "Provider"}`,
+    });
     return NextResponse.json({ success: true, encounterId: data?.id });
   }
 
@@ -174,13 +183,20 @@ export async function POST(
       author_name: author_name?.trim() || "Staff",
     });
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    logAction({
+      clinicId:   caller?.clinic_id ?? undefined,
+      action:     "note.create",
+      targetId:   id,
+      targetName: `${note_type} note`,
+    });
     return NextResponse.json({ success: true });
   }
 
   // ── Add proposed treatment ───────────────────────────────────────────────
   if (body.action === "add_treatment") {
     const { treatment_name, price, quoted_price, mrp, discount_pct,
-            package_type, counselled_by, counselling_session_id, notes } = body;
+            package_type, counselled_by, counselling_session_id, notes,
+            recommended_sessions } = body;
     const { error } = await supabase.from("patient_treatments").insert({
       patient_id:              id,
       clinic_id:               caller?.clinic_id ?? null,
@@ -194,8 +210,15 @@ export async function POST(
       counselled_by:           counselled_by || null,
       counselling_session_id:  counselling_session_id || null,
       notes:                   notes         || null,
+      recommended_sessions:    recommended_sessions ? parseInt(recommended_sessions) : null,
     });
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    logAction({
+      clinicId:   caller?.clinic_id ?? undefined,
+      action:     "treatment.propose",
+      targetId:   id,
+      targetName: treatment_name,
+    });
     return NextResponse.json({ success: true });
   }
 

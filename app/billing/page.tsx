@@ -1029,6 +1029,17 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
           </div>
         </div>
 
+        {/* Inventory reminder */}
+        <div className="mx-5 mb-4 flex items-start gap-2 px-3 py-2 rounded-xl"
+          style={{ background: "rgba(197,160,89,0.06)", border: "1px solid rgba(197,160,89,0.18)" }}>
+          <Package size={13} style={{ color: "var(--gold)", flexShrink: 0, marginTop: 1 }} />
+          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+            If consumables were used, record stock usage in{" "}
+            <a href="/inventory" target="_blank" rel="noopener noreferrer"
+              style={{ color: "var(--gold)", fontWeight: 600 }}>Inventory → Adjust Stock</a>
+          </p>
+        </div>
+
         {/* Footer */}
         <div className="flex gap-3 px-5 pb-5">
           <button onClick={onClose} className="flex-1 py-3 rounded-xl text-sm font-semibold"
@@ -1065,6 +1076,7 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
   const [notes,     setNotes]         = useState("");
   const [dueDate,   setDueDate]       = useState("");
   const [saving,    setSaving]        = useState(false);
+  const [membershipBenefit, setMembershipBenefit] = useState<{ planName: string; discountPct: number } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -1080,6 +1092,39 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
   const filteredPats = patSearch.length >= 1
     ? patients.filter(p => p.full_name.toLowerCase().includes(patSearch.toLowerCase()))
     : [];
+
+  // When patient changes, check for active membership benefits
+  useEffect(() => {
+    if (!selPat) { setMembershipBenefit(null); return; }
+    (async () => {
+      const { data } = await supabase
+        .from("patient_memberships")
+        .select("plan:membership_plans!plan_id(name, benefits)")
+        .eq("patient_id", selPat.id)
+        .eq("status", "active")
+        .lte("started_at", new Date().toISOString())
+        .gte("expires_at", new Date().toISOString())
+        .limit(1)
+        .maybeSingle();
+      if (!data?.plan) { setMembershipBenefit(null); return; }
+      // Supabase returns joined row as an array even with !inner — normalise to object
+      const rawPlan = Array.isArray(data.plan) ? data.plan[0] : data.plan;
+      const plan = rawPlan as unknown as { name: string; benefits: Record<string, unknown> };
+      const discountPct = typeof plan.benefits?.discount === "number" ? plan.benefits.discount : 0;
+      if (discountPct > 0) {
+        setMembershipBenefit({ planName: plan.name, discountPct });
+        // Auto-apply discount to all line items
+        setItems(prev => prev.map(it => {
+          const updated = { ...it, discount_pct: discountPct };
+          updated.line_total = calcLineTotal(updated);
+          return updated;
+        }));
+        toast.success(`${plan.name} membership applied — ${discountPct}% discount`, { duration: 3000 });
+      } else {
+        setMembershipBenefit({ planName: plan.name, discountPct: 0 });
+      }
+    })();
+  }, [selPat]);
 
   const updateItem = (idx: number, field: keyof InvoiceItem, val: unknown) => {
     const arr = [...items];
@@ -1214,6 +1259,20 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
               </div>
             )}
           </div>
+
+          {/* Membership benefit banner */}
+          {membershipBenefit && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl"
+              style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.25)" }}>
+              <BadgeCheck size={14} style={{ color: "var(--gold)", flexShrink: 0 }} />
+              <p className="text-xs font-medium" style={{ color: "var(--gold)" }}>
+                {membershipBenefit.planName} member
+                {membershipBenefit.discountPct > 0
+                  ? ` — ${membershipBenefit.discountPct}% discount applied to all line items`
+                  : " — no discount benefit on this plan"}
+              </p>
+            </div>
+          )}
 
           {/* Line items */}
           <div>

@@ -9,11 +9,14 @@ import {
   Clipboard, Camera, Stethoscope, Syringe, Star, ChevronDown,
   ChevronUp, Upload, Image, Loader2, User, ShieldCheck,
   CheckCircle2, TrendingUp, Activity, Zap, MapPin, ArrowUpCircle,
+  Printer, MessageCircle, Save, Send,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { useClinic } from "@/contexts/ClinicContext";
 import { logAction } from "@/lib/audit";
 import { toast } from "sonner";
 import BeforeAfterProgress from "@/components/BeforeAfterProgress";
+import ReferenceGalleryModal from "@/components/ReferenceGalleryModal";
 
 // ─────────────────────────────────────── Types ───────────────────────────────
 
@@ -52,11 +55,18 @@ interface Treatment {
   package_type: string | null;
   counselled_by: string | null; counselling_session_id: string | null;
   notes: string | null; created_at: string;
+  recommended_sessions: number | null;
 }
 interface PatientPackage {
   id: string; package_name: string; total_sessions: number;
   used_sessions: number; price_per_session: number | null; created_at: string;
 }
+interface Service { id: string; name: string; selling_price: number; mrp: number; }
+interface Staff   { id: string; full_name: string; role: string; }
+type CounsTreatmentRow = {
+  service_id: string; service_name: string;
+  mrp: number; quoted_price: string; discount_pct: string; sessions: string; recommended: boolean;
+};
 interface ServiceCredit {
   id: string; service_name: string; total_sessions: number; used_sessions: number;
   purchase_price: number; per_session_value: number;
@@ -208,7 +218,7 @@ export default function PatientEMRPage() {
 
           {/* Right */}
           <div className="emr-col" style={{ overflowY: "auto", borderLeft: "1px solid rgba(197,160,89,0.13)", padding: "20px 16px 32px" }}>
-            <BusinessColumn treatments={treatments} packages={packages} patientId={id} onAddTreatment={() => { setFabOpen(false); setDrawer("treatment"); }} />
+            <BusinessColumn treatments={treatments} packages={packages} patient={patient} onAddTreatment={() => { setFabOpen(false); setDrawer("treatment"); }} onRefresh={fetchData} />
           </div>
         </div>
       </div>
@@ -237,7 +247,7 @@ export default function PatientEMRPage() {
 
       {/* ── Add Treatment Drawer ── */}
       {mounted && drawer === "treatment" && createPortal(
-        <TreatmentDrawer patientId={id} onClose={closeDrawer} />,
+        <TreatmentDrawer patient={patient} onClose={closeDrawer} />,
         document.body
       )}
     </>
@@ -684,10 +694,242 @@ function NoteEntryBody({ note }: { note: PatientNote }) {
 const fmtINR = (n: number) =>
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
 
-function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { treatments: Treatment[]; packages: PatientPackage[]; patientId: string; onAddTreatment: () => void }) {
-  const proposed   = treatments.filter(t => t.status === "proposed");
-  const totalValue = proposed.reduce((s, t) => s + (t.price ?? 0), 0);
+// ─────────────────────────────────────── Proforma Invoice Modal ───────────────
+
+function EMRProformaModal({ patient, treatments, clinicName, onClose }: {
+  patient: Patient; treatments: Treatment[]; clinicName: string; onClose: () => void;
+}) {
+  const [sharePhone, setSharePhone] = useState(patient.phone ?? "");
+  const [shareEmail, setShareEmail] = useState(patient.email ?? "");
+  const [saving,     setSaving]     = useState(false);
+
+  const dateStr  = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+  const total    = treatments.reduce((s, t) => s + (t.quoted_price ?? t.price ?? 0), 0);
+  const totalMrp = treatments.reduce((s, t) => s + (t.mrp ?? t.quoted_price ?? t.price ?? 0), 0);
+
+  const whatsappMsg = [
+    `*${clinicName || "Clinic"} — Treatment Estimate*`,
+    `Patient: ${patient.full_name}  |  Date: ${dateStr}`,
+    "",
+    ...treatments.map(t => {
+      const mrp    = t.mrp ?? (t.quoted_price ?? t.price ?? 0);
+      const quoted = t.quoted_price ?? t.price ?? 0;
+      const disc   = t.discount_pct ?? 0;
+      const sess   = t.recommended_sessions && t.recommended_sessions > 1 ? ` × ${t.recommended_sessions} sessions` : "";
+      return `${t.treatment_name}${sess}  MRP ₹${mrp.toLocaleString("en-IN")} → ₹${quoted.toLocaleString("en-IN")}${disc > 0 ? ` (${disc.toFixed(1)}% off)` : ""}`;
+    }),
+    "──────────────────",
+    `*Total Quoted: ₹${total.toLocaleString("en-IN")}*`,
+    "Valid 7 days. Reply YES to confirm.",
+  ].join("\n");
+
+  const handleWhatsApp = () => {
+    const phone = sharePhone.replace(/\D/g, "");
+    window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(whatsappMsg)}`, "_blank");
+  };
+
+  const handleEmail = () => {
+    const subject = encodeURIComponent(`${clinicName || "Clinic"} — Treatment Estimate for ${patient.full_name}`);
+    const body    = encodeURIComponent(whatsappMsg.replace(/\*/g, ""));
+    window.location.href = `mailto:${shareEmail}?subject=${subject}&body=${body}`;
+  };
+
+  const handlePrint = () => {
+    const html = `<!DOCTYPE html><html><head><title>Proforma Estimate</title>
+    <style>
+      body{font-family:Georgia,serif;padding:40px;color:#1a1714;max-width:640px;margin:0 auto}
+      h1{font-size:22px;color:#C5A059;margin-bottom:4px}
+      .sub{font-size:13px;color:#9C9584;margin-bottom:24px}
+      table{width:100%;border-collapse:collapse;margin-top:16px}
+      th{text-align:left;padding:9px 8px;background:#f9f7f2;border-bottom:2px solid #C5A059;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:#6B6358}
+      td{padding:9px 8px;border-bottom:1px solid #e5e0d8;font-size:13px}
+      .strike{text-decoration:line-through;color:#9C9584}
+      .disc{color:#16a34a;font-size:11px;font-weight:600}
+      .total-row{font-size:15px;font-weight:bold;color:#C5A059;text-align:right;margin-top:16px;padding-top:12px;border-top:2px solid #C5A059}
+      .footer{margin-top:28px;font-size:11px;color:#9ca3af;border-top:1px solid #e5e0d8;padding-top:12px}
+    </style></head><body>
+    <h1>${clinicName || "Clinic"}</h1>
+    <div class="sub">Proforma Estimate · ${dateStr}</div>
+    <p><strong>Patient:</strong> ${patient.full_name}</p>
+    <table>
+      <thead><tr><th>Treatment</th><th>Sessions</th><th>MRP</th><th>Quoted</th><th>Disc%</th></tr></thead>
+      <tbody>
+        ${treatments.map(t => {
+          const mrp    = t.mrp ?? (t.quoted_price ?? t.price ?? 0);
+          const quoted = t.quoted_price ?? t.price ?? 0;
+          const disc   = t.discount_pct ?? 0;
+          return `<tr>
+            <td>${t.treatment_name}</td>
+            <td>${t.recommended_sessions ?? 1}</td>
+            <td><span class="strike">₹${mrp.toLocaleString("en-IN")}</span></td>
+            <td><strong>₹${quoted.toLocaleString("en-IN")}</strong></td>
+            <td>${disc > 0 ? `<span class="disc">${disc.toFixed(1)}%</span>` : "—"}</td>
+          </tr>`;
+        }).join("")}
+      </tbody>
+    </table>
+    <div class="total-row">Total Quoted: ₹${total.toLocaleString("en-IN")}</div>
+    ${totalMrp > total ? `<div style="text-align:right;font-size:11px;color:#16a34a;margin-top:4px">You save ₹${(totalMrp - total).toLocaleString("en-IN")}</div>` : ""}
+    <div class="footer">
+      Valid 7 days from ${dateStr}. This is an estimate and not a final invoice.<br/>
+      ${clinicName || "Clinic"} · ${patient.phone ?? ""}${patient.email ? " · " + patient.email : ""}
+    </div>
+    </body></html>`;
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(html); w.document.close(); w.print(); }
+  };
+
+  const handleSaveProforma = async () => {
+    setSaving(true);
+    try {
+      const { data: inv } = await supabase.from("pending_invoices").insert({
+        clinic_id:    patient.clinic_id,
+        patient_name: patient.full_name,
+        total_amount: total,
+        invoice_type: "proforma",
+        payment_mode: "cash",
+      }).select("id").single();
+      if (inv) {
+        await supabase.from("invoice_line_items").insert(
+          treatments.map(t => ({
+            invoice_id:   inv.id,
+            clinic_id:    patient.clinic_id,
+            description:  `${t.treatment_name}${t.recommended_sessions && t.recommended_sessions > 1 ? ` × ${t.recommended_sessions} sessions` : ""}`,
+            quantity:     t.recommended_sessions ?? 1,
+            unit_price:   t.mrp ?? (t.quoted_price ?? t.price ?? 0),
+            discount_pct: t.discount_pct ?? 0,
+            gst_pct:      0,
+            line_total:   t.quoted_price ?? t.price ?? 0,
+          }))
+        );
+        toast.success("Proforma saved to Billing.");
+      }
+    } finally {
+      setSaving(false);
+      onClose();
+    }
+  };
+
+  const inputSt: React.CSSProperties = {
+    width: "100%", padding: "8px 12px", borderRadius: 8,
+    border: "1px solid rgba(197,160,89,0.25)", background: "white",
+    fontSize: 13, color: "#1C1917", outline: "none", boxSizing: "border-box",
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 70, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)" }}>
+      <div style={{ background: "#F9F7F2", borderRadius: 18, overflow: "hidden", display: "flex", flexDirection: "column", width: 620, maxWidth: "95vw", maxHeight: "90vh", boxShadow: "0 24px 64px rgba(0,0,0,0.25)" }}>
+
+        {/* Header */}
+        <div style={{ padding: "18px 22px", background: "white", borderBottom: "1px solid rgba(197,160,89,0.15)", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(197,160,89,0.1)", border: "1px solid rgba(197,160,89,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <FileText size={15} style={{ color: "var(--gold)" }} />
+            </div>
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Proforma Estimate</p>
+              <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>{patient.full_name} · {treatments.length} treatment{treatments.length !== 1 ? "s" : ""}</p>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <X size={13} style={{ color: "#9C9584" }} />
+          </button>
+        </div>
+
+        {/* Treatment preview table */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 22px" }}>
+          <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid rgba(197,160,89,0.15)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 55px 85px 80px 55px", gap: 0, background: "rgba(197,160,89,0.06)", padding: "7px 12px", borderBottom: "1px solid rgba(197,160,89,0.12)" }}>
+              {["Treatment", "Sess.", "MRP", "Quoted", "Disc%"].map(h => (
+                <span key={h} style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#9C9584" }}>{h}</span>
+              ))}
+            </div>
+            {treatments.map((t, i) => {
+              const mrp    = t.mrp ?? (t.quoted_price ?? t.price ?? 0);
+              const quoted = t.quoted_price ?? t.price ?? 0;
+              const disc   = t.discount_pct ?? 0;
+              return (
+                <div key={t.id} style={{ display: "grid", gridTemplateColumns: "1fr 55px 85px 80px 55px", gap: 0, padding: "8px 12px", borderBottom: i < treatments.length - 1 ? "1px solid rgba(197,160,89,0.08)" : "none", background: "white" }}>
+                  <span style={{ fontSize: 12, color: "#1C1917", fontFamily: "Georgia, serif" }}>{t.treatment_name}</span>
+                  <span style={{ fontSize: 12, color: "#6B6358", textAlign: "center" }}>{t.recommended_sessions ?? 1}</span>
+                  <span style={{ fontSize: 11, color: "#9C9584", textDecoration: "line-through" }}>₹{mrp.toLocaleString("en-IN")}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--gold)", fontFamily: "Georgia, serif" }}>₹{quoted.toLocaleString("en-IN")}</span>
+                  <span style={{ fontSize: 11, color: disc > 0 ? "#16a34a" : "#9C9584", fontWeight: disc > 0 ? 600 : 400 }}>{disc > 0 ? `${disc.toFixed(1)}%` : "—"}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Total row */}
+          <div style={{ marginTop: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.2)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              {totalMrp > total && (
+                <p style={{ fontSize: 11, color: "#16a34a", fontWeight: 600, margin: 0 }}>
+                  You save ₹{(totalMrp - total).toLocaleString("en-IN")}
+                </p>
+              )}
+              <p style={{ fontSize: 10, color: "#9C9584", margin: 0 }}>Valid 7 days from {dateStr}</p>
+            </div>
+            <span style={{ fontSize: 18, fontWeight: 700, color: "var(--gold)", fontFamily: "Georgia, serif" }}>
+              ₹{total.toLocaleString("en-IN")}
+            </span>
+          </div>
+
+          {/* Contact fields */}
+          <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>WhatsApp Number</label>
+              <input value={sharePhone} onChange={e => setSharePhone(e.target.value)} placeholder="Patient phone" style={inputSt} />
+            </div>
+            <div>
+              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Email Address</label>
+              <input value={shareEmail} onChange={e => setShareEmail(e.target.value)} placeholder="Patient email" style={inputSt} />
+            </div>
+          </div>
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ padding: "14px 22px", borderTop: "1px solid rgba(197,160,89,0.15)", background: "white", display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
+          <button onClick={handlePrint}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(107,114,128,0.25)", background: "rgba(107,114,128,0.06)", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#374151" }}>
+            <Printer size={13} /> Print
+          </button>
+          <button onClick={handleWhatsApp} disabled={!sharePhone.trim()}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(37,211,102,0.3)", background: "rgba(37,211,102,0.08)", cursor: !sharePhone.trim() ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 600, color: "#16a34a", opacity: !sharePhone.trim() ? 0.5 : 1 }}>
+            <MessageCircle size={13} /> WhatsApp
+          </button>
+          <button onClick={handleEmail} disabled={!shareEmail.trim()}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(59,130,246,0.25)", background: "rgba(59,130,246,0.06)", cursor: !shareEmail.trim() ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 600, color: "#2563eb", opacity: !shareEmail.trim() ? 0.5 : 1 }}>
+            <Mail size={13} /> Email
+          </button>
+          <button onClick={handleSaveProforma} disabled={saving}
+            style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", borderRadius: 9, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.1)", cursor: saving ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 600, color: "var(--gold)" }}>
+            <Save size={13} /> {saving ? "Saving…" : "Save to Billing"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BusinessColumn({ treatments, packages, patient, onAddTreatment, onRefresh }: { treatments: Treatment[]; packages: PatientPackage[]; patient: Patient; onAddTreatment: () => void; onRefresh: () => void }) {
+
+  const updateTreatmentStatus = async (treatmentId: string, newStatus: string) => {
+    await supabase.from("patient_treatments").update({ status: newStatus }).eq("id", treatmentId);
+    onRefresh();
+  };
+  const { activeClinicId } = useClinic();
+  const proposed   = treatments.filter(t => t.status === "proposed" || t.status === "in_progress");
+  const totalValue = proposed.filter(t => t.status === "proposed").reduce((s, t) => s + (t.quoted_price ?? t.price ?? 0), 0);
   const [credits, setCredits] = useState<ServiceCredit[]>([]);
+  const [refGalleryTreatment, setRefGalleryTreatment] = useState<string | null>(null);
+  const [proformaOpen,        setProformaOpen]        = useState(false);
+  const [clinicName,          setClinicName]          = useState("");
+  useEffect(() => {
+    if (!activeClinicId) return;
+    supabase.from("clinics").select("name").eq("id", activeClinicId).single()
+      .then(({ data }) => { if (data?.name) setClinicName(data.name); });
+  }, [activeClinicId]);
 
   useEffect(() => {
     supabase
@@ -698,7 +940,7 @@ function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { t
         purchase_clinic:clinics!purchase_clinic_id(name),
         current_clinic:clinics!current_clinic_id(name)
       `)
-      .eq("patient_id", patientId)
+      .eq("patient_id", patient.id)
       .in("status", ["active", "transferred"])
       .order("created_at", { ascending: false })
       .then(({ data }) => {
@@ -708,7 +950,7 @@ function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { t
           current_clinic_name:  (c.current_clinic  as { name: string } | null)?.name ?? "—",
         })) as ServiceCredit[]);
       });
-  }, [patientId]);
+  }, [patient.id]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -811,7 +1053,7 @@ function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { t
               {proposed.map(t => {
                 const displayPrice = t.quoted_price ?? t.price;
                 const isHighValue  = (displayPrice ?? 0) > 500;
-                const pkgLabel: Record<string, string> = { single_service: "Single", custom_package: "Custom Pkg", fixed_package: "Fixed Pkg" };
+                const pkgLabel: Record<string, string> = { single_service: "Single", custom_package: "Custom Pkg" };
                 const viaCouns = !!t.counselling_session_id;
                 return (
                   <div key={t.id} style={{
@@ -832,12 +1074,19 @@ function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { t
                           <Star size={8} style={{ display: "inline", verticalAlign: "middle", marginRight: 2 }} />High Value
                         </span>
                       )}
+                      {/* Reference B/A button */}
+                      <button
+                        onClick={e => { e.stopPropagation(); setRefGalleryTreatment(t.treatment_name); }}
+                        title="View brand reference photos"
+                        style={{ width: 20, height: 20, borderRadius: 5, border: "1px solid rgba(124,58,237,0.25)", background: "rgba(124,58,237,0.07)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
+                        <Image size={10} style={{ color: "#7c3aed" }} />
+                      </button>
                     </div>
                     <p style={{ fontSize: 12, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0, paddingRight: 90 }}>
                       {t.treatment_name}
                     </p>
                     {/* Origin tag */}
-                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 3 }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 3, flexWrap: "wrap" }}>
                       {viaCouns ? (
                         <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 4, background: "rgba(5,150,105,0.1)", color: "#059669", textTransform: "uppercase", letterSpacing: "0.05em" }}>Via Counselling</span>
                       ) : (
@@ -845,6 +1094,11 @@ function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { t
                       )}
                       {t.counselled_by && (
                         <span style={{ fontSize: 10, color: "#9C9584" }}>by {t.counselled_by}</span>
+                      )}
+                      {t.recommended_sessions != null && t.recommended_sessions > 0 && (
+                        <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 4, background: "rgba(124,58,237,0.1)", color: "#7c3aed", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                          {t.recommended_sessions} {t.recommended_sessions === 1 ? "session" : "sessions"}
+                        </span>
                       )}
                     </div>
                     {/* Pricing breakdown */}
@@ -862,15 +1116,47 @@ function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { t
                         ₹{displayPrice.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
                       </p>
                     ) : null}
+                    {/* Status lifecycle actions */}
+                    <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                      {t.status === "proposed" && (
+                        <>
+                          <button onClick={() => updateTreatmentStatus(t.id, "in_progress")}
+                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(37,99,235,0.3)", background: "rgba(37,99,235,0.07)", color: "#2563eb", cursor: "pointer" }}>
+                            → In Progress
+                          </button>
+                          <button onClick={() => updateTreatmentStatus(t.id, "completed")}
+                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(5,150,105,0.3)", background: "rgba(5,150,105,0.07)", color: "#059669", cursor: "pointer" }}>
+                            ✓ Complete
+                          </button>
+                          <button onClick={() => updateTreatmentStatus(t.id, "cancelled")}
+                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(156,149,132,0.3)", background: "rgba(156,149,132,0.07)", color: "#9C9584", cursor: "pointer" }}>
+                            × Cancel
+                          </button>
+                        </>
+                      )}
+                      {t.status === "in_progress" && (
+                        <>
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 6, background: "rgba(37,99,235,0.1)", color: "#2563eb", border: "1px solid rgba(37,99,235,0.2)" }}>In Progress</span>
+                          <button onClick={() => updateTreatmentStatus(t.id, "completed")}
+                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(5,150,105,0.3)", background: "rgba(5,150,105,0.07)", color: "#059669", cursor: "pointer" }}>
+                            ✓ Complete
+                          </button>
+                          <button onClick={() => updateTreatmentStatus(t.id, "cancelled")}
+                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(156,149,132,0.3)", background: "rgba(156,149,132,0.07)", color: "#9C9584", cursor: "pointer" }}>
+                            × Cancel
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 );
               })}
             </div>
 
-            {/* Total + Add */}
+            {/* Total + Add + Proforma */}
             {totalValue > 0 && (
               <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: "linear-gradient(135deg, rgba(197,160,89,0.1), rgba(168,133,58,0.06))", border: "1px solid rgba(197,160,89,0.25)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ fontSize: 11, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em" }}>Proposed Total</span>
                     <button
@@ -884,6 +1170,13 @@ function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { t
                     ₹{totalValue.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
                   </span>
                 </div>
+                {/* Share Proforma button */}
+                <button
+                  onClick={() => setProformaOpen(true)}
+                  style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.12)", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "var(--gold)", fontFamily: "Georgia, serif" }}
+                >
+                  <Send size={12} /> Share Proforma Invoice
+                </button>
               </div>
             )}
           </>
@@ -905,6 +1198,25 @@ function BusinessColumn({ treatments, packages, patientId, onAddTreatment }: { t
           ))}
         </div>
       </Card>
+
+      {/* Reference Gallery Modal */}
+      {refGalleryTreatment && activeClinicId && (
+        <ReferenceGalleryModal
+          treatmentName={refGalleryTreatment}
+          clinicId={activeClinicId}
+          onClose={() => setRefGalleryTreatment(null)}
+        />
+      )}
+
+      {/* Proforma Invoice Modal */}
+      {proformaOpen && (
+        <EMRProformaModal
+          patient={patient}
+          treatments={proposed}
+          clinicName={clinicName}
+          onClose={() => setProformaOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1032,7 +1344,7 @@ function SOAPDrawer({ patient, onClose }: { patient: Patient; onClose: () => voi
     const res = await fetch(`/api/patients/${patient.id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "save_encounter", ...soap, photos: uploadedPhotos }),
+      body: JSON.stringify({ action: "save_encounter", ...soap, photos: uploadedPhotos, cpt_codes: attachedCodes.map(c => c.code) }),
     });
     const data = await res.json();
     setSaving(false);
@@ -1344,51 +1656,163 @@ function NoteDrawer({ patientId, onClose }: { patientId: string; onClose: () => 
   );
 }
 
-// ─────────────────────────────────────── Add Treatment Drawer ────────────────
+// ─────────────────────────────────────── Counselling Session Drawer ──────────
+// Full counselling-session form embedded in the patient EMR.
+// Saves to counselling_sessions + patient_treatments for bidirectional sync.
 
-type DrTreatmentPkgType = "single_service" | "custom_package" | "fixed_package";
-const DR_PKG_OPTIONS: { key: DrTreatmentPkgType; label: string }[] = [
-  { key: "single_service", label: "Single Service" },
-  { key: "custom_package", label: "Custom Package" },
-  { key: "fixed_package",  label: "Fixed Package"  },
+const INPUT_STYLE: React.CSSProperties = {
+  width: "100%", padding: "9px 12px", borderRadius: 8,
+  border: "1px solid rgba(197,160,89,0.25)", background: "white",
+  fontSize: 12, fontFamily: "Georgia, serif", color: "#1C1917",
+  outline: "none", boxSizing: "border-box",
+};
+
+const PKG_OPTS = [
+  { key: "single_service" as const, label: "Single Service" },
+  { key: "custom_package" as const, label: "Custom Package" },
 ];
 
-function TreatmentDrawer({ patientId, onClose }: { patientId: string; onClose: () => void }) {
-  const [name,       setName]       = useState("");
-  const [price,      setPrice]      = useState("");
-  const [counselled, setCounselled] = useState("");
-  const [notes,      setNotes]      = useState("");
-  const [pkgType,    setPkgType]    = useState<DrTreatmentPkgType>("single_service");
-  const [saving,     setSaving]     = useState(false);
+function TreatmentDrawer({ patient, onClose }: { patient: Patient; onClose: () => void }) {
+  const { profile, activeClinicId: clinicId } = useClinic();
 
-  async function handleSave() {
-    if (!name.trim()) { toast.error("Treatment name is required."); return; }
-    setSaving(true);
-    const res = await fetch(`/api/patients/${patientId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "add_treatment", treatment_name: name.trim(), price: price || null, counselled_by: counselled.trim() || null, notes: notes.trim() || null, package_type: pkgType }),
+  // ── Services & Staff ────────────────────────────────────────────────────────
+  const [services, setServices] = useState<Service[]>([]);
+  const [staff,    setStaff]    = useState<Staff[]>([]);
+  useEffect(() => {
+    if (!clinicId) return;
+    Promise.all([
+      supabase.from("services").select("id, name, selling_price, mrp").eq("clinic_id", clinicId).eq("is_active", true).order("name"),
+      supabase.from("profiles").select("id, full_name, role").eq("clinic_id", clinicId).eq("is_active", true),
+    ]).then(([sRes, stRes]) => {
+      setServices(sRes.data ?? []);
+      setStaff(stRes.data ?? []);
     });
-    const data = await res.json();
+  }, [clinicId]);
+
+  // ── Session-level fields ────────────────────────────────────────────────────
+  // Initialize counsellor to logged-in user immediately; editable by user
+  const [counsellorId,    setCounsellorId]    = useState(profile?.id ?? "");
+  const [sessionDate,     setSessionDate]     = useState(new Date().toISOString().split("T")[0]);
+  const [chiefComplaint,  setChiefComplaint]  = useState("");
+  const [pkgType,         setPkgType]         = useState<"single_service" | "custom_package">("single_service");
+  const [notes,           setNotes]           = useState("");
+  const [followupDate,    setFollowupDate]    = useState("");
+
+  // ── Treatment rows ──────────────────────────────────────────────────────────
+  const [treatments, setTreatments] = useState<CounsTreatmentRow[]>([
+    { service_id: "", service_name: "", mrp: 0, quoted_price: "", discount_pct: "0", sessions: "1", recommended: false },
+  ]);
+
+  const selectService = (idx: number, serviceId: string) => {
+    const svc = services.find(s => s.id === serviceId);
+    if (!svc) return;
+    const effectiveMrp = svc.mrp || svc.selling_price;
+    const disc = effectiveMrp > 0 ? ((effectiveMrp - svc.selling_price) / effectiveMrp * 100).toFixed(1) : "0";
+    const newT = [...treatments];
+    newT[idx] = { ...newT[idx], service_id: svc.id, service_name: svc.name, mrp: effectiveMrp, quoted_price: String(svc.selling_price), discount_pct: disc };
+    setTreatments(newT);
+  };
+
+  const updateRow = (idx: number, field: keyof CounsTreatmentRow, raw: string | boolean | number) => {
+    const newT = [...treatments];
+    const mrp  = newT[idx].mrp;
+    if (field === "quoted_price") {
+      const q = parseFloat(raw as string) || 0;
+      newT[idx] = { ...newT[idx], quoted_price: raw as string, discount_pct: mrp > 0 ? ((mrp - q) / mrp * 100).toFixed(1) : "0" };
+    } else if (field === "discount_pct") {
+      const d = parseFloat(raw as string) || 0;
+      newT[idx] = { ...newT[idx], discount_pct: raw as string, quoted_price: mrp > 0 ? (mrp * (1 - d / 100)).toFixed(0) : "0" };
+    } else if (field === "mrp") {
+      newT[idx] = { ...newT[idx], mrp: Number(raw) };
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (newT[idx] as any)[field] = raw;
+    }
+    setTreatments(newT);
+  };
+
+  const [saving, setSaving] = useState(false);
+
+  const canSave = treatments.some(t => t.service_name.trim());
+
+  const handleSave = async () => {
+    if (!canSave) { toast.error("Add at least one treatment."); return; }
+    if (!clinicId) { toast.error("Clinic not found."); return; }
+    setSaving(true);
+
+    const counsellorName = staff.find(s => s.id === counsellorId)?.full_name || profile?.full_name || null;
+    const validRows = treatments.filter(t => t.service_name.trim());
+    const treatmentData = validRows.map(t => ({
+      service_id:   t.service_id || undefined,
+      service_name: t.service_name.trim(),
+      mrp:          t.mrp || 0,
+      price:        parseFloat(t.quoted_price) || 0,
+      quoted_price: parseFloat(t.quoted_price) || 0,
+      discount_pct: parseFloat(t.discount_pct) || 0,
+      recommended:  t.recommended,
+      sessions:     parseInt(t.sessions) || 1,
+    }));
+    const total_proposed = treatmentData.reduce((s, t) => s + t.quoted_price, 0);
+    const total_accepted  = treatmentData.filter(t => t.recommended).reduce((s, t) => s + t.quoted_price, 0);
+
+    const { data: session, error } = await supabase.from("counselling_sessions").insert({
+      clinic_id:            clinicId,
+      patient_id:           patient.id,
+      counsellor_id:        counsellorId || null,
+      session_date:         sessionDate,
+      chief_complaint:      chiefComplaint.trim() || null,
+      treatments_discussed: treatmentData,
+      total_proposed,
+      total_accepted,
+      conversion_status:    "pending",
+      package_type:         pkgType,
+      followup_date:        followupDate || null,
+      notes:                notes.trim() || null,
+    }).select("id").single();
+
+    if (!error && session) {
+      const ptInserts = treatmentData.map(t => ({
+        patient_id:              patient.id,
+        clinic_id:               clinicId,
+        treatment_name:          t.service_name,
+        status:                  "proposed",
+        price:                   t.quoted_price || null,
+        quoted_price:            t.quoted_price || null,
+        mrp:                     t.mrp || null,
+        discount_pct:            t.discount_pct || null,
+        package_type:            pkgType,
+        counselled_by:           counsellorName,
+        counselling_session_id:  session.id,
+        notes:                   notes.trim() || null,
+        recommended_sessions:    t.sessions || null,
+      }));
+      await supabase.from("patient_treatments").insert(ptInserts);
+      toast.success(`Session saved — ${treatmentData.length} treatment${treatmentData.length > 1 ? "s" : ""} added.`);
+      onClose();
+    } else {
+      toast.error(error?.message ?? "Failed to save session.");
+    }
     setSaving(false);
-    if (data.success) { toast.success("Treatment added."); onClose(); }
-    else toast.error(data.error ?? "Failed to add treatment.");
-  }
+  };
+
+  const totalMrp    = treatments.reduce((s, t) => s + (t.mrp || 0), 0);
+  const totalQuoted = treatments.reduce((s, t) => s + (parseFloat(t.quoted_price) || 0), 0);
+  const avgDisc     = totalMrp > 0 ? ((totalMrp - totalQuoted) / totalMrp * 100) : 0;
 
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 40, background: "rgba(28,25,23,0.45)", backdropFilter: "blur(2px)" }} />
-      <div style={{ position: "fixed", right: 0, top: 0, bottom: 0, zIndex: 50, width: 460, display: "flex", flexDirection: "column", background: "#F9F7F2", boxShadow: "-8px 0 40px rgba(28,25,23,0.18)", animation: "slideInRight 0.25s ease" }}>
+      <div style={{ position: "fixed", right: 0, top: 0, bottom: 0, zIndex: 50, width: 640, display: "flex", flexDirection: "column", background: "#F9F7F2", boxShadow: "-8px 0 40px rgba(28,25,23,0.18)", animation: "slideInRight 0.25s ease" }}>
 
         {/* Header */}
-        <div style={{ padding: "20px 22px", background: "white", borderBottom: "1px solid rgba(197,160,89,0.18)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ padding: "18px 22px", background: "white", borderBottom: "1px solid rgba(197,160,89,0.18)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(5,150,105,0.1)", border: "1px solid rgba(5,150,105,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <DollarSign size={16} style={{ color: "#059669" }} />
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(197,160,89,0.1)", border: "1px solid rgba(197,160,89,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <DollarSign size={16} style={{ color: "var(--gold)" }} />
             </div>
             <div>
-              <p style={{ fontSize: 14, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Add Proposed Treatment</p>
-              <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>Counselling record · proposed status</p>
+              <p style={{ fontSize: 14, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Counselling Session</p>
+              <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>{patient.full_name} · Proposed treatments</p>
             </div>
           </div>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -1397,103 +1821,171 @@ function TreatmentDrawer({ patientId, onClose }: { patientId: string; onClose: (
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, padding: "20px 22px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
-          {/* Treatment Name */}
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 6 }}>
-              Treatment Name *
-            </label>
-            <input
-              autoFocus
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="e.g. Botox — Forehead, Filler — Nasolabial, Laser Toning…"
-              style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", boxSizing: "border-box" }}
-              onFocus={e => (e.target.style.borderColor = "rgba(5,150,105,0.5)")}
-              onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
-            />
+        <div style={{ flex: 1, padding: "18px 22px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Session meta row */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Provider / Counsellor</label>
+              <select value={counsellorId} onChange={e => setCounsellorId(e.target.value)} style={{ ...INPUT_STYLE }}>
+                {/* If logged-in user not in staff list (e.g. superadmin), add them as first option */}
+                {profile?.id && profile?.full_name && !staff.find(s => s.id === profile.id) && (
+                  <option value={profile.id}>{profile.full_name} — you (current login)</option>
+                )}
+                {staff.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {s.full_name}{s.id === profile?.id ? " ✓ (you)" : ""} — {s.role}
+                  </option>
+                ))}
+                <option value="">— Unassigned —</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Session Date</label>
+              <input type="date" value={sessionDate} onChange={e => setSessionDate(e.target.value)} style={{ ...INPUT_STYLE }} />
+            </div>
           </div>
 
-          {/* Price */}
+          {/* Chief complaint */}
           <div>
-            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 6 }}>
-              Quoted Price (₹)
-            </label>
-            <div style={{ position: "relative" }}>
-              <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: "#9C9584", fontWeight: 600 }}>₹</span>
-              <input
-                type="number"
-                value={price}
-                onChange={e => setPrice(e.target.value)}
-                placeholder="0"
-                style={{ width: "100%", padding: "10px 14px 10px 26px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", boxSizing: "border-box" }}
-                onFocus={e => (e.target.style.borderColor = "rgba(5,150,105,0.5)")}
-                onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
-              />
-            </div>
+            <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Chief Concern / Complaint</label>
+            <input value={chiefComplaint} onChange={e => setChiefComplaint(e.target.value)}
+              placeholder="e.g. Ageing, pigmentation, acne scarring, body contouring…"
+              style={{ ...INPUT_STYLE }} />
           </div>
 
           {/* Package Type */}
           <div>
-            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 8 }}>
-              Package Type
-            </label>
+            <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 6 }}>Package Type</label>
             <div style={{ display: "flex", gap: 8 }}>
-              {DR_PKG_OPTIONS.map(opt => (
+              {PKG_OPTS.map(opt => (
                 <button key={opt.key} type="button" onClick={() => setPkgType(opt.key)}
-                  style={{
-                    flex: 1, padding: "8px 4px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.15s",
+                  style={{ flex: 1, padding: "7px 4px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer",
                     background: pkgType === opt.key ? "var(--gold)" : "transparent",
                     color: pkgType === opt.key ? "#fff" : "#9C9584",
-                    border: pkgType === opt.key ? "1px solid var(--gold)" : "1px solid rgba(197,160,89,0.2)",
-                  }}>
+                    border: pkgType === opt.key ? "1px solid var(--gold)" : "1px solid rgba(197,160,89,0.2)" }}>
                   {opt.label}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Counselled By */}
+          {/* ── Treatment rows ── */}
           <div>
-            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 6 }}>
-              Counselled By
-            </label>
-            <input
-              value={counselled}
-              onChange={e => setCounselled(e.target.value)}
-              placeholder="Staff name who counselled the patient"
-              style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", boxSizing: "border-box" }}
-              onFocus={e => (e.target.style.borderColor = "rgba(5,150,105,0.5)")}
-              onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
-            />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358" }}>Treatments</label>
+              <button type="button" onClick={() => setTreatments(p => [...p, { service_id: "", service_name: "", mrp: 0, quoted_price: "", discount_pct: "0", sessions: "1", recommended: false }])}
+                style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", cursor: "pointer", fontSize: 11, color: "var(--gold)", fontWeight: 600 }}>
+                <Plus size={11} /> Add Row
+              </button>
+            </div>
+
+            {/* Column headers */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 60px 80px 55px 46px 30px 24px", gap: 4, padding: "5px 0", borderBottom: "1px solid rgba(197,160,89,0.15)", marginBottom: 6 }}>
+              {["Service", "MRP ₹", "Quoted ₹", "Disc %", "Sess.", "Rec", ""].map(h => (
+                <span key={h} style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#9C9584" }}>{h}</span>
+              ))}
+            </div>
+
+            {/* Rows */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              {treatments.map((row, idx) => (
+                <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 60px 80px 55px 46px 30px 24px", gap: 4, alignItems: "center" }}>
+                  {/* Service selector + manual text */}
+                  <div>
+                    {services.length > 0 ? (
+                      <select value={row.service_id}
+                        onChange={e => {
+                          if (e.target.value === "__manual__") {
+                            updateRow(idx, "service_id", "");
+                            updateRow(idx, "service_name", "");
+                          } else {
+                            selectService(idx, e.target.value);
+                          }
+                        }}
+                        style={{ ...INPUT_STYLE, padding: "8px 8px", fontSize: 11 }}>
+                        <option value="">— pick service —</option>
+                        {services.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        <option value="__manual__">✏️ Enter manually…</option>
+                      </select>
+                    ) : null}
+                    {(!row.service_id) && (
+                      <input value={row.service_name} onChange={e => updateRow(idx, "service_name", e.target.value)}
+                        placeholder="Treatment name"
+                        style={{ ...INPUT_STYLE, padding: "8px 8px", fontSize: 11, marginTop: services.length > 0 ? 4 : 0 }} />
+                    )}
+                  </div>
+                  {/* MRP */}
+                  <input type="number" min={0} value={row.mrp || ""}
+                    onChange={e => updateRow(idx, "mrp", Number(e.target.value))}
+                    placeholder="0"
+                    style={{ ...INPUT_STYLE, padding: "8px 6px", fontSize: 11, textAlign: "right" }} />
+                  {/* Quoted */}
+                  <input type="number" min={0} value={row.quoted_price}
+                    onChange={e => updateRow(idx, "quoted_price", e.target.value)}
+                    placeholder="0"
+                    style={{ ...INPUT_STYLE, padding: "8px 6px", fontSize: 11, textAlign: "right" }} />
+                  {/* Disc % */}
+                  <input type="number" min={0} max={100} value={row.discount_pct}
+                    onChange={e => updateRow(idx, "discount_pct", e.target.value)}
+                    placeholder="0"
+                    style={{ ...INPUT_STYLE, padding: "8px 6px", fontSize: 11, textAlign: "right" }} />
+                  {/* Sessions */}
+                  <input type="number" min={1} value={row.sessions}
+                    onChange={e => updateRow(idx, "sessions", e.target.value)}
+                    style={{ ...INPUT_STYLE, padding: "8px 4px", fontSize: 11, textAlign: "center" }} />
+                  {/* Recommended */}
+                  <button type="button" onClick={() => updateRow(idx, "recommended", !row.recommended)}
+                    title="Mark as recommended"
+                    style={{ width: 26, height: 26, borderRadius: 6, border: row.recommended ? "1px solid #059669" : "1px solid rgba(197,160,89,0.25)", background: row.recommended ? "rgba(5,150,105,0.12)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <CheckCircle2 size={13} style={{ color: row.recommended ? "#059669" : "#C5A059" }} />
+                  </button>
+                  {/* Remove */}
+                  <button type="button" onClick={() => setTreatments(p => p.filter((_, i) => i !== idx))}
+                    disabled={treatments.length === 1}
+                    style={{ width: 22, height: 22, borderRadius: 5, border: "none", background: "transparent", cursor: treatments.length === 1 ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", opacity: treatments.length === 1 ? 0.3 : 1 }}>
+                    <X size={11} style={{ color: "#9C9584" }} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Totals summary */}
+            {totalQuoted > 0 && (
+              <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.2)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 11, color: "#9C9584" }}>
+                  {totalMrp > 0 && <span style={{ textDecoration: "line-through", marginRight: 6 }}>₹{totalMrp.toLocaleString("en-IN")}</span>}
+                  {avgDisc > 0 && <span style={{ color: "#16a34a", fontWeight: 600, fontSize: 10, marginRight: 6 }}>{avgDisc.toFixed(1)}% avg off</span>}
+                </span>
+                <span style={{ fontSize: 14, fontWeight: 700, color: "var(--gold)", fontFamily: "Georgia, serif" }}>
+                  Total ₹{totalQuoted.toLocaleString("en-IN")}
+                </span>
+              </div>
+            )}
           </div>
 
-          {/* Notes */}
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 6 }}>
-              Notes
-            </label>
-            <textarea
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              placeholder="Additional details, patient concerns, recommendations…"
-              rows={4}
-              style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", resize: "vertical", boxSizing: "border-box" }}
-              onFocus={e => (e.target.style.borderColor = "rgba(5,150,105,0.5)")}
-              onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
-            />
+          {/* Notes + Follow-up */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Session Notes</label>
+              <textarea value={notes} onChange={e => setNotes(e.target.value)}
+                placeholder="Patient concerns, doctor observations…"
+                rows={3}
+                style={{ ...INPUT_STYLE, resize: "vertical", lineHeight: 1.6 }} />
+            </div>
+            <div>
+              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Follow-up Date</label>
+              <input type="date" value={followupDate} onChange={e => setFollowupDate(e.target.value)} style={{ ...INPUT_STYLE }} />
+            </div>
           </div>
         </div>
 
         {/* Footer */}
         <div style={{ padding: "14px 22px", borderTop: "1px solid rgba(197,160,89,0.18)", background: "white", display: "flex", gap: 10, flexShrink: 0 }}>
           <button onClick={onClose} style={{ padding: "10px 18px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", fontSize: 13, color: "#9C9584" }}>Cancel</button>
-          <button
-            onClick={handleSave}
-            disabled={saving || !name.trim()}
-            style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: "none", background: saving || !name.trim() ? "rgba(5,150,105,0.3)" : "linear-gradient(135deg, #059669, #047857)", cursor: saving || !name.trim() ? "not-allowed" : "pointer", color: "white", fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
-          >
-            {saving ? <><Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> Saving…</> : <><CheckCircle2 size={14} /> Add Treatment</>}
+          <button onClick={handleSave} disabled={saving || !canSave}
+            style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: "none", background: saving || !canSave ? "rgba(197,160,89,0.3)" : "linear-gradient(135deg, #C5A059, #A8853A)", cursor: saving || !canSave ? "not-allowed" : "pointer", color: "white", fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+            {saving ? <><Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> Saving…</> : <><CheckCircle2 size={14} /> Save Session & Treatments</>}
           </button>
         </div>
       </div>

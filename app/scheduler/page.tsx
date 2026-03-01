@@ -15,6 +15,7 @@ import { useClinic } from "@/contexts/ClinicContext";
 import { toast } from "sonner";
 import TopBar from "@/components/TopBar";
 import { ModuleGate } from "@flags/gate";
+import CustomFieldsSection from "@/components/CustomFieldsSection";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1383,6 +1384,12 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
               )}
             </div>
           )}
+        </div>
+
+        {/* Custom Fields */}
+        <div style={{ padding: "14px 24px 0", borderTop: "1px solid var(--border)" }}>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 10px" }}>Custom Fields</p>
+          <CustomFieldsSection entityType="appointments" entityId={a.id} clinicId={activeClinicId ?? ""} />
         </div>
 
         {/* Action buttons */}

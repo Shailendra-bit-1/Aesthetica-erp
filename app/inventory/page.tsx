@@ -14,6 +14,7 @@ import { useClinic } from "@/contexts/ClinicContext";
 import { toast } from "sonner";
 import TopBar from "@/components/TopBar";
 import { logAction } from "@/lib/audit";
+import CustomFieldsSection from "@/components/CustomFieldsSection";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1111,6 +1112,14 @@ function ProductDrawer({ product, suppliers, clinicId, profile, onClose }: {
             style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
         </div>
       </div>
+
+      {/* Custom Fields — edit mode only */}
+      {isEdit && product?.id && (
+        <div style={{ borderTop: "1px solid rgba(197,160,89,0.15)", padding: "16px 0 8px" }}>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 10px" }}>Custom Fields</p>
+          <CustomFieldsSection entityType="inventory" entityId={product.id} clinicId={clinicId} />
+        </div>
+      )}
 
       <DrawerFooter onCancel={() => onClose()} onSave={handleSave} saving={saving}
         saveLabel={isEdit ? "Update Product" : "Add Product"} />

@@ -16,6 +16,7 @@ import { useClinic } from "@/contexts/ClinicContext";
 import { toast } from "sonner";
 import TopBar from "@/components/TopBar";
 import { ModuleGate } from "@flags/gate";
+import CustomFieldsSection from "@/components/CustomFieldsSection";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1245,6 +1246,14 @@ function AddServiceDrawer({ editData, clinicId, isSuperAdmin, onClose, onSaved }
             )}
           </div>
         </div>
+
+        {/* Custom Fields — edit mode only */}
+        {editData && (
+          <div style={{ borderTop: "1px solid rgba(197,160,89,0.15)", paddingTop: 16, marginTop: 8 }}>
+            <p style={{ fontSize: 11, fontWeight: 700, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 10px" }}>Custom Fields</p>
+            <CustomFieldsSection entityType="services" entityId={editData.id} clinicId={clinicId ?? ""} />
+          </div>
+        )}
 
         {/* Footer */}
         <div className="flex gap-3 mt-8">

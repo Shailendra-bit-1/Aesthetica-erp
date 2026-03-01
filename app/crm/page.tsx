@@ -4,9 +4,11 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
+import CustomFieldsSection from "@/components/CustomFieldsSection";
+import { toast } from "sonner";
 import {
   Megaphone, Plus, X, Search, Phone, Mail, UserPlus,
-  Calendar, MessageSquare, Send, CheckCircle, Clock,
+  Calendar, MessageSquare, Send, CheckCircle, Clock, ChevronRight,
 } from "lucide-react";
 
 type LeadStatus = "new" | "contacted" | "interested" | "converted" | "lost" | "junk";
@@ -80,6 +82,7 @@ export default function CRMPage() {
 
   const [leadDrawer, setLeadDrawer] = useState(false);
   const [campaignDrawer, setCampaignDrawer] = useState(false);
+  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [saving, setSaving] = useState(false);
 
   const [leadForm, setLeadForm] = useState({
@@ -177,6 +180,23 @@ export default function CRMPage() {
     fetchCampaigns();
   };
 
+  const launchCampaign = async (campaignId: string) => {
+    if (!clinicId) return;
+    // Count reachable leads for this clinic as the delivery target
+    const { count } = await supabase
+      .from("crm_leads")
+      .select("id", { count: "exact", head: true })
+      .eq("clinic_id", clinicId)
+      .neq("status", "junk");
+    const sentCount = count ?? 0;
+    await supabase
+      .from("crm_campaigns")
+      .update({ status: "completed", sent_count: sentCount, delivered_count: sentCount })
+      .eq("id", campaignId);
+    fetchCampaigns();
+    toast.success(`Campaign launched — ${sentCount} contacts reached`);
+  };
+
   const filteredLeads = leads.filter(l =>
     !search || l.full_name.toLowerCase().includes(search.toLowerCase()) ||
     l.phone?.includes(search) || l.email?.toLowerCase().includes(search.toLowerCase())
@@ -248,8 +268,11 @@ export default function CRMPage() {
                     const sc = LEAD_STATUS_CONFIG[lead.status];
                     return (
                       <tr key={lead.id} style={{ borderBottom: "1px solid rgba(197,160,89,0.06)" }}>
-                        <td className="px-4 py-3">
-                          <p className="text-sm font-medium" style={{ color: "#1a1714" }}>{lead.full_name}</p>
+                        <td className="px-4 py-3" style={{ cursor: "pointer" }} onClick={() => setSelectedLead(lead)}>
+                          <div className="flex items-center gap-1">
+                            <p className="text-sm font-medium" style={{ color: "#1a1714" }}>{lead.full_name}</p>
+                            <ChevronRight size={12} style={{ color: "rgba(197,160,89,0.5)" }} />
+                          </div>
                           {lead.email && <p className="text-xs" style={{ color: "#9ca3af" }}>{lead.email}</p>}
                         </td>
                         <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>{lead.phone || "—"}</td>
@@ -340,6 +363,14 @@ export default function CRMPage() {
                           <span>{new Date(c.scheduled_at).toLocaleDateString("en-IN")}</span>
                         </div>
                       )}
+                      {(c.status === "draft" || c.status === "scheduled") && (
+                        <button
+                          onClick={() => launchCampaign(c.id)}
+                          className="w-full mt-3 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5"
+                          style={{ background: "var(--gold)", color: "#fff" }}>
+                          <Send size={11} /> Launch Campaign
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -359,6 +390,65 @@ export default function CRMPage() {
           </div>
         )}
       </div>
+
+      {/* LEAD DETAIL PANEL */}
+      {selectedLead && (
+        <div className="fixed inset-0 z-50 flex">
+          <div className="flex-1" style={{ background: "rgba(0,0,0,0.4)" }} onClick={() => setSelectedLead(null)} />
+          <div className="w-[440px] h-full overflow-y-auto flex flex-col" style={{ background: "#fff" }}>
+            {/* Header */}
+            <div className="flex justify-between items-center px-6 py-5" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
+              <div>
+                <h3 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>{selectedLead.full_name}</h3>
+                {(() => { const sc = LEAD_STATUS_CONFIG[selectedLead.status]; return (
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: sc.bg, color: sc.color }}>{sc.label}</span>
+                ); })()}
+              </div>
+              <button onClick={() => setSelectedLead(null)} className="p-2 rounded-lg hover:bg-gray-100"><X size={18} /></button>
+            </div>
+            {/* Lead details */}
+            <div className="flex-1 p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                {selectedLead.phone && (
+                  <div className="flex items-center gap-2 text-sm" style={{ color: "#4b5563" }}>
+                    <Phone size={13} style={{ color: "rgba(197,160,89,0.7)" }} /> {selectedLead.phone}
+                  </div>
+                )}
+                {selectedLead.email && (
+                  <div className="flex items-center gap-2 text-sm" style={{ color: "#4b5563" }}>
+                    <Mail size={13} style={{ color: "rgba(197,160,89,0.7)" }} /> {selectedLead.email}
+                  </div>
+                )}
+                {selectedLead.source && (
+                  <div className="flex items-center gap-2 text-sm" style={{ color: "#4b5563" }}>
+                    <MessageSquare size={13} style={{ color: "rgba(197,160,89,0.7)" }} />
+                    {SOURCE_LABELS[selectedLead.source] || selectedLead.source}
+                  </div>
+                )}
+                {selectedLead.next_followup && (
+                  <div className="flex items-center gap-2 text-sm" style={{ color: "#4b5563" }}>
+                    <Calendar size={13} style={{ color: "rgba(197,160,89,0.7)" }} />
+                    {new Date(selectedLead.next_followup).toLocaleDateString("en-IN")}
+                  </div>
+                )}
+              </div>
+              {selectedLead.profiles?.full_name && (
+                <p className="text-xs" style={{ color: "#9ca3af" }}>Assigned to: {selectedLead.profiles.full_name}</p>
+              )}
+              {selectedLead.notes && (
+                <p className="text-sm p-3 rounded-lg" style={{ background: "rgba(197,160,89,0.05)", color: "#4b5563", borderRadius: 8, border: "1px solid rgba(197,160,89,0.12)" }}>
+                  {selectedLead.notes}
+                </p>
+              )}
+              {/* Custom Fields */}
+              <div style={{ borderTop: "1px solid rgba(197,160,89,0.15)", paddingTop: 14 }}>
+                <p style={{ fontSize: 11, fontWeight: 700, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 10px" }}>Custom Fields</p>
+                <CustomFieldsSection entityType="leads" entityId={selectedLead.id} clinicId={activeClinicId ?? ""} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* NEW LEAD DRAWER */}
       {leadDrawer && (

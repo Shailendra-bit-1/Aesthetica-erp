@@ -20,6 +20,30 @@ import { logAction } from "@/lib/audit";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
+interface DashConfig {
+  sections: {
+    kpi_cards:        boolean;
+    revenue_progress: boolean;
+    appointments:     boolean;
+    quick_actions:    boolean;
+    recent_patients:  boolean;
+    inventory_alerts: boolean;
+  };
+  hidden_kpis: string[];
+}
+
+const DEFAULT_DASH: DashConfig = {
+  sections: {
+    kpi_cards:        true,
+    revenue_progress: true,
+    appointments:     true,
+    quick_actions:    true,
+    recent_patients:  true,
+    inventory_alerts: true,
+  },
+  hidden_kpis: [],
+};
+
 interface KpiData {
   todayRevenue:      number;
   monthlyCollection: number;
@@ -122,6 +146,8 @@ export default function OverviewPage() {
   const [loading,       setLoading]       = useState(true);
   const [showNewPat,    setShowNewPat]    = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [dashConfig,    setDashConfig]    = useState<DashConfig>(DEFAULT_DASH);
+  const [configId,      setConfigId]      = useState<string | null>(null);
 
   // Superadmin panels
   const [devModules,    setDevModules]    = useState<{ module_key: string; display_name: string; is_globally_killed: boolean; killed_reason: string | null }[]>([]);
@@ -132,8 +158,59 @@ export default function OverviewPage() {
   const [demoResult,    setDemoResult]    = useState<{ email: string; password: string; loginUrl: string | null } | null>(null);
   const [demoClearing,  setDemoClearing]  = useState<string | null>(null);
 
-  // Monthly revenue target — configurable later via system_settings
-  const MONTHLY_TARGET = 500000;
+  // Monthly revenue target — fetched from clinics.monthly_revenue_target (GAP-C4 fix)
+  const [monthlyTarget, setMonthlyTarget] = useState(0);
+
+  // ── Dashboard config load + helpers ────────────────────────────────────────
+  useEffect(() => {
+    if (!profile?.id || !profile?.clinic_id) return;
+    supabase
+      .from("dashboard_configs")
+      .select("id, layout")
+      .eq("clinic_id", profile.clinic_id)
+      .eq("user_id", profile.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          setConfigId(data.id);
+          setDashConfig({ ...DEFAULT_DASH, ...(data.layout as DashConfig) });
+        }
+      });
+  }, [profile?.id, profile?.clinic_id]);
+
+  const saveConfig = useCallback((cfg: DashConfig) => {
+    if (!profile?.id || !profile?.clinic_id) return;
+    if (configId) {
+      supabase.from("dashboard_configs").update({ layout: cfg }).eq("id", configId).then(({ data }) => {
+        if (data) setConfigId((data as unknown as { id: string }[])[0]?.id ?? configId);
+      });
+    } else {
+      supabase.from("dashboard_configs")
+        .insert({ clinic_id: profile.clinic_id, user_id: profile.id, layout: cfg, widgets: [] })
+        .select("id").single()
+        .then(({ data }) => { if (data) setConfigId(data.id); });
+    }
+  }, [profile?.id, profile?.clinic_id, configId]);
+
+  const toggleSection = (key: keyof DashConfig["sections"]) => {
+    const next = { ...dashConfig, sections: { ...dashConfig.sections, [key]: !dashConfig.sections[key] } };
+    setDashConfig(next);
+    saveConfig(next);
+  };
+
+  const toggleKpi = (cardKey: string) => {
+    const hidden = dashConfig.hidden_kpis.includes(cardKey)
+      ? dashConfig.hidden_kpis.filter(k => k !== cardKey)
+      : [...dashConfig.hidden_kpis, cardKey];
+    const next = { ...dashConfig, hidden_kpis: hidden };
+    setDashConfig(next);
+    saveConfig(next);
+  };
+
+  const resetToDefaults = () => {
+    setDashConfig(DEFAULT_DASH);
+    saveConfig(DEFAULT_DASH);
+  };
 
   const fetchAll = useCallback(async () => {
     if (profileLoading) return;
@@ -145,7 +222,7 @@ export default function OverviewPage() {
     const [
       totalPatRes, newPatRes, todayApptRes, allApptRes,
       paidTodayRes, paidMonthRes, pendingRes,
-      invRes, recentPatsRes, branchRes,
+      invRes, recentPatsRes, branchRes, clinicTargetRes,
     ] = await Promise.all([
       // Total patients
       scope(supabase.from("patients").select("id", { count: "exact", head: true })),
@@ -169,6 +246,10 @@ export default function OverviewPage() {
       isChainAdmin
         ? supabase.from("clinics").select("id,name")
         : Promise.resolve({ data: [] }),
+      // GAP-C4: Per-clinic monthly revenue target
+      activeClinicId
+        ? supabase.from("clinics").select("monthly_revenue_target").eq("id", activeClinicId).maybeSingle()
+        : Promise.resolve({ data: null }),
     ]);
 
     // Aggregate revenue
@@ -180,10 +261,12 @@ export default function OverviewPage() {
     const apptList = (allApptRes.data ?? []) as Appointment[];
     const completedToday = apptList.filter(a => a.status === "completed").length;
 
+    const target = (clinicTargetRes.data as { monthly_revenue_target?: number | null } | null)?.monthly_revenue_target ?? 0;
+    setMonthlyTarget(target);
     setKpi({
       todayRevenue:      todayRev,
       monthlyCollection: monthRev,
-      monthlyTarget:     MONTHLY_TARGET,
+      monthlyTarget:     target,
       totalPatients:     totalPatRes.count  ?? 0,
       todayAppointments: todayApptRes.count ?? 0,
       pendingAmount:     pendingAmt,
@@ -211,7 +294,7 @@ export default function OverviewPage() {
     }
 
     setLoading(false);
-  }, [profileLoading, activeClinicId, isGlobal, isChainAdmin, MONTHLY_TARGET]);
+  }, [profileLoading, activeClinicId, isGlobal, isChainAdmin]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -443,14 +526,16 @@ export default function OverviewPage() {
         )}
 
         {/* ── KPI Cards (6) ── */}
+        {dashConfig.sections.kpi_cards && (
         <section>
           <div className="grid grid-cols-6 gap-4">
             {loading ? Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="luxury-card rounded-2xl p-4 flex items-center justify-center" style={{ background: "var(--surface)", minHeight: 100 }}>
                 <Loader2 size={18} style={{ color: "rgba(197,160,89,0.4)", animation: "spin 1s linear infinite" }} />
               </div>
-            )) : [
+            )) : ([
               {
+                key:   "revenue_today",
                 label: "Today's Revenue",
                 value: fmt(kpi?.todayRevenue ?? 0),
                 sub:   `${kpi?.completedToday ?? 0} sessions done`,
@@ -459,6 +544,7 @@ export default function OverviewPage() {
                 positive: (kpi?.todayRevenue ?? 0) > 0,
               },
               {
+                key:   "monthly_collection",
                 label: "Monthly Collection",
                 value: fmt(kpi?.monthlyCollection ?? 0),
                 sub:   `${targetPct}% of target`,
@@ -467,14 +553,16 @@ export default function OverviewPage() {
                 positive: targetPct >= 50,
               },
               {
+                key:   "monthly_target",
                 label: "Monthly Target",
                 value: fmt(kpi?.monthlyTarget ?? 0),
-                sub:   targetPct >= 100 ? "Target achieved! 🎉" : `${100 - targetPct}% remaining`,
+                sub:   targetPct >= 100 ? "Target achieved!" : `${100 - targetPct}% remaining`,
                 icon:  Target, color: "#7A8E9E",
                 href:  "/billing",
                 positive: targetPct >= 80,
               },
               {
+                key:   "total_patients",
                 label: "Total Patients",
                 value: (kpi?.totalPatients ?? 0).toLocaleString(),
                 sub:   `+${kpi?.newThisMonth ?? 0} this month`,
@@ -483,6 +571,7 @@ export default function OverviewPage() {
                 positive: (kpi?.newThisMonth ?? 0) > 0,
               },
               {
+                key:   "appointments_today",
                 label: "Today's Appointments",
                 value: (kpi?.todayAppointments ?? 0).toString(),
                 sub:   `${kpi?.completedToday ?? 0} completed`,
@@ -491,6 +580,7 @@ export default function OverviewPage() {
                 positive: (kpi?.todayAppointments ?? 0) > 0,
               },
               {
+                key:   "pending_dues",
                 label: "Pending Dues",
                 value: fmt(kpi?.pendingAmount ?? 0),
                 sub:   "Outstanding invoices",
@@ -498,10 +588,10 @@ export default function OverviewPage() {
                 href:  "/billing",
                 positive: (kpi?.pendingAmount ?? 0) === 0,
               },
-            ].map((card) => {
+            ] as const).filter(card => !dashConfig.hidden_kpis.includes(card.key)).map((card) => {
               const Icon = card.icon;
               return (
-                <Link key={card.label} href={card.href}
+                <Link key={card.key} href={card.href}
                   className="luxury-card rounded-2xl p-4 transition-all duration-200 hover:scale-[1.02] hover:shadow-lg group block"
                   style={{ background: "var(--surface)" }}
                 >
@@ -524,8 +614,10 @@ export default function OverviewPage() {
             })}
           </div>
         </section>
+        )}
 
         {/* ── Revenue Target Progress + Branch Comparison ── */}
+        {dashConfig.sections.revenue_progress && (
         <section className="grid grid-cols-3 gap-5">
           {/* Monthly progress */}
           <div className="luxury-card rounded-2xl p-5 col-span-1" style={{ background: "var(--surface)" }}>
@@ -671,11 +763,14 @@ export default function OverviewPage() {
             )}
           </div>
         </section>
+        )}
 
         {/* ── Main Grid: Appointments + Right Panel ── */}
+        {dashConfig.sections.appointments || dashConfig.sections.quick_actions || dashConfig.sections.inventory_alerts ? (
         <div className="grid grid-cols-3 gap-5">
 
           {/* ── Today's Appointments (Live) ── */}
+          {dashConfig.sections.appointments && (
           <section className="col-span-2 luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
             <div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
               <div className="flex items-center gap-3">
@@ -762,11 +857,14 @@ export default function OverviewPage() {
               </Link>
             </div>
           </section>
+          )}
 
           {/* ── Right panel: Quick Links + Inventory Alerts ── */}
+          {(dashConfig.sections.quick_actions || dashConfig.sections.inventory_alerts) && (
           <div className="col-span-1 space-y-5">
 
             {/* Quick Links */}
+            {dashConfig.sections.quick_actions && (
             <section className="luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
               <div className="px-5 py-4 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border)" }}>
                 <Zap size={15} style={{ color: "var(--gold)" }} />
@@ -807,8 +905,10 @@ export default function OverviewPage() {
                 })}
               </div>
             </section>
+            )}
 
             {/* Inventory Alerts */}
+            {dashConfig.sections.inventory_alerts && (
             <section className="luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
               <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
                 <div className="flex items-center gap-2">
@@ -852,10 +952,14 @@ export default function OverviewPage() {
                 </Link>
               </div>
             </section>
+            )}
           </div>
+          )}
         </div>
+        ) : null}
 
         {/* ── Recent Patients ── */}
+        {dashConfig.sections.recent_patients && (
         <section className="luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
           <div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
             <div className="flex items-center gap-3">
@@ -924,6 +1028,7 @@ export default function OverviewPage() {
             </Link>
           </div>
         </section>
+        )}
 
 
       </div>
@@ -936,51 +1041,79 @@ export default function OverviewPage() {
         <div className="fixed inset-0 z-50 flex">
           <div className="flex-1" style={{ background: "rgba(0,0,0,0.4)" }} onClick={() => setCustomizeOpen(false)} />
           <div className="w-80 h-full overflow-y-auto flex flex-col" style={{ background: "#fff" }}>
-            <div className="flex justify-between items-center px-5 py-4" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
+            {/* Header */}
+            <div className="flex justify-between items-center px-5 py-4 flex-shrink-0" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
               <h3 className="font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Customize Dashboard</h3>
               <button onClick={() => setCustomizeOpen(false)} className="p-1.5 rounded-lg hover:bg-gray-100">
                 <X size={16} />
               </button>
             </div>
-            <div className="flex-1 p-5">
-              <p className="text-xs mb-4" style={{ color: "#9ca3af" }}>Add widgets to your dashboard. Changes are saved to your profile.</p>
-              <div className="space-y-2">
-                {[
-                  { type: "kpi_tile",             label: "KPI Tile",                desc: "Revenue, patient count, etc." },
-                  { type: "line_chart",            label: "Line Chart",              desc: "Trend over time" },
-                  { type: "bar_chart",             label: "Bar Chart",               desc: "Compare categories" },
-                  { type: "appointment_list",      label: "Appointment List",        desc: "Today's schedule" },
-                  { type: "patient_list",          label: "Recent Patients",         desc: "Newly registered patients" },
-                  { type: "inventory_alert",       label: "Inventory Alerts",        desc: "Low-stock warnings" },
-                  { type: "rule_execution_summary",label: "Rule Execution Summary",  desc: "Automation health" },
-                ].map(widget => (
-                  <div key={widget.type} className="flex items-center justify-between p-3 rounded-xl"
-                    style={{ border: "1px solid rgba(197,160,89,0.15)", background: "rgba(197,160,89,0.03)" }}>
-                    <div>
-                      <p className="text-sm font-medium" style={{ color: "#1a1714" }}>{widget.label}</p>
-                      <p className="text-xs mt-0.5" style={{ color: "#9ca3af" }}>{widget.desc}</p>
-                    </div>
-                    <button
-                      className="text-xs px-3 py-1.5 rounded-lg font-medium"
-                      style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)" }}
-                      onClick={async () => {
-                        if (!profile?.id || !profile?.clinic_id) return;
-                        const { data: existing } = await supabase.from("dashboard_configs")
-                          .select("id, widgets").eq("clinic_id", profile.clinic_id).eq("user_id", profile.id).single();
-                        const newWidget = { id: Math.random().toString(36).slice(2), type: widget.type, title: widget.label, config: {} };
-                        if (existing) {
-                          const widgets = [...(existing.widgets || []), newWidget];
-                          await supabase.from("dashboard_configs").update({ widgets }).eq("id", existing.id);
-                        } else {
-                          await supabase.from("dashboard_configs").insert({ clinic_id: profile.clinic_id, user_id: profile.id, widgets: [newWidget], layout: [] });
-                        }
-                      }}
-                    >
-                      + Add
-                    </button>
+
+            {/* Sections */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-1">
+              <p className="text-xs font-semibold uppercase tracking-widest mb-4" style={{ color: "#9ca3af" }}>Sections</p>
+
+              {/* KPI Cards toggle + sub-toggles */}
+              <div>
+                <div className="flex items-center justify-between py-2">
+                  <span className="text-sm font-medium" style={{ color: "#1a1714" }}>KPI Cards</span>
+                  <button onClick={() => toggleSection("kpi_cards")}
+                    className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
+                    style={{ background: dashConfig.sections.kpi_cards ? "var(--gold)" : "rgba(197,160,89,0.2)" }}>
+                    <span className="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform"
+                      style={{ transform: dashConfig.sections.kpi_cards ? "translateX(18px)" : "translateX(2px)" }} />
+                  </button>
+                </div>
+                {dashConfig.sections.kpi_cards && (
+                  <div className="ml-3 mt-1 mb-2 space-y-1.5 pl-3" style={{ borderLeft: "2px solid rgba(197,160,89,0.15)" }}>
+                    {[
+                      { key: "revenue_today",      label: "Today's Revenue"       },
+                      { key: "monthly_collection", label: "Monthly Collection"    },
+                      { key: "monthly_target",     label: "Monthly Target"        },
+                      { key: "total_patients",     label: "Total Patients"        },
+                      { key: "appointments_today", label: "Today's Appointments"  },
+                      { key: "pending_dues",       label: "Pending Dues"          },
+                    ].map(card => {
+                      const hidden = dashConfig.hidden_kpis.includes(card.key);
+                      return (
+                        <label key={card.key} className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={!hidden} onChange={() => toggleKpi(card.key)}
+                            className="rounded" style={{ accentColor: "var(--gold)" }} />
+                          <span className="text-xs" style={{ color: hidden ? "#9ca3af" : "#4b5563" }}>{card.label}</span>
+                        </label>
+                      );
+                    })}
                   </div>
-                ))}
+                )}
               </div>
+
+              {[
+                { key: "revenue_progress" as const, label: "Revenue Progress"       },
+                { key: "appointments"     as const, label: "Today's Appointments"   },
+                { key: "quick_actions"    as const, label: "Quick Actions"          },
+                { key: "inventory_alerts" as const, label: "Inventory Alerts"       },
+                { key: "recent_patients"  as const, label: "Recent Patients"        },
+              ].map(s => (
+                <div key={s.key} className="flex items-center justify-between py-2">
+                  <span className="text-sm font-medium" style={{ color: "#1a1714" }}>{s.label}</span>
+                  <button onClick={() => toggleSection(s.key)}
+                    className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
+                    style={{ background: dashConfig.sections[s.key] ? "var(--gold)" : "rgba(197,160,89,0.2)" }}>
+                    <span className="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform"
+                      style={{ transform: dashConfig.sections[s.key] ? "translateX(18px)" : "translateX(2px)" }} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 py-4 flex-shrink-0" style={{ borderTop: "1px solid rgba(197,160,89,0.15)", background: "rgba(249,247,242,0.7)" }}>
+              <p className="text-xs mb-2" style={{ color: "#9ca3af" }}>Changes save automatically</p>
+              <button onClick={resetToDefaults}
+                className="text-xs font-medium px-3 py-1.5 rounded-lg"
+                style={{ border: "1px solid rgba(197,160,89,0.25)", color: "#9C9584" }}>
+                Reset to defaults
+              </button>
             </div>
           </div>
         </div>

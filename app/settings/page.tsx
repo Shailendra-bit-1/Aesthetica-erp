@@ -8,7 +8,7 @@ import {
   Shield, ShieldCheck, Users, ScrollText, Receipt, Scissors, Crown,
   Calendar, Camera, Package, BarChart3, Network,
   ChevronRight, Check, Loader2, AlertCircle,
-  Sparkles, LogOut, Smartphone,
+  Sparkles, LogOut, Smartphone, Sliders, Plus, X, Pencil, Trash2,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -45,15 +45,16 @@ interface NotifPrefs {
 
 // ─────────────────────────────────────── Constants ───────────────────────────
 
-type TabKey = "account" | "clinic" | "modules" | "notifications" | "integrations" | "links";
+type TabKey = "account" | "clinic" | "modules" | "notifications" | "integrations" | "links" | "custom_fields";
 
 const TABS: { key: TabKey; label: string; icon: React.ElementType; adminOnly?: boolean }[] = [
-  { key: "account",       label: "My Account",     icon: User                        },
-  { key: "clinic",        label: "Clinic Profile",  icon: Building2, adminOnly: true  },
-  { key: "modules",       label: "Modules",         icon: Layers,    adminOnly: true  },
-  { key: "notifications", label: "Notifications",   icon: Bell                        },
-  { key: "integrations",  label: "Integrations",    icon: Zap,       adminOnly: true  },
-  { key: "links",         label: "Quick Links",     icon: LayoutGrid                  },
+  { key: "account",       label: "My Account",     icon: User                           },
+  { key: "clinic",        label: "Clinic Profile",  icon: Building2, adminOnly: true     },
+  { key: "modules",       label: "Modules",         icon: Layers,    adminOnly: true     },
+  { key: "notifications", label: "Notifications",   icon: Bell                           },
+  { key: "integrations",  label: "Integrations",    icon: Zap,       adminOnly: true     },
+  { key: "links",         label: "Quick Links",     icon: LayoutGrid                     },
+  { key: "custom_fields", label: "Custom Fields",   icon: Sliders,   adminOnly: true     },
 ];
 
 interface ModuleMeta {
@@ -188,6 +189,7 @@ export default function SettingsPage() {
               {tab === "notifications" && <NotificationsTab clinicId={activeClinicId} />}
               {tab === "integrations"  && <IntegrationsTab  />}
               {tab === "links"         && <LinksTab         isAdmin={isAdmin} isSuperAdmin={role === "superadmin"} />}
+              {tab === "custom_fields" && <CustomFieldsTab  clinicId={activeClinicId} />}
             </>
           )}
         </main>
@@ -450,18 +452,19 @@ function AccountTab({ profile }: { profile: { id: string; full_name: string | nu
 // ─────────────────────────────────────── Tab: Clinic Profile ─────────────────
 
 function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
-  const [clinic,  setClinic]  = useState<ClinicRow | null>(null);
-  const [name,    setName]    = useState("");
-  const [loc,     setLoc]     = useState("");
-  const [email,   setEmail]   = useState("");
-  const [loading, setLoading] = useState(true);
-  const [saving,  setSaving]  = useState(false);
+  const [clinic,        setClinic]        = useState<ClinicRow | null>(null);
+  const [name,          setName]          = useState("");
+  const [loc,           setLoc]           = useState("");
+  const [email,         setEmail]         = useState("");
+  const [monthlyTarget, setMonthlyTarget] = useState("");
+  const [loading,       setLoading]       = useState(true);
+  const [saving,        setSaving]        = useState(false);
 
   useEffect(() => {
     if (!clinicId) { setLoading(false); return; }
     supabase
       .from("clinics")
-      .select("id, name, location, admin_email, subscription_status, chain_id")
+      .select("id, name, location, admin_email, subscription_status, chain_id, monthly_revenue_target")
       .eq("id", clinicId)
       .maybeSingle()
       .then(({ data }) => {
@@ -470,6 +473,7 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
           setName(data.name ?? "");
           setLoc(data.location ?? "");
           setEmail(data.admin_email ?? "");
+          setMonthlyTarget(String(data.monthly_revenue_target ?? ""));
         }
         setLoading(false);
       });
@@ -480,7 +484,12 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
     setSaving(true);
     const { error } = await supabase
       .from("clinics")
-      .update({ name: name.trim(), location: loc.trim() || null, admin_email: email.trim() || null })
+      .update({
+        name: name.trim(),
+        location: loc.trim() || null,
+        admin_email: email.trim() || null,
+        monthly_revenue_target: monthlyTarget ? parseFloat(monthlyTarget) : 0,
+      })
       .eq("id", clinicId);
     setSaving(false);
     if (error) { toast.error("Failed to save clinic profile"); return; }
@@ -540,6 +549,18 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
             <div>
               <FieldLabel>Admin Email</FieldLabel>
               <Input value={email} onChange={setEmail} placeholder="admin@yourclinicdomain.com" type="email" icon={Mail} />
+            </div>
+            <div>
+              <FieldLabel>Monthly Revenue Target (₹)</FieldLabel>
+              <Input
+                value={monthlyTarget}
+                onChange={setMonthlyTarget}
+                placeholder="e.g. 500000"
+                type="number"
+              />
+              <p style={{ fontSize: 11, color: "#9C9584", marginTop: 4 }}>
+                Used for the progress bar on the dashboard. Set to 0 to hide the target.
+              </p>
             </div>
           </div>
 
@@ -1196,6 +1217,337 @@ function SkeletonCards({ count }: { count: number }) {
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} style={{ height: 80, borderRadius: 16, background: "rgba(197,160,89,0.06)", animation: "pulse 1.4s infinite" }} />
       ))}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────── Custom Fields Tab ───────────────────
+
+type FieldType = "text" | "number" | "date" | "dropdown" | "checkbox" | "textarea" | "phone" | "email";
+
+interface CustomField {
+  id: string;
+  field_key: string;
+  field_label: string;
+  field_type: FieldType;
+  options: string[] | null;
+  validation: { required?: boolean } | null;
+  display_order: number;
+  section_group: string | null;
+}
+
+const FIELD_TYPES: { key: FieldType; label: string }[] = [
+  { key: "text",     label: "Text"     },
+  { key: "number",   label: "Number"   },
+  { key: "date",     label: "Date"     },
+  { key: "dropdown", label: "Dropdown" },
+  { key: "checkbox", label: "Checkbox" },
+  { key: "textarea", label: "Textarea" },
+  { key: "phone",    label: "Phone"    },
+  { key: "email",    label: "Email"    },
+];
+
+const TYPE_COLOR: Record<FieldType, { bg: string; color: string }> = {
+  text:     { bg: "rgba(99,102,241,0.1)",  color: "#6366f1" },
+  number:   { bg: "rgba(16,185,129,0.1)",  color: "#059669" },
+  date:     { bg: "rgba(59,130,246,0.1)",  color: "#2563eb" },
+  dropdown: { bg: "rgba(197,160,89,0.12)", color: "#a16207" },
+  checkbox: { bg: "rgba(139,92,246,0.1)",  color: "#7c3aed" },
+  textarea: { bg: "rgba(107,114,128,0.1)", color: "#6b7280" },
+  phone:    { bg: "rgba(20,184,166,0.1)",  color: "#0d9488" },
+  email:    { bg: "rgba(239,68,68,0.1)",   color: "#dc2626" },
+};
+
+function toKey(label: string) {
+  return label.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+}
+
+const ENTITY_TYPES: { label: string; value: string }[] = [
+  { label: "Patients",     value: "patients" },
+  { label: "Services",     value: "services" },
+  { label: "Leads",        value: "leads" },
+  { label: "Appointments", value: "appointments" },
+  { label: "Inventory",    value: "inventory" },
+  { label: "Counselling",  value: "counselling_sessions" },
+];
+
+function CustomFieldsTab({ clinicId }: { clinicId: string | null }) {
+  const [entityType,  setEntityType]  = useState<string>("patients");
+  const [fields,      setFields]      = useState<CustomField[]>([]);
+  const [loading,     setLoading]     = useState(true);
+  const [editing,     setEditing]     = useState<CustomField | null>(null);
+  const [showForm,    setShowForm]    = useState(false);
+  const [saving,      setSaving]      = useState(false);
+
+  // Form state
+  const [fLabel,      setFLabel]      = useState("");
+  const [fKey,        setFKey]        = useState("");
+  const [fType,       setFType]       = useState<FieldType>("text");
+  const [fGroup,      setFGroup]      = useState("");
+  const [fRequired,   setFRequired]   = useState(false);
+  const [fOptions,    setFOptions]    = useState<string[]>([]);
+  const [fOptionInput,setFOptionInput]= useState("");
+
+  const fetchFields = useCallback(async () => {
+    if (!clinicId) { setLoading(false); return; }
+    setLoading(true);
+    const { data } = await supabase
+      .from("custom_field_definitions")
+      .select("*")
+      .eq("clinic_id", clinicId)
+      .eq("entity_type", entityType)
+      .order("display_order");
+    setFields((data as CustomField[]) ?? []);
+    setLoading(false);
+  }, [clinicId, entityType]);
+
+  useEffect(() => { fetchFields(); }, [fetchFields]);
+
+  const switchEntityType = (et: string) => {
+    setEntityType(et);
+    setShowForm(false);
+    setEditing(null);
+    setFLabel(""); setFKey(""); setFType("text"); setFGroup(""); setFRequired(false); setFOptions([]);
+  };
+
+  const openNew = () => {
+    setEditing(null);
+    setFLabel(""); setFKey(""); setFType("text"); setFGroup(""); setFRequired(false); setFOptions([]);
+    setShowForm(true);
+  };
+
+  const openEdit = (f: CustomField) => {
+    setEditing(f);
+    setFLabel(f.field_label);
+    setFKey(f.field_key);
+    setFType(f.field_type);
+    setFGroup(f.section_group ?? "");
+    setFRequired(f.validation?.required ?? false);
+    setFOptions(f.options ?? []);
+    setShowForm(true);
+  };
+
+  const handleDelete = async (f: CustomField) => {
+    if (!confirm(`Delete field "${f.field_label}"? This will also delete all stored values.`)) return;
+    await supabase.from("custom_field_definitions").delete().eq("id", f.id);
+    fetchFields();
+  };
+
+  const handleSave = async () => {
+    if (!clinicId || !fLabel.trim()) return;
+    setSaving(true);
+    const key = editing ? editing.field_key : (fKey || toKey(fLabel));
+    const payload = {
+      clinic_id:     clinicId,
+      entity_type:   entityType,
+      field_key:     key,
+      field_label:   fLabel.trim(),
+      field_type:    fType,
+      options:       fType === "dropdown" ? fOptions : null,
+      validation:    { required: fRequired },
+      section_group: fGroup.trim() || null,
+      display_order: editing ? editing.display_order : fields.length,
+    };
+
+    if (editing) {
+      await supabase.from("custom_field_definitions").update(payload).eq("id", editing.id);
+    } else {
+      await supabase.from("custom_field_definitions").insert(payload);
+    }
+    setSaving(false);
+    setShowForm(false);
+    fetchFields();
+  };
+
+  const activeEntityLabel = ENTITY_TYPES.find(e => e.value === entityType)?.label ?? "Patients";
+
+  return (
+    <div>
+      <SectionHeader
+        title="Custom Fields"
+        subtitle="Add extra fields to records across modules — no code required."
+      />
+
+      {!clinicId ? (
+        <div style={{ padding: "32px", textAlign: "center", background: "rgba(197,160,89,0.04)", borderRadius: 16, border: "1px dashed rgba(197,160,89,0.3)" }}>
+          <p style={{ color: "#9C9584", fontSize: 13 }}>Select a clinic to manage custom fields.</p>
+        </div>
+      ) : (
+        <>
+          {/* ── Entity type pill tabs ── */}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 20 }}>
+            {ENTITY_TYPES.map(et => (
+              <button key={et.value} onClick={() => switchEntityType(et.value)}
+                style={{
+                  padding: "6px 14px", borderRadius: 20, border: "1px solid", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "Georgia, serif",
+                  background: entityType === et.value ? "linear-gradient(135deg, #C5A059, #A8853A)" : "transparent",
+                  color: entityType === et.value ? "white" : "#9C9584",
+                  borderColor: entityType === et.value ? "transparent" : "rgba(197,160,89,0.25)",
+                }}>
+                {et.label}
+              </button>
+            ))}
+          </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: showForm ? "1fr 380px" : "1fr", gap: 24 }}>
+
+          {/* ── Left: Field List ── */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <p style={{ fontSize: 13, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>
+                {activeEntityLabel} Custom Fields
+              </p>
+              <button onClick={openNew}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 10, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #C5A059, #A8853A)", color: "white", fontSize: 12, fontWeight: 600, fontFamily: "Georgia, serif" }}>
+                <Plus size={13} /> Add Field
+              </button>
+            </div>
+
+            {loading ? (
+              <SkeletonCards count={3} />
+            ) : fields.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "48px 24px", background: "rgba(197,160,89,0.03)", borderRadius: 16, border: "1px dashed rgba(197,160,89,0.25)" }}>
+                <Sliders size={32} style={{ color: "rgba(197,160,89,0.3)", margin: "0 auto 12px" }} />
+                <p style={{ fontSize: 13, color: "#9C9584", fontFamily: "Georgia, serif", margin: "0 0 6px" }}>No custom fields yet</p>
+                <p style={{ fontSize: 12, color: "#B8AE9C", margin: 0 }}>Click &quot;Add Field&quot; to create your first custom patient field.</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {fields.map(f => {
+                  const tc = TYPE_COLOR[f.field_type];
+                  return (
+                    <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, background: "white", border: "1px solid rgba(197,160,89,0.15)" }}>
+                      {/* Type badge */}
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 6, textTransform: "uppercase", letterSpacing: "0.06em", background: tc.bg, color: tc.color, flexShrink: 0 }}>
+                        {f.field_type}
+                      </span>
+                      {/* Info */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ fontSize: 13, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>{f.field_label}</p>
+                        <p style={{ fontSize: 11, color: "#9C9584", margin: "1px 0 0" }}>
+                          key: {f.field_key}
+                          {f.section_group && <> · group: <em>{f.section_group}</em></>}
+                          {f.validation?.required && <> · <span style={{ color: "#dc2626" }}>required</span></>}
+                        </p>
+                      </div>
+                      {/* Actions */}
+                      <button onClick={() => openEdit(f)} style={{ width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <Pencil size={12} style={{ color: "#9C9584" }} />
+                      </button>
+                      <button onClick={() => handleDelete(f)} style={{ width: 28, height: 28, borderRadius: 8, border: "1px solid rgba(220,38,38,0.15)", background: "rgba(220,38,38,0.05)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <Trash2 size={12} style={{ color: "#dc2626" }} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ── Right: Inline Form ── */}
+          {showForm && (
+            <div style={{ background: "white", borderRadius: 16, border: "1px solid rgba(197,160,89,0.2)", padding: 20, alignSelf: "start", position: "sticky", top: 0 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <p style={{ fontSize: 14, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>
+                  {editing ? "Edit Field" : "New Field"}
+                </p>
+                <button onClick={() => setShowForm(false)} style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <X size={12} style={{ color: "#9C9584" }} />
+                </button>
+              </div>
+
+              {/* Field Label */}
+              <div style={{ marginBottom: 14 }}>
+                <FieldLabel>Field Label *</FieldLabel>
+                <Input value={fLabel} onChange={v => { setFLabel(v); if (!editing) setFKey(toKey(v)); }} placeholder="e.g. Skin Score" />
+              </div>
+
+              {/* Field Key (auto-generated, read-only on edit) */}
+              <div style={{ marginBottom: 14 }}>
+                <FieldLabel>Field Key (auto-generated)</FieldLabel>
+                <Input value={editing ? fKey : (fKey || toKey(fLabel))} readOnly />
+                <p style={{ fontSize: 11, color: "#9C9584", marginTop: 4 }}>Used in exports and integrations</p>
+              </div>
+
+              {/* Field Type */}
+              <div style={{ marginBottom: 14 }}>
+                <FieldLabel>Field Type</FieldLabel>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {FIELD_TYPES.map(t => (
+                    <button key={t.key} onClick={() => setFType(t.key)}
+                      style={{
+                        padding: "5px 10px", borderRadius: 8, border: "1px solid", cursor: "pointer", fontSize: 11, fontWeight: 600,
+                        background: fType === t.key ? TYPE_COLOR[t.key].bg : "transparent",
+                        color: fType === t.key ? TYPE_COLOR[t.key].color : "#9C9584",
+                        borderColor: fType === t.key ? TYPE_COLOR[t.key].color + "60" : "rgba(197,160,89,0.2)",
+                      }}>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Section Group */}
+              <div style={{ marginBottom: 14 }}>
+                <FieldLabel>Section Group (optional)</FieldLabel>
+                <Input value={fGroup} onChange={setFGroup} placeholder="e.g. Skin, Body, Lifestyle" />
+                <p style={{ fontSize: 11, color: "#9C9584", marginTop: 4 }}>Groups fields together in patient EMR</p>
+              </div>
+
+              {/* Required toggle */}
+              <div style={{ marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <FieldLabel>Required</FieldLabel>
+                  <p style={{ fontSize: 11, color: "#9C9584", margin: "2px 0 0" }}>Patient must fill this field</p>
+                </div>
+                <button onClick={() => setFRequired(r => !r)}
+                  style={{ position: "relative", display: "inline-flex", height: 20, width: 36, alignItems: "center", borderRadius: 9999, border: "none", cursor: "pointer", background: fRequired ? "var(--gold)" : "rgba(197,160,89,0.2)", flexShrink: 0 }}>
+                  <span style={{ display: "inline-block", height: 16, width: 16, borderRadius: "50%", background: "white", boxShadow: "0 1px 3px rgba(0,0,0,0.2)", transition: "transform 0.15s", transform: fRequired ? "translateX(18px)" : "translateX(2px)" }} />
+                </button>
+              </div>
+
+              {/* Options (dropdown only) */}
+              {fType === "dropdown" && (
+                <div style={{ marginBottom: 14 }}>
+                  <FieldLabel>Options</FieldLabel>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                    <input value={fOptionInput} onChange={e => setFOptionInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter" && fOptionInput.trim()) { setFOptions(o => [...o, fOptionInput.trim()]); setFOptionInput(""); e.preventDefault(); } }}
+                      placeholder="Type option, press Enter"
+                      style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 12, outline: "none", fontFamily: "Georgia, serif" }} />
+                    <button onClick={() => { if (fOptionInput.trim()) { setFOptions(o => [...o, fOptionInput.trim()]); setFOptionInput(""); } }}
+                      style={{ padding: "0 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.08)", cursor: "pointer", fontSize: 12, color: "var(--gold)" }}>
+                      Add
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {fOptions.map((opt, i) => (
+                      <span key={i} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 20, background: "rgba(197,160,89,0.1)", border: "1px solid rgba(197,160,89,0.2)", fontSize: 11, color: "#6B5C2E" }}>
+                        {opt}
+                        <button onClick={() => setFOptions(o => o.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", color: "#9C9584" }}>
+                          <X size={10} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Buttons */}
+              <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+                <button onClick={() => setShowForm(false)} style={{ flex: 1, padding: "9px 0", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "transparent", cursor: "pointer", fontSize: 12, color: "#9C9584", fontFamily: "Georgia, serif" }}>
+                  Cancel
+                </button>
+                <button onClick={handleSave} disabled={saving || !fLabel.trim()}
+                  style={{ flex: 1, padding: "9px 0", borderRadius: 10, border: "none", cursor: saving || !fLabel.trim() ? "not-allowed" : "pointer", background: saving || !fLabel.trim() ? "rgba(197,160,89,0.3)" : "linear-gradient(135deg, #C5A059, #A8853A)", color: "white", fontSize: 12, fontWeight: 600, fontFamily: "Georgia, serif" }}>
+                  {saving ? "Saving…" : editing ? "Update Field" : "Save Field"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+        </>
+      )}
     </div>
   );
 }

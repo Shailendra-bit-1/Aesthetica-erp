@@ -4,11 +4,14 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
+import ReferenceGalleryModal from "@/components/ReferenceGalleryModal";
+import CustomFieldsSection from "@/components/CustomFieldsSection";
 import {
-  Plus, X, Calendar, TrendingUp, Clock, Check,
+  Plus, X, Calendar, TrendingUp, Clock, Check, Printer,
+  MessageCircle, Mail, Save, Images, ChevronLeft, ChevronRight,
 } from "lucide-react";
 
-type PackageType = "single_service" | "custom_package" | "fixed_package";
+type PackageType = "single_service" | "custom_package";
 type ConversionStatus = "pending" | "converted" | "partial" | "declined";
 
 interface CounsellingSession {
@@ -21,6 +24,7 @@ interface CounsellingSession {
     service_id?: string; service_name: string;
     mrp: number; price: number; quoted_price: number;
     discount_pct: number; recommended: boolean;
+    sessions?: number;
   }>;
   total_proposed: number;
   total_accepted: number;
@@ -39,11 +43,25 @@ interface Staff  { id: string; full_name: string; role: string; }
 type TreatmentRow = {
   service_id: string; service_name: string;
   mrp: number; quoted_price: string; discount_pct: string; recommended: boolean;
+  sessions: string;
 };
 
 interface DoctorTreatment {
   id: string; treatment_name: string; price: number | null;
   counselled_by: string | null; created_at: string;
+}
+
+// Gallery photo types
+interface OurResultPhoto {
+  id: string; treatment: string; condition: string | null; body_area: string | null;
+  visit_number: number | null; visit_date: string | null;
+  before_url: string; after_url: string; notes: string | null;
+}
+
+interface RefPhoto {
+  id: string; treatment: string; brand_name: string | null; condition: string | null;
+  body_area: string | null; before_url: string; after_url: string;
+  notes: string | null; title: string;
 }
 
 const STATUS_CONFIG: Record<ConversionStatus, { bg: string; color: string; label: string; icon: React.ElementType }> = {
@@ -56,13 +74,11 @@ const STATUS_CONFIG: Record<ConversionStatus, { bg: string; color: string; label
 const PKG_OPTIONS: { key: PackageType; label: string }[] = [
   { key: "single_service", label: "Single Service" },
   { key: "custom_package", label: "Custom Package" },
-  { key: "fixed_package",  label: "Fixed Package"  },
 ];
 
 const PKG_BADGE: Record<PackageType, { label: string; color: string; bg: string }> = {
   single_service: { label: "Single",     color: "#2563eb", bg: "rgba(59,130,246,0.1)"  },
   custom_package: { label: "Custom Pkg", color: "#7c3aed", bg: "rgba(124,58,237,0.1)" },
-  fixed_package:  { label: "Fixed Pkg",  color: "#059669", bg: "rgba(5,150,105,0.1)"  },
 };
 
 const makeEmptyForm = () => ({
@@ -73,11 +89,459 @@ const makeEmptyForm = () => ({
   treatments: [] as TreatmentRow[],
 });
 
+// ── Proforma Invoice Modal ────────────────────────────────────────────────────
+
+interface ProformaProps {
+  session: CounsellingSession;
+  clinicName: string;
+  clinicId: string;
+  onClose: () => void;
+}
+
+function ProformaModal({ session, clinicName, clinicId, onClose }: ProformaProps) {
+  const [sharePhone, setSharePhone] = useState("");
+  const [shareEmail, setShareEmail] = useState("");
+  const [saving, setSaving]         = useState(false);
+
+  useEffect(() => {
+    supabase.from("patients").select("phone, email").eq("id", session.patient_id).single()
+      .then(({ data }) => {
+        if (data) {
+          setSharePhone(data.phone ?? "");
+          setShareEmail(data.email ?? "");
+        }
+      });
+  }, [session.patient_id]);
+
+  const treatments = session.treatments_discussed ?? [];
+  const total      = session.total_proposed ?? 0;
+  const dateStr    = new Date(session.session_date).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+
+  const whatsappMsg = [
+    `*${clinicName} — Treatment Estimate*`,
+    `Patient: ${session.patients.full_name}  |  Date: ${dateStr}`,
+    "",
+    ...treatments.map(t =>
+      `${t.service_name} × ${t.sessions ?? 1} sessions  MRP ₹${(t.mrp || 0).toLocaleString()} → ₹${(t.quoted_price || t.price || 0).toLocaleString()} (${Number(t.discount_pct || 0).toFixed(1)}% off)`
+    ),
+    "──────────────────",
+    `*Total Quoted: ₹${total.toLocaleString()}*`,
+    "Valid 7 days. Reply YES to confirm.",
+  ].join("\n");
+
+  const emailSubject = encodeURIComponent(`${clinicName} — Treatment Estimate for ${session.patients.full_name}`);
+  const emailBody    = encodeURIComponent(whatsappMsg.replace(/\*/g, ""));
+
+  const handleWhatsApp = () => {
+    const phone = sharePhone.replace(/\D/g, "");
+    window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(whatsappMsg)}`, "_blank");
+  };
+
+  const handleEmail = () => {
+    window.location.href = `mailto:${shareEmail}?subject=${emailSubject}&body=${emailBody}`;
+  };
+
+  const handlePrint = () => {
+    const html = `<!DOCTYPE html><html><head><title>Estimate</title>
+    <style>body{font-family:Georgia,serif;padding:40px;color:#1a1714;max-width:600px;margin:0 auto}
+    h1{font-size:20px;color:#C5A059}table{width:100%;border-collapse:collapse;margin-top:20px}
+    th{text-align:left;padding:8px;background:#f9f7f2;border-bottom:2px solid #C5A059;font-size:12px;text-transform:uppercase}
+    td{padding:8px;border-bottom:1px solid #e5e0d8;font-size:13px}
+    .total{font-size:16px;font-weight:bold;color:#C5A059;text-align:right;margin-top:16px}
+    .footer{margin-top:24px;font-size:11px;color:#9ca3af}</style></head><body>
+    <h1>${clinicName}</h1>
+    <p>Patient: <strong>${session.patients.full_name}</strong></p>
+    <p>Date: ${dateStr}</p>
+    <table><thead><tr><th>Service</th><th>Sessions</th><th>MRP</th><th>Quoted</th><th>Disc%</th></tr></thead><tbody>
+    ${treatments.map(t => `<tr><td>${t.service_name}</td><td>${t.sessions ?? 1}</td><td>₹${(t.mrp || 0).toLocaleString()}</td><td>₹${(t.quoted_price || t.price || 0).toLocaleString()}</td><td>${Number(t.discount_pct || 0).toFixed(1)}%</td></tr>`).join("")}
+    </tbody></table>
+    <p class="total">Total Quoted: ₹${total.toLocaleString()}</p>
+    <p class="footer">Valid 7 days from ${dateStr}. This is an estimate and not a final invoice.</p>
+    </body></html>`;
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(html); w.document.close(); w.print(); }
+  };
+
+  const handleSaveProforma = async () => {
+    setSaving(true);
+    try {
+      // GAP-H7 fix: use active clinic from context, not arbitrary first row
+      if (!clinicId) { setSaving(false); return; }
+
+      const { data: inv } = await supabase.from("pending_invoices").insert({
+        clinic_id:    clinicId,
+        patient_name: session.patients.full_name,
+        total_amount: total,
+        invoice_type: "proforma",
+        payment_mode: "cash",
+      }).select("id").single();
+
+      if (inv) {
+        const lines = treatments.map(t => ({
+          invoice_id:   inv.id,
+          clinic_id:    clinicId,
+          description:  `${t.service_name} × ${t.sessions ?? 1} sessions`,
+          quantity:     t.sessions ?? 1,
+          unit_price:   t.mrp || 0,
+          discount_pct: t.discount_pct || 0,
+          gst_pct:      0,
+          line_total:   t.quoted_price || t.price || 0,
+        }));
+        await supabase.from("invoice_line_items").insert(lines);
+      }
+    } finally {
+      setSaving(false);
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center" style={{ background: "rgba(0,0,0,0.55)" }}>
+      <div className="rounded-2xl overflow-hidden flex flex-col" style={{ background: "#F9F7F2", width: 600, maxWidth: "95vw", maxHeight: "90vh" }}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0" style={{ background: "#fff", borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
+          <div>
+            <p className="text-sm font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Proforma Invoice</p>
+            <p className="text-xs" style={{ color: "#9ca3af" }}>{session.patients.full_name} · {dateStr}</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-lg" style={{ border: "1px solid rgba(197,160,89,0.2)" }}>
+            <X size={14} style={{ color: "#9ca3af" }} />
+          </button>
+        </div>
+
+        {/* Contact fields */}
+        <div className="px-5 py-4 flex-shrink-0 grid grid-cols-2 gap-3" style={{ borderBottom: "1px solid rgba(197,160,89,0.1)" }}>
+          <div>
+            <label className="block text-xs font-medium mb-1" style={{ color: "#6b7280" }}>WhatsApp Number</label>
+            <input value={sharePhone} onChange={e => setSharePhone(e.target.value)}
+              placeholder="+91 98765 43210"
+              className="w-full px-3 py-2 rounded-lg border text-sm outline-none"
+              style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1" style={{ color: "#6b7280" }}>Email</label>
+            <input value={shareEmail} onChange={e => setShareEmail(e.target.value)}
+              placeholder="patient@email.com"
+              className="w-full px-3 py-2 rounded-lg border text-sm outline-none"
+              style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+          </div>
+        </div>
+
+        {/* Treatment table */}
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          <div className="rounded-xl overflow-hidden" style={{ border: "1px solid rgba(197,160,89,0.15)" }}>
+            <table className="w-full text-xs">
+              <thead>
+                <tr style={{ background: "rgba(197,160,89,0.06)" }}>
+                  {["Service", "Sessions", "MRP ₹", "Quoted ₹", "Disc %"].map(h => (
+                    <th key={h} className="px-3 py-2 text-left font-medium" style={{ color: "#9ca3af" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {treatments.map((t, i) => (
+                  <tr key={i} style={{ borderTop: "1px solid rgba(197,160,89,0.08)" }}>
+                    <td className="px-3 py-2" style={{ color: "#1a1714" }}>{t.service_name}</td>
+                    <td className="px-3 py-2" style={{ color: "#6b7280" }}>{t.sessions ?? 1}</td>
+                    <td className="px-3 py-2" style={{ color: "#9ca3af" }}>₹{(t.mrp || 0).toLocaleString()}</td>
+                    <td className="px-3 py-2 font-medium" style={{ color: "#1a1714" }}>₹{(t.quoted_price || t.price || 0).toLocaleString()}</td>
+                    <td className="px-3 py-2" style={{ color: "#16a34a" }}>{Number(t.discount_pct || 0).toFixed(1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: "2px solid rgba(197,160,89,0.2)", background: "rgba(197,160,89,0.04)" }}>
+                  <td colSpan={3} className="px-3 py-2 font-semibold text-xs" style={{ color: "#6b7280" }}>Total Quoted</td>
+                  <td colSpan={2} className="px-3 py-2 font-bold text-sm" style={{ color: "var(--gold)" }}>₹{total.toLocaleString()}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <p className="text-xs mt-3" style={{ color: "#9ca3af" }}>Valid 7 days from {dateStr}. This is an estimate, not a final invoice.</p>
+        </div>
+
+        {/* Actions */}
+        <div className="px-5 py-4 flex gap-2 flex-wrap flex-shrink-0" style={{ borderTop: "1px solid rgba(197,160,89,0.15)", background: "#fff" }}>
+          <button onClick={handlePrint}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium border"
+            style={{ borderColor: "rgba(197,160,89,0.25)", color: "#6b7280" }}>
+            <Printer size={13} /> Print
+          </button>
+          <button onClick={handleWhatsApp} disabled={!sharePhone}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium disabled:opacity-40"
+            style={{ background: "rgba(22,163,74,0.1)", color: "#16a34a", border: "1px solid rgba(22,163,74,0.2)" }}>
+            <MessageCircle size={13} /> WhatsApp
+          </button>
+          <button onClick={handleEmail} disabled={!shareEmail}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium disabled:opacity-40"
+            style={{ background: "rgba(59,130,246,0.1)", color: "#2563eb", border: "1px solid rgba(59,130,246,0.2)" }}>
+            <Mail size={13} /> Email
+          </button>
+          <button onClick={handleSaveProforma} disabled={saving}
+            className="ml-auto flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium disabled:opacity-40"
+            style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.25)" }}>
+            <Save size={13} /> {saving ? "Saving…" : "Save Proforma"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Gallery Tab ───────────────────────────────────────────────────────────────
+
+interface GalleryTabProps { clinicId: string; }
+
+function GalleryTab({ clinicId }: GalleryTabProps) {
+  const [subTab, setSubTab]           = useState<"our_results" | "reference">("our_results");
+  const [ourPhotos, setOurPhotos]     = useState<OurResultPhoto[]>([]);
+  const [refPhotos, setRefPhotos]     = useState<RefPhoto[]>([]);
+  const [loading, setLoading]         = useState(true);
+  const [filterTreat, setFilterTreat] = useState("all");
+  const [filterArea, setFilterArea]   = useState("all");
+  const [filterBrand, setFilterBrand] = useState("all");
+  const [selected, setSelected]       = useState<OurResultPhoto | RefPhoto | null>(null);
+  const [viewMode, setViewMode]       = useState<"sidebyside" | "slider">("sidebyside");
+  const [sliderPct, setSliderPct]     = useState(50);
+
+  const fetchOurPhotos = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from("before_after_photos")
+      .select("id, treatment, condition, body_area, visit_number, visit_date, before_url, after_url, notes")
+      .eq("clinic_id", clinicId)
+      .eq("show_in_counselling", true)
+      .eq("is_reference", false)
+      .order("created_at", { ascending: false });
+    setOurPhotos(data as OurResultPhoto[] ?? []);
+    setLoading(false);
+  }, [clinicId]);
+
+  const fetchRefPhotos = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from("before_after_photos")
+      .select("id, treatment, brand_name, condition, body_area, before_url, after_url, notes, title")
+      .eq("clinic_id", clinicId)
+      .eq("is_reference", true)
+      .order("created_at", { ascending: false });
+    setRefPhotos(data as RefPhoto[] ?? []);
+    setLoading(false);
+  }, [clinicId]);
+
+  useEffect(() => {
+    if (subTab === "our_results") fetchOurPhotos();
+    else fetchRefPhotos();
+  }, [subTab, fetchOurPhotos, fetchRefPhotos]);
+
+  const uniqueTreatments = subTab === "our_results"
+    ? [...new Set(ourPhotos.map(p => p.treatment))]
+    : [...new Set(refPhotos.map(p => p.treatment))];
+  const uniqueAreas  = [...new Set(ourPhotos.map(p => p.body_area).filter(Boolean))] as string[];
+  const uniqueBrands = [...new Set(refPhotos.map(p => p.brand_name).filter(Boolean))] as string[];
+
+  const filteredOur = ourPhotos.filter(p =>
+    (filterTreat === "all" || p.treatment === filterTreat) &&
+    (filterArea  === "all" || p.body_area  === filterArea)
+  );
+  const filteredRef = refPhotos.filter(p =>
+    (filterTreat === "all" || p.treatment  === filterTreat) &&
+    (filterBrand === "all" || p.brand_name === filterBrand)
+  );
+
+  const navPhoto = (dir: -1 | 1) => {
+    if (!selected) return;
+    const list = subTab === "our_results" ? filteredOur : filteredRef;
+    const idx  = list.findIndex(p => p.id === selected.id);
+    const next = list[idx + dir];
+    if (next) { setSelected(next); setSliderPct(50); }
+  };
+
+  return (
+    <div>
+      {/* Sub-tabs */}
+      <div className="flex gap-1 mb-5 p-1 rounded-xl w-fit" style={{ background: "rgba(197,160,89,0.06)", border: "1px solid rgba(197,160,89,0.12)" }}>
+        {([["our_results", "Our Results"], ["reference", "Reference Library"]] as const).map(([key, label]) => (
+          <button key={key} onClick={() => { setSubTab(key); setFilterTreat("all"); setFilterArea("all"); setFilterBrand("all"); setSelected(null); }}
+            className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+            style={subTab === key ? { background: "var(--gold)", color: "#fff", fontFamily: "Georgia, serif" } : { color: "rgba(197,160,89,0.7)" }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="flex gap-2 mb-5 flex-wrap">
+        <select value={filterTreat} onChange={e => setFilterTreat(e.target.value)}
+          className="text-xs px-3 py-1.5 rounded-lg border bg-white"
+          style={{ borderColor: "rgba(197,160,89,0.25)", color: "#4b5563" }}>
+          <option value="all">All Treatments</option>
+          {uniqueTreatments.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        {subTab === "our_results" && (
+          <select value={filterArea} onChange={e => setFilterArea(e.target.value)}
+            className="text-xs px-3 py-1.5 rounded-lg border bg-white"
+            style={{ borderColor: "rgba(197,160,89,0.25)", color: "#4b5563" }}>
+            <option value="all">All Body Areas</option>
+            {uniqueAreas.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+        )}
+        {subTab === "reference" && (
+          <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)}
+            className="text-xs px-3 py-1.5 rounded-lg border bg-white"
+            style={{ borderColor: "rgba(197,160,89,0.25)", color: "#4b5563" }}>
+            <option value="all">All Brands</option>
+            {uniqueBrands.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+        )}
+      </div>
+
+      {/* Grid */}
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <p className="text-sm" style={{ color: "#9ca3af" }}>Loading…</p>
+        </div>
+      ) : (subTab === "our_results" ? filteredOur : filteredRef).length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 gap-3">
+          <Images size={40} style={{ color: "rgba(197,160,89,0.3)" }} />
+          <p className="text-sm" style={{ color: "#6b7280" }}>
+            {subTab === "our_results" ? "No results photos available" : "No brand reference photos found"}
+          </p>
+          {subTab === "our_results" && (
+            <p className="text-xs text-center" style={{ color: "#9ca3af", maxWidth: 320 }}>
+              Mark patient before/after photos as &quot;Show in counselling&quot; from the Photos page.
+            </p>
+          )}
+          {subTab === "reference" && (
+            <p className="text-xs text-center" style={{ color: "#9ca3af", maxWidth: 320 }}>
+              Upload brand reference photos from Photos → Reference Library.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))" }}>
+          {(subTab === "our_results" ? filteredOur : filteredRef).map(photo => {
+            const refPhoto = photo as RefPhoto;
+            return (
+              <button key={photo.id} onClick={() => { setSelected(photo); setSliderPct(50); }}
+                className="rounded-xl overflow-hidden text-left transition-all hover:shadow-md"
+                style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.12)" }}>
+                <div className="flex">
+                  <img src={photo.before_url} alt="Before" className="flex-1 object-cover" style={{ height: 100, minWidth: 0 }} />
+                  <img src={photo.after_url}  alt="After"  className="flex-1 object-cover" style={{ height: 100, minWidth: 0 }} />
+                </div>
+                <div className="px-2.5 py-2">
+                  {subTab === "reference" && refPhoto.brand_name && (
+                    <span className="inline-block text-xs px-1.5 py-0.5 rounded-full font-medium mb-1" style={{ background: "rgba(124,58,237,0.1)", color: "#7c3aed" }}>{refPhoto.brand_name}</span>
+                  )}
+                  <p className="text-xs font-medium truncate" style={{ color: "#1a1714" }}>{photo.treatment}</p>
+                  {(photo.condition || photo.body_area) && (
+                    <p className="text-xs truncate" style={{ color: "#9ca3af" }}>{[photo.condition, photo.body_area].filter(Boolean).join(" · ")}</p>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Comparison Modal */}
+      {selected && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.75)" }}>
+          <div className="rounded-2xl overflow-hidden flex flex-col" style={{ background: "#1a1714", width: 820, maxWidth: "95vw", maxHeight: "90vh" }}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 flex-shrink-0" style={{ background: "rgba(255,255,255,0.05)", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+              <div className="flex items-center gap-3">
+                {subTab === "reference" && (selected as RefPhoto).brand_name && (
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: "rgba(124,58,237,0.25)", color: "#c4b5fd" }}>{(selected as RefPhoto).brand_name}</span>
+                )}
+                <span className="text-sm font-medium" style={{ color: "#f9f7f2", fontFamily: "Georgia, serif" }}>
+                  {subTab === "reference" ? ((selected as RefPhoto).title || selected.treatment) : selected.treatment}
+                </span>
+                {selected.condition && <span className="text-xs" style={{ color: "rgba(255,255,255,0.5)" }}>{selected.condition}</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => navPhoto(-1)}
+                  disabled={(subTab === "our_results" ? filteredOur : filteredRef).findIndex(p => p.id === selected.id) === 0}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg disabled:opacity-30"
+                  style={{ background: "rgba(255,255,255,0.1)" }}>
+                  <ChevronLeft size={14} style={{ color: "#f9f7f2" }} />
+                </button>
+                <button onClick={() => navPhoto(1)}
+                  disabled={(subTab === "our_results" ? filteredOur : filteredRef).findIndex(p => p.id === selected.id) === (subTab === "our_results" ? filteredOur : filteredRef).length - 1}
+                  className="w-7 h-7 flex items-center justify-center rounded-lg disabled:opacity-30"
+                  style={{ background: "rgba(255,255,255,0.1)" }}>
+                  <ChevronRight size={14} style={{ color: "#f9f7f2" }} />
+                </button>
+                <div className="flex rounded-lg overflow-hidden ml-1" style={{ border: "1px solid rgba(255,255,255,0.15)" }}>
+                  {(["sidebyside", "slider"] as const).map(m => (
+                    <button key={m} onClick={() => setViewMode(m)}
+                      className="px-3 py-1.5 text-xs font-medium"
+                      style={viewMode === m ? { background: "rgba(197,160,89,0.4)", color: "#f9f7f2" } : { background: "transparent", color: "rgba(255,255,255,0.5)" }}>
+                      {m === "sidebyside" ? "Side by Side" : "Slider"}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => setSelected(null)} className="w-7 h-7 flex items-center justify-center rounded-lg ml-1" style={{ background: "rgba(255,255,255,0.1)" }}>
+                  <X size={14} style={{ color: "#f9f7f2" }} />
+                </button>
+              </div>
+            </div>
+
+            {/* Comparison view */}
+            <div className="flex-1 overflow-hidden" style={{ minHeight: 0 }}>
+              {viewMode === "sidebyside" ? (
+                <div className="flex h-full" style={{ maxHeight: 460 }}>
+                  <div className="flex-1 relative">
+                    <img src={selected.before_url} alt="Before" className="w-full h-full object-cover" />
+                    <div className="absolute top-2 left-2 text-xs px-2 py-0.5 rounded font-medium" style={{ background: "rgba(0,0,0,0.6)", color: "#fff" }}>Before</div>
+                  </div>
+                  <div className="w-px" style={{ background: "rgba(255,255,255,0.15)" }} />
+                  <div className="flex-1 relative">
+                    <img src={selected.after_url} alt="After" className="w-full h-full object-cover" />
+                    <div className="absolute top-2 left-2 text-xs px-2 py-0.5 rounded font-medium" style={{ background: "rgba(197,160,89,0.8)", color: "#fff" }}>After</div>
+                  </div>
+                </div>
+              ) : (
+                <div className="relative overflow-hidden" style={{ height: 460 }}>
+                  <img src={selected.after_url} alt="After" className="absolute inset-0 w-full h-full object-cover" />
+                  <div className="absolute inset-0 overflow-hidden" style={{ width: `${sliderPct}%` }}>
+                    <img src={selected.before_url} alt="Before" className="absolute inset-0 w-full h-full object-cover" style={{ minWidth: `${10000 / sliderPct}%` }} />
+                  </div>
+                  <div className="absolute top-0 bottom-0 w-0.5" style={{ left: `${sliderPct}%`, background: "#C5A059", transform: "translateX(-50%)" }}>
+                    <div className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "#C5A059", boxShadow: "0 2px 8px rgba(0,0,0,0.4)" }}>
+                      <ChevronLeft size={12} style={{ color: "#fff", marginRight: -2 }} />
+                      <ChevronRight size={12} style={{ color: "#fff", marginLeft: -2 }} />
+                    </div>
+                  </div>
+                  <input type="range" min={5} max={95} value={sliderPct}
+                    onChange={e => setSliderPct(Number(e.target.value))}
+                    className="absolute inset-0 w-full opacity-0 cursor-col-resize" style={{ height: "100%" }} />
+                  <div className="absolute top-2 left-2 text-xs px-2 py-0.5 rounded font-medium" style={{ background: "rgba(0,0,0,0.6)", color: "#fff" }}>Before</div>
+                  <div className="absolute top-2 right-2 text-xs px-2 py-0.5 rounded font-medium" style={{ background: "rgba(197,160,89,0.8)", color: "#fff" }}>After</div>
+                </div>
+              )}
+            </div>
+
+            {selected.notes && (
+              <div className="px-5 py-3 flex-shrink-0" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+                <p className="text-xs" style={{ color: "rgba(255,255,255,0.6)" }}>{selected.notes}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+
 export default function CounsellingPage() {
   const { profile, activeClinicId } = useClinic();
   const clinicId = activeClinicId || profile?.clinic_id;
 
-  const [tab, setTab]               = useState<"sessions" | "pipeline">("sessions");
+  const [tab, setTab]               = useState<"sessions" | "pipeline" | "gallery">("sessions");
   const [sessions, setSessions]     = useState<CounsellingSession[]>([]);
   const [services, setServices]     = useState<Service[]>([]);
   const [staff, setStaff]           = useState<Staff[]>([]);
@@ -89,6 +553,8 @@ export default function CounsellingPage() {
   const [patientResults, setPatientResults] = useState<Array<{ id: string; full_name: string }>>([]);
   const [doctorTreatments, setDoctorTreatments]   = useState<DoctorTreatment[]>([]);
   const [doctorPanelOpen, setDoctorPanelOpen]     = useState(false);
+  const [proformaOpen, setProformaOpen]           = useState(false);
+  const [clinicName, setClinicName]               = useState("Aesthetica Clinic");
 
   const fetchSessions = useCallback(async () => {
     if (!clinicId) return;
@@ -117,6 +583,12 @@ export default function CounsellingPage() {
     setStaff(data || []);
   }, [clinicId]);
 
+  const fetchClinicName = useCallback(async () => {
+    if (!clinicId) return;
+    const { data } = await supabase.from("clinics").select("name").eq("id", clinicId).single();
+    if (data?.name) setClinicName(data.name);
+  }, [clinicId]);
+
   const fetchDoctorTreatments = useCallback(async (patientId: string) => {
     const { data } = await supabase
       .from("patient_treatments")
@@ -130,8 +602,8 @@ export default function CounsellingPage() {
   useEffect(() => {
     if (!clinicId) return;
     setLoading(true);
-    Promise.all([fetchSessions(), fetchServices(), fetchStaff()]).finally(() => setLoading(false));
-  }, [clinicId, fetchSessions, fetchServices, fetchStaff]);
+    Promise.all([fetchSessions(), fetchServices(), fetchStaff(), fetchClinicName()]).finally(() => setLoading(false));
+  }, [clinicId, fetchSessions, fetchServices, fetchStaff, fetchClinicName]);
 
   useEffect(() => {
     if (selectedSession) {
@@ -142,6 +614,12 @@ export default function CounsellingPage() {
     }
   }, [selectedSession, fetchDoctorTreatments]);
 
+  const openNewSession = () => {
+    const selfId = staff.find(s => s.id === profile?.id)?.id ?? "";
+    setForm({ ...makeEmptyForm(), counsellor_id: selfId });
+    setDrawerOpen(true);
+  };
+
   const searchPatients = async (q: string) => {
     if (!clinicId || q.length < 2) { setPatientResults([]); return; }
     const { data } = await supabase.from("patients").select("id, full_name")
@@ -151,7 +629,7 @@ export default function CounsellingPage() {
 
   const addTreatmentRow = () => setForm(f => ({
     ...f,
-    treatments: [...f.treatments, { service_id: "", service_name: "", mrp: 0, quoted_price: "", discount_pct: "", recommended: false }],
+    treatments: [...f.treatments, { service_id: "", service_name: "", mrp: 0, quoted_price: "", discount_pct: "", recommended: false, sessions: "1" }],
   }));
 
   const selectService = (idx: number, serviceId: string) => {
@@ -166,7 +644,7 @@ export default function CounsellingPage() {
     setForm(f => ({ ...f, treatments: newT }));
   };
 
-  const updateRow = (idx: number, field: "quoted_price" | "discount_pct" | "recommended", value: string | boolean) => {
+  const updateRow = (idx: number, field: "quoted_price" | "discount_pct" | "recommended" | "sessions", value: string | boolean) => {
     const newT = [...form.treatments];
     const mrp  = newT[idx].mrp;
     if (field === "quoted_price") {
@@ -177,6 +655,8 @@ export default function CounsellingPage() {
       const disc   = parseFloat(value as string) || 0;
       const quoted = mrp > 0 ? (mrp * (1 - disc / 100)).toFixed(0) : "0";
       newT[idx] = { ...newT[idx], discount_pct: value as string, quoted_price: quoted };
+    } else if (field === "sessions") {
+      newT[idx] = { ...newT[idx], sessions: value as string };
     } else {
       newT[idx] = { ...newT[idx], recommended: value as boolean };
     }
@@ -195,6 +675,7 @@ export default function CounsellingPage() {
       quoted_price:  parseFloat(t.quoted_price) || 0,
       discount_pct:  parseFloat(t.discount_pct) || 0,
       recommended:   t.recommended,
+      sessions:      parseInt(t.sessions) || 1,
     }));
 
     const total_proposed = treatments.reduce((s, t) => s + t.quoted_price, 0);
@@ -234,6 +715,7 @@ export default function CounsellingPage() {
         counselled_by:           counsellorName,
         counselling_session_id:  session.id,
         notes:                   form.notes || null,
+        recommended_sessions:    t.sessions || null,
       }));
       if (ptInserts.length > 0) {
         await supabase.from("patient_treatments").insert(ptInserts);
@@ -265,6 +747,7 @@ export default function CounsellingPage() {
         quoted_price:  String(dt.price || ""),
         discount_pct:  "0",
         recommended:   false,
+        sessions:      "1",
       }],
     }));
     setDrawerOpen(true);
@@ -299,11 +782,11 @@ export default function CounsellingPage() {
       <div className="flex-1 overflow-auto p-6">
         {/* Tabs */}
         <div className="flex gap-1 mb-6 p-1 rounded-xl w-fit" style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.15)" }}>
-          {(["sessions", "pipeline"] as const).map(t => (
+          {([["sessions", "Sessions"], ["pipeline", "Pipeline"], ["gallery", "Gallery"]] as const).map(([t, label]) => (
             <button key={t} onClick={() => setTab(t)}
               className="px-5 py-2 rounded-lg text-sm font-medium transition-all capitalize"
               style={tab === t ? { background: "var(--gold)", color: "#fff", fontFamily: "Georgia, serif" } : { color: "rgba(197,160,89,0.7)" }}>
-              {t === "sessions" ? "Sessions" : "Pipeline"}
+              {label}
             </button>
           ))}
         </div>
@@ -313,7 +796,7 @@ export default function CounsellingPage() {
           <div>
             <div className="flex justify-between items-center mb-5">
               <h2 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Counselling Sessions</h2>
-              <button onClick={() => setDrawerOpen(true)}
+              <button onClick={openNewSession}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white"
                 style={{ background: "var(--gold)" }}>
                 <Plus size={15} /> New Session
@@ -402,6 +885,7 @@ export default function CounsellingPage() {
                           <thead>
                             <tr style={{ background: "rgba(197,160,89,0.06)" }}>
                               <th className="px-2 py-1.5 text-left font-medium" style={{ color: "#9ca3af" }}>Service</th>
+                              <th className="px-2 py-1.5 text-center font-medium" style={{ color: "#9ca3af" }}>Sess.</th>
                               <th className="px-2 py-1.5 text-right font-medium" style={{ color: "#9ca3af" }}>MRP</th>
                               <th className="px-2 py-1.5 text-right font-medium" style={{ color: "#9ca3af" }}>Quoted</th>
                               <th className="px-2 py-1.5 text-right font-medium" style={{ color: "#9ca3af" }}>Disc</th>
@@ -414,6 +898,7 @@ export default function CounsellingPage() {
                                   {t.service_name}
                                   {t.recommended && <span className="ml-1" style={{ color: "#16a34a" }}>✓</span>}
                                 </td>
+                                <td className="px-2 py-1.5 text-center" style={{ color: "#6b7280" }}>{t.sessions ?? 1}</td>
                                 <td className="px-2 py-1.5 text-right" style={{ color: "#9ca3af" }}>₹{(t.mrp || 0).toLocaleString()}</td>
                                 <td className="px-2 py-1.5 text-right font-medium" style={{ color: "#1a1714" }}>₹{(t.quoted_price || t.price || 0).toLocaleString()}</td>
                                 <td className="px-2 py-1.5 text-right" style={{ color: t.discount_pct > 0 ? "#16a34a" : "#9ca3af" }}>
@@ -425,6 +910,7 @@ export default function CounsellingPage() {
                           <tfoot>
                             <tr style={{ borderTop: "1px solid rgba(197,160,89,0.15)", background: "rgba(197,160,89,0.04)" }}>
                               <td className="px-2 py-1.5 font-medium text-xs" style={{ color: "#6b7280" }}>Total</td>
+                              <td />
                               <td className="px-2 py-1.5 text-right font-medium text-xs" style={{ color: "#9ca3af" }}>
                                 ₹{(selectedSession.treatments_discussed?.reduce((s, t) => s + (t.mrp || 0), 0) || 0).toLocaleString()}
                               </td>
@@ -436,6 +922,19 @@ export default function CounsellingPage() {
                           </tfoot>
                         </table>
                       </div>
+
+                      {/* Custom Fields */}
+                      <div style={{ borderTop: "1px solid rgba(197,160,89,0.15)", paddingTop: 14, marginTop: 8 }}>
+                        <p style={{ fontSize: 10, fontWeight: 700, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 8px" }}>Custom Fields</p>
+                        <CustomFieldsSection entityType="counselling_sessions" entityId={selectedSession.id} clinicId={clinicId ?? ""} />
+                      </div>
+
+                      {/* Proforma Invoice button */}
+                      <button onClick={() => setProformaOpen(true)}
+                        className="w-full mt-2 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium"
+                        style={{ background: "var(--gold)", color: "#fff" }}>
+                        <Printer size={12} /> Proforma Invoice
+                      </button>
                     </div>
 
                     {/* Doctor-Proposed Treatments Panel */}
@@ -558,13 +1057,21 @@ export default function CounsellingPage() {
             </div>
           </div>
         )}
+
+        {/* GALLERY TAB */}
+        {tab === "gallery" && clinicId && (
+          <div>
+            <h2 className="text-lg font-semibold mb-5" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Before &amp; After Gallery</h2>
+            <GalleryTab clinicId={clinicId} />
+          </div>
+        )}
       </div>
 
       {/* NEW SESSION DRAWER */}
       {drawerOpen && (
         <div className="fixed inset-0 z-50 flex">
           <div className="flex-1" style={{ background: "rgba(0,0,0,0.4)" }} onClick={() => setDrawerOpen(false)} />
-          <div className="w-[700px] h-full overflow-y-auto flex flex-col" style={{ background: "#fff" }}>
+          <div className="w-[720px] h-full overflow-y-auto flex flex-col" style={{ background: "#fff" }}>
             <div className="flex justify-between items-center px-6 py-5" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
               <h3 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>New Session</h3>
               <button onClick={() => setDrawerOpen(false)} className="p-2 rounded-lg hover:bg-gray-100"><X size={18} /></button>
@@ -650,9 +1157,9 @@ export default function CounsellingPage() {
                   </div>
                 ) : (
                   <>
-                    {/* Column headers */}
-                    <div className="grid gap-1 mb-1" style={{ gridTemplateColumns: "1fr 75px 85px 68px 40px 24px" }}>
-                      {["Service", "MRP ₹", "Quoted ₹", "Disc %", "Rec.", ""].map(h => (
+                    {/* Column headers — 7 cols */}
+                    <div className="grid gap-1 mb-1" style={{ gridTemplateColumns: "1fr 55px 75px 85px 65px 40px 24px" }}>
+                      {["Service", "Sessions", "MRP ₹", "Quoted ₹", "Disc %", "Rec.", ""].map(h => (
                         <span key={h} className="text-xs font-medium px-1" style={{ color: "#9ca3af" }}>{h}</span>
                       ))}
                     </div>
@@ -660,13 +1167,17 @@ export default function CounsellingPage() {
                     {/* Treatment rows */}
                     <div className="space-y-1.5">
                       {form.treatments.map((t, i) => (
-                        <div key={i} className="grid gap-1 items-center" style={{ gridTemplateColumns: "1fr 75px 85px 68px 40px 24px" }}>
+                        <div key={i} className="grid gap-1 items-center" style={{ gridTemplateColumns: "1fr 55px 75px 85px 65px 40px 24px" }}>
                           <select value={t.service_id} onChange={e => selectService(i, e.target.value)}
                             className="text-xs px-2 py-1.5 rounded border bg-white"
                             style={{ borderColor: "rgba(197,160,89,0.3)" }}>
                             <option value="">Select service</option>
                             {services.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                           </select>
+                          <input type="number" min={1} value={t.sessions}
+                            onChange={e => updateRow(i, "sessions", e.target.value)}
+                            className="text-xs px-2 py-1.5 rounded border text-center"
+                            style={{ borderColor: "rgba(197,160,89,0.3)" }} />
                           <input readOnly
                             value={t.mrp ? `₹${t.mrp.toLocaleString()}` : "—"}
                             className="text-xs px-2 py-1.5 rounded border text-center"
@@ -701,6 +1212,7 @@ export default function CounsellingPage() {
                           <thead>
                             <tr style={{ background: "rgba(197,160,89,0.06)" }}>
                               <th className="px-3 py-2 text-left font-medium" style={{ color: "#9ca3af" }}>Service</th>
+                              <th className="px-3 py-2 text-center font-medium" style={{ color: "#9ca3af" }}>Sess.</th>
                               <th className="px-3 py-2 text-right font-medium" style={{ color: "#9ca3af" }}>MRP</th>
                               <th className="px-3 py-2 text-right font-medium" style={{ color: "#9ca3af" }}>Quoted</th>
                               <th className="px-3 py-2 text-right font-medium" style={{ color: "#9ca3af" }}>Discount</th>
@@ -711,6 +1223,7 @@ export default function CounsellingPage() {
                             {form.treatments.filter(t => t.service_name).map((t, i) => (
                               <tr key={i} style={{ borderTop: "1px solid rgba(197,160,89,0.08)" }}>
                                 <td className="px-3 py-2" style={{ color: "#1a1714" }}>{t.service_name}</td>
+                                <td className="px-3 py-2 text-center" style={{ color: "#6b7280" }}>{t.sessions || 1}</td>
                                 <td className="px-3 py-2 text-right" style={{ color: "#9ca3af" }}>
                                   {t.mrp ? `₹${t.mrp.toLocaleString()}` : "—"}
                                 </td>
@@ -731,6 +1244,7 @@ export default function CounsellingPage() {
                           <tfoot>
                             <tr style={{ borderTop: "2px solid rgba(197,160,89,0.2)", background: "rgba(197,160,89,0.04)" }}>
                               <td className="px-3 py-2 font-semibold text-xs" style={{ color: "#6b7280" }}>TOTAL</td>
+                              <td />
                               <td className="px-3 py-2 text-right font-semibold" style={{ color: "#9ca3af" }}>
                                 {summaryTotalMrp > 0 ? `₹${summaryTotalMrp.toLocaleString()}` : "—"}
                               </td>
@@ -781,6 +1295,19 @@ export default function CounsellingPage() {
           </div>
         </div>
       )}
+
+      {/* Proforma Modal */}
+      {proformaOpen && selectedSession && (
+        <ProformaModal
+          session={selectedSession}
+          clinicName={clinicName}
+          clinicId={clinicId ?? ""}
+          onClose={() => setProformaOpen(false)}
+        />
+      )}
+
+      {/* Reference Gallery Modal (from session detail) */}
+      {/* Note: ReferenceGalleryModal can also be used inline in session detail panel */}
     </div>
   );
 }

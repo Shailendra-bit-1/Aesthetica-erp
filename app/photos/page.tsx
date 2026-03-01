@@ -5,7 +5,7 @@ import {
   SplitSquareHorizontal, Search, X, Plus, Download, Trash2, Edit2,
   Loader2, Calendar, Tag, User, Stethoscope, Building2, RefreshCw,
   Camera, CheckCircle2, ChevronLeft, ChevronRight, ZoomIn, Layers,
-  Shield, Eye, EyeOff, Info, Star,
+  Shield, Eye, EyeOff, Info, Star, Images,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -35,6 +35,9 @@ interface BAPhoto {
   consent_given: boolean;
   show_in_gallery: boolean;
   show_to_patient: boolean;
+  show_in_counselling: boolean;
+  is_reference: boolean;
+  brand_name: string | null;
   uploaded_by: string | null;
   uploaded_by_name: string | null;
   created_at: string;
@@ -88,9 +91,12 @@ export default function BeforeAfterGalleryPage() {
   const [search,        setSearch]        = useState("");
   const [filterArea,    setFilterArea]    = useState("all");
   const [filterTreat,   setFilterTreat]   = useState("all");
+  const [filterBrand,   setFilterBrand]   = useState("all");
   const [selectedPhoto, setSelectedPhoto] = useState<BAPhoto | null>(null);
   const [uploadOpen,    setUploadOpen]    = useState(false);
   const [editPhoto,     setEditPhoto]     = useState<BAPhoto | null>(null);
+  const [photoTab,      setPhotoTab]      = useState<"patient_results" | "reference_library">("patient_results");
+  const [refUploadOpen, setRefUploadOpen] = useState(false);
 
   const fetchPhotos = useCallback(async () => {
     if (!activeClinicId) { setLoading(false); return; }
@@ -121,19 +127,26 @@ export default function BeforeAfterGalleryPage() {
     fetchPhotos(); fetchPatients();
   }, [fetchPhotos, fetchPatients, profileLoading]);
 
-  const uniqueAreas      = useMemo(() => [...new Set(photos.map(p => p.body_area).filter(Boolean))] as string[], [photos]);
-  const uniqueTreatments = useMemo(() => [...new Set(photos.map(p => p.treatment))], [photos]);
+  const patientPhotos   = useMemo(() => photos.filter(p => !p.is_reference), [photos]);
+  const referencePhotos = useMemo(() => photos.filter(p => p.is_reference),  [photos]);
+  const activePhotos    = photoTab === "patient_results" ? patientPhotos : referencePhotos;
+
+  const uniqueAreas      = useMemo(() => [...new Set(activePhotos.map(p => p.body_area).filter(Boolean))] as string[], [activePhotos]);
+  const uniqueTreatments = useMemo(() => [...new Set(activePhotos.map(p => p.treatment))], [activePhotos]);
+  const uniqueBrands     = useMemo(() => [...new Set(referencePhotos.map(p => p.brand_name).filter(Boolean))] as string[], [referencePhotos]);
 
   const filtered = useMemo(() => {
-    let list = photos;
+    let list = activePhotos;
     if (filterArea  !== "all") list = list.filter(p => p.body_area  === filterArea);
     if (filterTreat !== "all") list = list.filter(p => p.treatment  === filterTreat);
+    if (photoTab === "reference_library" && filterBrand !== "all") list = list.filter(p => p.brand_name === filterBrand);
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(p =>
         p.treatment.toLowerCase().includes(q) ||
         (p.condition  ?? "").toLowerCase().includes(q) ||
         (p.body_area  ?? "").toLowerCase().includes(q) ||
+        (p.brand_name ?? "").toLowerCase().includes(q) ||
         p.tags.some(t => t.toLowerCase().includes(q)) ||
         (p.title      ?? "").toLowerCase().includes(q) ||
         (p.notes      ?? "").toLowerCase().includes(q) ||
@@ -141,13 +154,14 @@ export default function BeforeAfterGalleryPage() {
       );
     }
     return list;
-  }, [photos, search, filterArea, filterTreat]);
+  }, [activePhotos, search, filterArea, filterTreat, filterBrand, photoTab]);
 
   const stats = useMemo(() => ({
-    total:      photos.length,
-    treatments: uniqueTreatments.length,
-    patients:   new Set(photos.map(p => p.patient_id).filter(Boolean)).size,
-  }), [photos, uniqueTreatments]);
+    total:      patientPhotos.length,
+    treatments: new Set(patientPhotos.map(p => p.treatment)).size,
+    patients:   new Set(patientPhotos.map(p => p.patient_id).filter(Boolean)).size,
+    references: referencePhotos.length,
+  }), [patientPhotos, referencePhotos]);
 
   async function handleDelete(photo: BAPhoto) {
     if (!confirm("Delete this Before & After pair? This cannot be undone.")) return;
@@ -210,7 +224,7 @@ export default function BeforeAfterGalleryPage() {
               <button onClick={fetchPhotos} style={{ width: 36, height: 36, borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <RefreshCw size={14} style={{ color: "#9C9584" }} />
               </button>
-              {canUpload && (
+              {canUpload && photoTab === "patient_results" && (
                 <button
                   onClick={() => setUploadOpen(true)}
                   className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold"
@@ -219,8 +233,33 @@ export default function BeforeAfterGalleryPage() {
                   <Plus size={15} /> Add Photo Pair
                 </button>
               )}
+              {canUpload && photoTab === "reference_library" && (
+                <button
+                  onClick={() => setRefUploadOpen(true)}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold"
+                  style={{ background: "linear-gradient(135deg, #7c3aed, #5b21b6)", color: "#fff", border: "none", cursor: "pointer", boxShadow: "0 4px 16px rgba(124,58,237,0.4)" }}
+                >
+                  <Plus size={15} /> Add Reference Photo
+                </button>
+              )}
             </div>
           </div>
+
+          {/* ── Photo Tabs ── */}
+          {activeClinicId && (
+            <div className="flex gap-1 p-1 rounded-xl w-fit" style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.15)" }}>
+              {([["patient_results", "Patient Results"], ["reference_library", "Reference Library"]] as const).map(([t, label]) => (
+                <button key={t} onClick={() => { setPhotoTab(t); setSearch(""); setFilterArea("all"); setFilterTreat("all"); setFilterBrand("all"); }}
+                  className="px-5 py-2 rounded-lg text-sm font-medium transition-all"
+                  style={photoTab === t ? { background: "var(--gold)", color: "#fff", fontFamily: "Georgia, serif" } : { color: "rgba(197,160,89,0.7)" }}>
+                  {label}
+                  {t === "reference_library" && stats.references > 0 && (
+                    <span className="ml-1.5 text-xs px-1.5 py-0.5 rounded-full" style={{ background: "rgba(255,255,255,0.2)", color: photoTab === t ? "#fff" : "rgba(197,160,89,0.7)" }}>{stats.references}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* ── No-clinic state ── */}
           {!profileLoading && !activeClinicId && (
@@ -233,11 +272,12 @@ export default function BeforeAfterGalleryPage() {
           {activeClinicId && (
             <>
               {/* ── Stats ── */}
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-4 gap-4">
                 {[
-                  { label: "Photo Pairs",        value: stats.total,      Icon: Layers,       color: "#C5A059", bg: "rgba(197,160,89,0.08)"  },
-                  { label: "Treatments Covered", value: stats.treatments, Icon: Stethoscope,  color: "#6366F1", bg: "rgba(99,102,241,0.08)"  },
-                  { label: "Patients Documented",value: stats.patients,   Icon: User,         color: "#4A8A4A", bg: "rgba(74,138,74,0.08)"   },
+                  { label: "Patient Photo Pairs", value: stats.total,      Icon: Layers,       color: "#C5A059", bg: "rgba(197,160,89,0.08)"  },
+                  { label: "Treatments Covered",  value: stats.treatments, Icon: Stethoscope,  color: "#6366F1", bg: "rgba(99,102,241,0.08)"  },
+                  { label: "Patients Documented", value: stats.patients,   Icon: User,         color: "#4A8A4A", bg: "rgba(74,138,74,0.08)"   },
+                  { label: "Brand References",    value: stats.references, Icon: Star,         color: "#7c3aed", bg: "rgba(124,58,237,0.08)"  },
                 ].map(c => (
                   <div key={c.label} className="rounded-2xl p-5" style={{ background: "white", border: "1px solid rgba(197,160,89,0.15)" }}>
                     <div className="flex items-start justify-between mb-3">
@@ -281,15 +321,26 @@ export default function BeforeAfterGalleryPage() {
                     {uniqueTreatments.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
 
-                  <select value={filterArea} onChange={e => setFilterArea(e.target.value)}
-                    className="py-2.5 pl-3 pr-7 rounded-xl text-sm outline-none appearance-none"
-                    style={{ background: filterArea !== "all" ? "rgba(197,160,89,0.1)" : "rgba(249,247,242,0.9)", border: "1px solid rgba(197,160,89,0.2)", color: filterArea !== "all" ? "#8B6914" : "#6B6358" }}>
-                    <option value="all">All Areas</option>
-                    {uniqueAreas.map(a => <option key={a} value={a}>{a}</option>)}
-                  </select>
+                  {photoTab === "patient_results" && (
+                    <select value={filterArea} onChange={e => setFilterArea(e.target.value)}
+                      className="py-2.5 pl-3 pr-7 rounded-xl text-sm outline-none appearance-none"
+                      style={{ background: filterArea !== "all" ? "rgba(197,160,89,0.1)" : "rgba(249,247,242,0.9)", border: "1px solid rgba(197,160,89,0.2)", color: filterArea !== "all" ? "#8B6914" : "#6B6358" }}>
+                      <option value="all">All Areas</option>
+                      {uniqueAreas.map(a => <option key={a} value={a}>{a}</option>)}
+                    </select>
+                  )}
 
-                  {(search || filterArea !== "all" || filterTreat !== "all") && (
-                    <button onClick={() => { setSearch(""); setFilterArea("all"); setFilterTreat("all"); }}
+                  {photoTab === "reference_library" && (
+                    <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)}
+                      className="py-2.5 pl-3 pr-7 rounded-xl text-sm outline-none appearance-none"
+                      style={{ background: filterBrand !== "all" ? "rgba(124,58,237,0.1)" : "rgba(249,247,242,0.9)", border: "1px solid rgba(197,160,89,0.2)", color: filterBrand !== "all" ? "#7c3aed" : "#6B6358" }}>
+                      <option value="all">All Brands</option>
+                      {uniqueBrands.map(b => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                  )}
+
+                  {(search || filterArea !== "all" || filterTreat !== "all" || filterBrand !== "all") && (
+                    <button onClick={() => { setSearch(""); setFilterArea("all"); setFilterTreat("all"); setFilterBrand("all"); }}
                       className="flex items-center gap-1.5 text-xs px-3 py-2.5 rounded-xl"
                       style={{ border: "1px solid rgba(197,160,89,0.2)", color: "#9C9584", background: "transparent", cursor: "pointer" }}>
                       <X size={11} /> Clear
@@ -360,7 +411,7 @@ export default function BeforeAfterGalleryPage() {
         />
       )}
 
-      {/* ── Upload / Edit Drawer ── */}
+      {/* ── Upload / Edit Drawer (Patient Results) ── */}
       {uploadOpen && (
         <UploadDrawer
           clinicId={activeClinicId!}
@@ -368,6 +419,15 @@ export default function BeforeAfterGalleryPage() {
           profile={profile ? { ...profile, role: profile.role ?? undefined } : null}
           editPhoto={editPhoto}
           onClose={() => { setUploadOpen(false); setEditPhoto(null); fetchPhotos(); }}
+        />
+      )}
+
+      {/* ── Reference Library Upload Drawer ── */}
+      {refUploadOpen && (
+        <ReferenceUploadDrawer
+          clinicId={activeClinicId!}
+          profile={profile ? { ...profile, role: profile.role ?? undefined } : null}
+          onClose={() => { setRefUploadOpen(false); fetchPhotos(); }}
         />
       )}
     </>
@@ -459,6 +519,11 @@ function PhotoCard({ photo, idx, canDownload, canDelete, onView, onEdit, onDelet
       <div style={{ padding: "14px 16px 16px" }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 8 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
+            {photo.brand_name && (
+              <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 5, background: "rgba(124,58,237,0.2)", color: "#c4b5fd", border: "1px solid rgba(124,58,237,0.3)", display: "inline-block", marginBottom: 3 }}>
+                {photo.brand_name}
+              </span>
+            )}
             <p style={{ fontSize: 13, fontWeight: 600, color: "#E8E2D4", fontFamily: "Georgia, serif", margin: 0, lineHeight: 1.3 }}>{photo.treatment}</p>
             {photo.condition && <p style={{ fontSize: 11, color: "rgba(232,226,212,0.45)", margin: "3px 0 0" }}>{photo.condition}</p>}
           </div>
@@ -702,9 +767,10 @@ function UploadDrawer({ clinicId, patients, profile, editPhoto, onClose }: {
   const [tags,          setTags]          = useState<string[]>(editPhoto?.tags ?? []);
   const [tagInput,      setTagInput]      = useState("");
   const [notes,         setNotes]         = useState(editPhoto?.notes ?? "");
-  const [consent,       setConsent]       = useState(editPhoto?.consent_given ?? false);
-  const [showInGallery, setShowInGallery] = useState(editPhoto?.show_in_gallery ?? true);
-  const [showToPatient, setShowToPatient] = useState(editPhoto?.show_to_patient ?? true);
+  const [consent,            setConsent]            = useState(editPhoto?.consent_given ?? false);
+  const [showInGallery,      setShowInGallery]      = useState(editPhoto?.show_in_gallery ?? true);
+  const [showToPatient,      setShowToPatient]      = useState(editPhoto?.show_to_patient ?? true);
+  const [showInCounselling,  setShowInCounselling]  = useState(editPhoto?.show_in_counselling ?? false);
   const [beforeFile,    setBeforeFile]    = useState<File | null>(null);
   const [afterFile,     setAfterFile]     = useState<File | null>(null);
   const [beforePreview, setBeforePreview] = useState(editPhoto?.before_url ?? "");
@@ -793,11 +859,14 @@ function UploadDrawer({ clinicId, patients, profile, editPhoto, onClose }: {
         after_path:       afterPath,
         tags,
         notes:            notes.trim() || null,
-        consent_given:    consent,
-        show_in_gallery:  showInGallery,
-        show_to_patient:  showToPatient,
-        uploaded_by:      profile?.id ?? null,
-        uploaded_by_name: profile?.full_name ?? null,
+        consent_given:       consent,
+        show_in_gallery:     showInGallery,
+        show_to_patient:     showToPatient,
+        show_in_counselling: showInCounselling,
+        is_reference:        false,
+        brand_name:          null,
+        uploaded_by:         profile?.id ?? null,
+        uploaded_by_name:    profile?.full_name ?? null,
       };
 
       if (editPhoto) {
@@ -1016,6 +1085,7 @@ function UploadDrawer({ clinicId, patients, profile, editPhoto, onClose }: {
             <ToggleRow label="Patient consent obtained" sub="Patient agreed to clinical photography use" checked={consent} onChange={setConsent} green />
             <ToggleRow label="Show in clinic gallery" sub="Visible to all clinic staff for counselling" checked={showInGallery} onChange={setShowInGallery} />
             <ToggleRow label="Show to patient" sub="Patient can view their own progress" checked={showToPatient} onChange={setShowToPatient} />
+            <ToggleRow label="Show in counselling sessions" sub="Appears in Counselling → Gallery → Our Results" checked={showInCounselling} onChange={setShowInCounselling} />
           </div>
         </div>
 
@@ -1061,3 +1131,246 @@ const inputStyle: React.CSSProperties = {
   border: "1px solid rgba(197,160,89,0.25)", background: "white",
   fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none",
 };
+
+// ── Reference Library Upload Drawer ──────────────────────────────────────────
+
+function ReferenceUploadDrawer({ clinicId, profile, onClose }: {
+  clinicId: string;
+  profile: { id: string; full_name?: string | null; role?: string } | null;
+  onClose: () => void;
+}) {
+  const [brandName,     setBrandName]     = useState("");
+  const [treatment,     setTreatment]     = useState("");
+  const [customTreat,   setCustomTreat]   = useState(false);
+  const [condition,     setCondition]     = useState("");
+  const [bodyArea,      setBodyArea]      = useState("");
+  const [title,         setTitle]         = useState("");
+  const [notes,         setNotes]         = useState("");
+  const [beforeFile,    setBeforeFile]    = useState<File | null>(null);
+  const [afterFile,     setAfterFile]     = useState<File | null>(null);
+  const [beforePreview, setBeforePreview] = useState("");
+  const [afterPreview,  setAfterPreview]  = useState("");
+  const [saving,        setSaving]        = useState(false);
+  const beforeRef = useRef<HTMLInputElement>(null);
+  const afterRef  = useRef<HTMLInputElement>(null);
+
+  function handleFile(file: File, type: "before" | "after") {
+    const preview = URL.createObjectURL(file);
+    if (type === "before") { setBeforeFile(file); setBeforePreview(preview); }
+    else                   { setAfterFile(file);  setAfterPreview(preview);  }
+  }
+
+  function handleDrop(e: React.DragEvent, type: "before" | "after") {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith("image/")) handleFile(file, type);
+  }
+
+  async function uploadFile(file: File, path: string): Promise<string> {
+    const { data, error } = await supabase.storage
+      .from("patient-photos")
+      .upload(path, file, { contentType: file.type, upsert: true });
+    if (error) throw error;
+    const { data: { publicUrl } } = supabase.storage.from("patient-photos").getPublicUrl(data.path);
+    return publicUrl;
+  }
+
+  async function handleSave() {
+    if (!treatment.trim()) { toast.error("Treatment is required."); return; }
+    if (!beforePreview || !afterPreview) { toast.error("Both Before and After images are required."); return; }
+    setSaving(true);
+    try {
+      const pairId = crypto.randomUUID();
+      let beforeUrl = "", afterUrl = "";
+
+      if (beforeFile) {
+        const ext  = beforeFile.name.split(".").pop() ?? "jpg";
+        beforeUrl  = await uploadFile(beforeFile, `gallery/${clinicId}/reference/${pairId}/before.${ext}`);
+      }
+      if (afterFile) {
+        const ext  = afterFile.name.split(".").pop() ?? "jpg";
+        afterUrl   = await uploadFile(afterFile, `gallery/${clinicId}/reference/${pairId}/after.${ext}`);
+      }
+
+      const { error } = await supabase.from("before_after_photos").insert({
+        id:                  pairId,
+        clinic_id:           clinicId,
+        patient_id:          null,
+        title:               title.trim() || treatment.trim(),
+        treatment:           treatment.trim(),
+        condition:           condition || null,
+        body_area:           bodyArea  || null,
+        before_url:          beforeUrl,
+        after_url:           afterUrl,
+        before_path:         null,
+        after_path:          null,
+        tags:                [],
+        notes:               notes.trim() || null,
+        consent_given:       false,
+        show_in_gallery:     true,
+        show_to_patient:     false,
+        show_in_counselling: true,
+        is_reference:        true,
+        brand_name:          brandName.trim() || null,
+        uploaded_by:         profile?.id ?? null,
+        uploaded_by_name:    profile?.full_name ?? null,
+      });
+      if (error) throw error;
+      toast.success("Reference photo added to library.");
+      logAction({ action: "upload_reference_photo", targetId: pairId, targetName: treatment.trim(), metadata: { brand_name: brandName } });
+      onClose();
+    } catch (err: unknown) {
+      toast.error((err as Error).message ?? "Upload failed.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const hasContent = !!beforePreview && !!afterPreview;
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(28,25,23,0.55)", backdropFilter: "blur(3px)" }} />
+      <div style={{ position: "fixed", right: 0, top: 0, bottom: 0, zIndex: 61, width: 500, display: "flex", flexDirection: "column", background: "#F9F7F2", boxShadow: "-12px 0 50px rgba(28,25,23,0.22)", animation: "slideInRight 0.28s ease" }}>
+
+        {/* Header */}
+        <div style={{ padding: "18px 22px", background: "white", borderBottom: "1px solid rgba(124,58,237,0.2)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(124,58,237,0.1)", border: "1px solid rgba(124,58,237,0.25)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Images size={16} style={{ color: "#7c3aed" }} />
+            </div>
+            <div>
+              <p style={{ fontSize: 15, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Upload Reference Photo</p>
+              <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>Brand / manufacturer before–after reference</p>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <X size={15} style={{ color: "#9C9584" }} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px 22px", display: "flex", flexDirection: "column", gap: 18 }}>
+
+          {/* Image uploads */}
+          <div>
+            <p style={sectionLabel}>Photo Pair *</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {(["before", "after"] as const).map(type => {
+                const preview = type === "before" ? beforePreview : afterPreview;
+                const ref     = type === "before" ? beforeRef : afterRef;
+                return (
+                  <div key={type}
+                    onClick={() => ref.current?.click()}
+                    onDragOver={e => e.preventDefault()}
+                    onDrop={e => handleDrop(e, type)}
+                    style={{ height: 160, borderRadius: 12, border: preview ? "2px solid rgba(124,58,237,0.4)" : "2px dashed rgba(124,58,237,0.25)", background: preview ? "transparent" : "rgba(249,247,242,0.8)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" }}>
+                    {preview ? (
+                      <>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={preview} alt={type} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        <span style={{ position: "absolute", bottom: 8, left: "50%", transform: "translateX(-50%)", fontSize: 9, fontWeight: 800, letterSpacing: "0.1em", color: "white", background: type === "before" ? "rgba(0,0,0,0.7)" : "rgba(124,58,237,0.85)", padding: "2px 8px", borderRadius: 4, textTransform: "uppercase" }}>{type}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Camera size={22} style={{ color: "rgba(124,58,237,0.4)", marginBottom: 6 }} />
+                        <p style={{ fontSize: 12, fontWeight: 600, color: "#9C9584", margin: 0, textTransform: "capitalize" }}>{type} Photo</p>
+                        <p style={{ fontSize: 10, color: "#B8AE9C", margin: "2px 0 0" }}>Click or drag & drop</p>
+                      </>
+                    )}
+                    <input ref={ref} type="file" accept="image/*" style={{ display: "none" }}
+                      onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f, type); }} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Brand Name */}
+          <div>
+            <p style={sectionLabel}>Brand / Product Name *</p>
+            <input value={brandName} onChange={e => setBrandName(e.target.value)}
+              placeholder="e.g. Allergan, Galderma, Sculptra, Profhilo…"
+              style={inputStyle} />
+          </div>
+
+          {/* Treatment */}
+          <div>
+            <p style={sectionLabel}>Treatment *</p>
+            {customTreat ? (
+              <div style={{ display: "flex", gap: 8 }}>
+                <input value={treatment} onChange={e => setTreatment(e.target.value)} placeholder="Enter treatment name…" style={{ ...inputStyle, flex: 1 }} />
+                <button onClick={() => { setCustomTreat(false); setTreatment(""); }}
+                  style={{ padding: "0 12px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", fontSize: 12, color: "#9C9584" }}>
+                  List
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 8 }}>
+                <select value={treatment} onChange={e => setTreatment(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
+                  <option value="">Select treatment…</option>
+                  {TREATMENTS.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <button onClick={() => { setCustomTreat(true); setTreatment(""); }}
+                  style={{ padding: "0 12px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", fontSize: 12, color: "#9C9584", whiteSpace: "nowrap" }}>
+                  Custom
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Condition + Body Area */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <p style={sectionLabel}>Condition / Concern</p>
+              <select value={condition} onChange={e => setCondition(e.target.value)} style={inputStyle}>
+                <option value="">Select condition…</option>
+                {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <p style={sectionLabel}>Body Area</p>
+              <select value={bodyArea} onChange={e => setBodyArea(e.target.value)} style={inputStyle}>
+                <option value="">Select area…</option>
+                {BODY_AREAS.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Title */}
+          <div>
+            <p style={sectionLabel}>Title / Caption (optional)</p>
+            <input value={title} onChange={e => setTitle(e.target.value)}
+              placeholder="e.g. Botox Upper Face — 3 weeks post"
+              style={inputStyle} />
+          </div>
+
+          {/* Notes */}
+          <div>
+            <p style={sectionLabel}>Notes</p>
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3}
+              placeholder="Product details, dosage, protocol, observations…"
+              style={{ ...inputStyle, resize: "vertical", lineHeight: 1.65 }} />
+          </div>
+
+          <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(124,58,237,0.06)", border: "1px solid rgba(124,58,237,0.15)" }}>
+            <p style={{ fontSize: 11, color: "#7c3aed", margin: 0 }}>
+              ✓ These photos will be visible in Counselling → Gallery → Reference Library. They are not linked to any patient.
+            </p>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "14px 22px", borderTop: "1px solid rgba(197,160,89,0.18)", background: "white", display: "flex", gap: 10, flexShrink: 0 }}>
+          <button onClick={onClose} style={{ padding: "10px 18px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", fontSize: 13, color: "#9C9584" }}>
+            Cancel
+          </button>
+          <button onClick={handleSave} disabled={saving || !hasContent || !treatment.trim()}
+            style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "none", background: saving || !hasContent || !treatment.trim() ? "rgba(124,58,237,0.3)" : "linear-gradient(135deg, #7c3aed, #5b21b6)", cursor: saving || !hasContent || !treatment.trim() ? "not-allowed" : "pointer", color: "white", fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
+            {saving ? <><Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> Saving…</> : <><CheckCircle2 size={14} /> Add to Reference Library</>}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
