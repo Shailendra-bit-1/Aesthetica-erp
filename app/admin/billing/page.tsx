@@ -6,23 +6,25 @@ import {
   IndianRupee, Loader2, RefreshCw, Receipt, Smartphone, Landmark,
   ChevronDown, Bell, Ban, RotateCcw, Calendar, MapPin,
   Mail, Hash, Plus, Pencil, Trash2, X, Sparkles, GripVertical,
+  ExternalLink, Eye, Clock,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import { toast } from "sonner";
-import TopBar from "@/components/TopBar";
+import { useImpersonation } from "@/contexts/ImpersonationContext";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface DbPlan {
-  id:         string;
-  key:        string;
-  label:      string;
-  price:      number;
-  color:      string;
-  features:   string[];
-  is_active:  boolean;
-  sort_order: number;
+  id:            string;
+  key:           string;
+  label:         string;
+  price:         number;
+  color:         string;
+  features:      string[];
+  is_active:     boolean;
+  sort_order:    number;
+  features_json: Record<string, boolean> | null;
 }
 
 interface ClinicRow {
@@ -39,6 +41,17 @@ interface ClinicRow {
   revenue_mtd:         number;
   billing_method:      string | null;
   created_at:          string;
+  grace_period_days:   number;
+  warning_days_before: number;
+  next_billing_date:   string | null;
+  is_trial:            boolean;
+  trial_ends_at:       string | null;
+}
+
+interface ModuleRegistry {
+  module_key:   string;
+  display_name: string;
+  is_core:      boolean;
 }
 
 interface ChainRow {
@@ -110,10 +123,11 @@ const labelSx: React.CSSProperties = {
 // ── Plan Drawer ───────────────────────────────────────────────────────────────
 
 function PlanDrawer({
-  open, plan, onClose, onSave,
+  open, plan, modules, onClose, onSave,
 }: {
   open:    boolean;
   plan:    DbPlan | null;   // null = new
+  modules: ModuleRegistry[];
   onClose: () => void;
   onSave:  (p: DbPlan) => void;
 }) {
@@ -127,6 +141,7 @@ function PlanDrawer({
   const [color,    setColor]    = useState("#C5A059");
   const [features, setFeatures] = useState<string[]>([""]);
   const [active,   setActive]   = useState(true);
+  const [featJson, setFeatJson] = useState<Record<string, boolean>>({});
   const newFeatRef = useRef<HTMLInputElement>(null);
 
   // Sync form when plan or open changes
@@ -138,6 +153,7 @@ function PlanDrawer({
       setColor(plan?.color ?? "#C5A059");
       setFeatures(plan?.features?.length ? [...plan.features] : [""]);
       setActive(plan?.is_active ?? true);
+      setFeatJson(plan?.features_json ?? {});
     }
   }, [open, plan]);
 
@@ -167,7 +183,7 @@ function PlanDrawer({
     const cleanFeatures = features.map(f => f.trim()).filter(Boolean);
     const payload = {
       key: cleanKey, label: label.trim(), price, color,
-      features: cleanFeatures, is_active: active,
+      features: cleanFeatures, is_active: active, features_json: featJson,
     };
 
     if (isEdit && plan) {
@@ -375,6 +391,37 @@ function PlanDrawer({
                 }} />
               </button>
             </div>
+
+            {/* Module Access */}
+            <div>
+              <label style={labelSx}>Module Access</label>
+              <p style={{ fontSize: 10, color: "#8A8078", marginBottom: 8 }}>
+                Check modules that clinics on this plan can access. This sets the default — individual clinic overrides take precedence.
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                {modules.map(mod => {
+                  const isOn = featJson[mod.module_key] ?? false;
+                  return (
+                    <label key={mod.module_key} style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "7px 10px",
+                      borderRadius: 8, cursor: "pointer",
+                      background: isOn ? "rgba(74,138,74,0.06)" : "rgba(156,149,132,0.04)",
+                      border: `1px solid ${isOn ? "rgba(74,138,74,0.2)" : "rgba(156,149,132,0.15)"}`,
+                    }}>
+                      <input type="checkbox" checked={isOn}
+                        onChange={e => setFeatJson(prev => ({ ...prev, [mod.module_key]: e.target.checked }))}
+                        style={{ accentColor: "#C5A059", width: 13, height: 13 }} />
+                      <div style={{ minWidth: 0 }}>
+                        <p style={{ fontSize: 11, fontWeight: 600, color: "#1A1A1A", fontFamily: "Georgia, serif", margin: 0 }}>
+                          {mod.display_name}
+                        </p>
+                        {mod.is_core && <p style={{ fontSize: 9, color: "#8A8078", margin: 0 }}>Always on</p>}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -406,6 +453,7 @@ function PlanDrawer({
 
 export default function AdminBillingPage() {
   const { profile, loading: profileLoading } = useClinic();
+  const { startImpersonation } = useImpersonation();
 
   const [tab,      setTab]      = useState<TabKey>("clinics");
   const [loading,  setLoading]  = useState(true);
@@ -415,6 +463,7 @@ export default function AdminBillingPage() {
   const [clinics,  setClinics]  = useState<ClinicRow[]>([]);
   const [chains,   setChains]   = useState<ChainRow[]>([]);
   const [payments, setPayments] = useState<PaymentRow[]>([]);
+  const [modules,  setModules]  = useState<ModuleRegistry[]>([]);
 
   // KPIs
   const [mrr,        setMrr]        = useState(0);
@@ -424,6 +473,10 @@ export default function AdminBillingPage() {
 
   // Inline action state
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  // Grace period editing
+  const [editGrace,   setEditGrace]   = useState<Record<string, { days: number; warn: number }>>({});
+  const [savingGrace, setSavingGrace] = useState<string | null>(null);
 
   // Plan drawer
   const [drawerOpen,  setDrawerOpen]  = useState(false);
@@ -440,17 +493,19 @@ export default function AdminBillingPage() {
       ).toISOString();
 
       // Plans + Clinics + Chain billing in parallel
-      const [plansRes, clinicRes, cbRes, chainRes, cbChainRes, pmtRes] = await Promise.all([
+      const [plansRes, clinicRes, cbRes, chainRes, cbChainRes, pmtRes, moduleRes] = await Promise.all([
         supabase.from("subscription_plans").select("*").order("sort_order"),
-        supabase.from("clinics").select("id,name,location,admin_email,subscription_status,subscription_plan,chain_id,gst_number,created_at,chains(name)").order("created_at", { ascending: false }),
+        supabase.from("clinics").select("id,name,location,admin_email,subscription_status,subscription_plan,chain_id,gst_number,created_at,chains(name),grace_period_days,warning_days_before,next_billing_date,is_trial,trial_ends_at").order("created_at", { ascending: false }),
         supabase.from("clinic_billing_methods").select("clinic_id,method_type").eq("is_active", true),
         supabase.from("chains").select("id,name").order("created_at", { ascending: false }),
         supabase.from("chain_billing_methods").select("chain_id,method_type,grace_period_days,warning_days_before").eq("is_active", true),
         supabase.from("subscription_payments").select("*").order("created_at", { ascending: false }).limit(50),
+        supabase.from("module_registry").select("module_key,display_name,is_core").order("display_name"),
       ]);
 
       const dbPlans = (plansRes.data ?? []) as DbPlan[];
       setPlans(dbPlans);
+      setModules(moduleRes.data ?? []);
 
       // Build lookup maps
       const cbMap: Record<string, string> = {};
@@ -481,6 +536,11 @@ export default function AdminBillingPage() {
             revenue_mtd:         revMTD,
             billing_method:      cbMap[c.id] ?? null,
             created_at:          c.created_at,
+            grace_period_days:   (c as any).grace_period_days ?? 7,
+            warning_days_before: (c as any).warning_days_before ?? 3,
+            next_billing_date:   (c as any).next_billing_date ?? null,
+            is_trial:            (c as any).is_trial ?? false,
+            trial_ends_at:       (c as any).trial_ends_at ?? null,
           };
         })
       );
@@ -582,12 +642,56 @@ export default function AdminBillingPage() {
     setUpdatingId(null);
   }
 
+  // ── Grace period save ─────────────────────────────────────────────────────
+
+  async function saveGracePeriod(clinicId: string) {
+    const vals = editGrace[clinicId];
+    if (!vals) return;
+    setSavingGrace(clinicId);
+    const { error } = await supabase.from("clinics")
+      .update({ grace_period_days: vals.days, warning_days_before: vals.warn })
+      .eq("id", clinicId);
+    if (error) { toast.error("Failed to save grace period"); }
+    else {
+      setClinics(prev => prev.map(c => c.id === clinicId
+        ? { ...c, grace_period_days: vals.days, warning_days_before: vals.warn } : c));
+      setEditGrace(prev => { const n = { ...prev }; delete n[clinicId]; return n; });
+      toast.success("Grace period saved");
+    }
+    setSavingGrace(null);
+  }
+
+  // ── Login As ──────────────────────────────────────────────────────────────
+
+  async function handleLoginAs(clinicId: string, clinicName: string) {
+    const { data: profiles } = await supabase
+      .from("profiles")
+      .select("id, role")
+      .eq("clinic_id", clinicId)
+      .order("role")
+      .limit(10);
+    const preferred = (profiles ?? []).find(p => p.role === "clinic_admin")
+      ?? (profiles ?? [])[0];
+    if (!preferred) {
+      toast.error("No staff users found for this clinic. Create a clinic admin first.");
+      return;
+    }
+    const res = await fetch("/api/admin/magic-link", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: preferred.id }),
+    });
+    const json = await res.json();
+    if (!res.ok) { toast.error(json.error ?? "Magic link failed"); return; }
+    window.open(json.url, "_blank");
+    toast.success(`Opening ${clinicName} as ${preferred.role}`);
+  }
+
   // ── Guard ─────────────────────────────────────────────────────────────────
 
   if (!profileLoading && profile?.role !== "superadmin") {
     return (
       <div className="min-h-full" style={{ background: "var(--background)" }}>
-        <TopBar />
         <div className="flex items-center justify-center" style={{ minHeight: "60vh" }}>
           <p style={{ color: "var(--text-muted)" }}>Superadmin access required.</p>
         </div>
@@ -606,8 +710,6 @@ export default function AdminBillingPage() {
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
-
       <div className="px-6 py-6 max-w-[1440px] mx-auto space-y-6">
 
         {/* Header */}
@@ -838,7 +940,7 @@ export default function AdminBillingPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                        {["Clinic", "Plan", "Status", "Payment Method", "Patients", "MTD Revenue", "Actions"].map(h => (
+                        {["Clinic", "Plan", "Status", "Grace Period", "Patients", "MTD Revenue", "Actions"].map(h => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider whitespace-nowrap"
                             style={{ color: "var(--text-muted)" }}>{h}</th>
                         ))}
@@ -848,11 +950,10 @@ export default function AdminBillingPage() {
                       {filteredClinics.length === 0 ? (
                         <tr><td colSpan={7} className="px-4 py-12 text-center text-sm" style={{ color: "var(--text-muted)" }}>No clinics found.</td></tr>
                       ) : filteredClinics.map(c => {
-                        const statusCfg  = STATUS_CFG[c.subscription_status] ?? STATUS_CFG.active;
-                        const planDb     = plans.find(p => p.key === c.subscription_plan);
-                        const planColor  = planDb?.color ?? "#C5A059";
-                        const isBusy     = updatingId === c.id;
-                        const MethodIcon = c.billing_method ? METHOD_ICON[c.billing_method] : null;
+                        const statusCfg = STATUS_CFG[c.subscription_status] ?? STATUS_CFG.active;
+                        const planDb    = plans.find(p => p.key === c.subscription_plan);
+                        const planColor = planDb?.color ?? "#C5A059";
+                        const isBusy   = updatingId === c.id;
 
                         return (
                           <tr key={c.id} style={{ borderBottom: "1px solid var(--border)" }}
@@ -916,19 +1017,50 @@ export default function AdminBillingPage() {
                               </div>
                             </td>
 
-                            {/* Billing method */}
-                            <td className="px-4 py-3.5">
-                              {MethodIcon && c.billing_method ? (
-                                <div className="flex items-center gap-1.5">
-                                  <div className="w-6 h-6 rounded-lg flex items-center justify-center"
-                                    style={{ background: "rgba(197,160,89,0.1)" }}>
-                                    <MethodIcon size={12} style={{ color: "var(--gold)" }} />
+                            {/* Grace Period */}
+                            <td className="px-4 py-3.5" style={{ minWidth: 180 }}>
+                              {editGrace[c.id] ? (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                    <label style={{ fontSize: 9, color: "var(--text-muted)", width: 30 }}>Grace</label>
+                                    <input type="number" min={0} max={90}
+                                      value={editGrace[c.id].days}
+                                      onChange={e => setEditGrace(prev => ({ ...prev, [c.id]: { ...prev[c.id], days: Number(e.target.value) } }))}
+                                      style={{ width: 48, padding: "2px 6px", borderRadius: 5, border: "1px solid rgba(197,160,89,0.4)", fontSize: 11, textAlign: "center" }} />
+                                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>days</span>
                                   </div>
-                                  <span className="text-xs font-medium" style={{ color: "var(--foreground)" }}>
-                                    {METHOD_LABEL[c.billing_method]}
-                                  </span>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                    <label style={{ fontSize: 9, color: "var(--text-muted)", width: 30 }}>Warn</label>
+                                    <input type="number" min={0} max={30}
+                                      value={editGrace[c.id].warn}
+                                      onChange={e => setEditGrace(prev => ({ ...prev, [c.id]: { ...prev[c.id], warn: Number(e.target.value) } }))}
+                                      style={{ width: 48, padding: "2px 6px", borderRadius: 5, border: "1px solid rgba(212,160,23,0.4)", fontSize: 11, textAlign: "center" }} />
+                                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>days before</span>
+                                  </div>
+                                  <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+                                    <button onClick={() => saveGracePeriod(c.id)} disabled={savingGrace === c.id}
+                                      style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5, border: "none", background: "var(--gold)", color: "white", cursor: "pointer", fontWeight: 600 }}>
+                                      Save
+                                    </button>
+                                    <button onClick={() => setEditGrace(prev => { const n = { ...prev }; delete n[c.id]; return n; })}
+                                      style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5, border: "1px solid var(--border)", background: "transparent", color: "var(--text-muted)", cursor: "pointer" }}>
+                                      Cancel
+                                    </button>
+                                  </div>
                                 </div>
-                              ) : <span className="text-xs italic" style={{ color: "var(--text-muted)" }}>Not set</span>}
+                              ) : (
+                                <button onClick={() => setEditGrace(prev => ({ ...prev, [c.id]: { days: c.grace_period_days, warn: c.warning_days_before } }))}
+                                  style={{ display: "flex", flexDirection: "column", gap: 3, background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                    <Clock size={10} style={{ color: "var(--text-muted)" }} />
+                                    <span style={{ fontSize: 11, color: "var(--foreground)" }}>{c.grace_period_days}d grace</span>
+                                  </div>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                    <Bell size={10} style={{ color: "#D4A017" }} />
+                                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>warn {c.warning_days_before}d before</span>
+                                  </div>
+                                </button>
+                              )}
                             </td>
 
                             {/* Patients */}
@@ -949,13 +1081,27 @@ export default function AdminBillingPage() {
 
                             {/* Actions */}
                             <td className="px-4 py-3.5">
-                              {c.subscription_status === "active" && (
-                                <button disabled={isBusy} onClick={() => updateStatus(c.id, "past_due")}
-                                  className="flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg whitespace-nowrap"
-                                  style={{ background: "rgba(212,160,23,0.1)", color: "#92600A", border: "1px solid rgba(212,160,23,0.25)" }}>
-                                  <AlertTriangle size={10} /> Mark Due
+                              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                {c.subscription_status === "active" && (
+                                  <button disabled={isBusy} onClick={() => updateStatus(c.id, "past_due")}
+                                    className="flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-lg whitespace-nowrap"
+                                    style={{ background: "rgba(212,160,23,0.1)", color: "#92600A", border: "1px solid rgba(212,160,23,0.25)" }}>
+                                    <AlertTriangle size={10} /> Mark Due
+                                  </button>
+                                )}
+                                <button onClick={() => startImpersonation(c.id, c.name)}
+                                  style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, padding: "4px 8px", borderRadius: 6,
+                                    border: "1px solid rgba(99,102,241,0.3)", background: "rgba(99,102,241,0.06)",
+                                    cursor: "pointer", color: "#6366F1", fontWeight: 600, whiteSpace: "nowrap" }}>
+                                  <Eye size={10} /> View As
                                 </button>
-                              )}
+                                <button onClick={() => handleLoginAs(c.id, c.name)}
+                                  style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, padding: "4px 8px", borderRadius: 6,
+                                    border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)",
+                                    cursor: "pointer", color: "#8A6B20", fontWeight: 600, whiteSpace: "nowrap" }}>
+                                  <ExternalLink size={10} /> Login As
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1123,6 +1269,7 @@ export default function AdminBillingPage() {
       <PlanDrawer
         open={drawerOpen}
         plan={editingPlan}
+        modules={modules}
         onClose={() => { setDrawerOpen(false); setEditingPlan(null); }}
         onSave={handlePlanSaved}
       />

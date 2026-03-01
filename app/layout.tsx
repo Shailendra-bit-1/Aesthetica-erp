@@ -4,8 +4,8 @@ import "./globals.css";
 import ConditionalSidebar from "@/components/ConditionalSidebar";
 import InactivityGuard from "@/components/InactivityGuard";
 import { ClinicProvider } from "@/contexts/ClinicContext";
-import { FeatureFlagsProvider } from "@flags/context";
 import { ImpersonationProvider } from "@/contexts/ImpersonationContext";
+import { FeatureFlagsProvider } from "@flags/context";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import { Toaster } from "sonner";
 

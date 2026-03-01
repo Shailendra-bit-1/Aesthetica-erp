@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
-import TopBar from "@/components/TopBar";
 import Link from "next/link";
 import {
   Crown,
@@ -1038,8 +1037,6 @@ export default function ManagePage() {
 
   return (
     <div className="min-h-full flex flex-col" style={{ background: "var(--background)" }}>
-      <TopBar />
-
       <div className="px-8 pb-10">
         {/* Page header */}
         <div className="flex items-start justify-between mb-8">

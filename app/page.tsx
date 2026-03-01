@@ -9,6 +9,8 @@ import {
   Receipt, Loader2, Building2, Globe, Sparkles, AlertTriangle,
   Circle, Zap, BarChart3, CalendarCheck, Package, RefreshCw,
   CheckCircle2, XCircle, PhoneOff, UserCheck,
+  TerminalSquare, Skull, Plus, Trash2, X, Eye, ExternalLink,
+  Pencil, LayoutGrid as LayoutGridIcon,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -109,6 +111,7 @@ export default function OverviewPage() {
 
   const isSuperAdmin = profile?.role === "superadmin";
   const isChainAdmin = profile?.role === "chain_admin" || isSuperAdmin;
+  const isAdmin = isSuperAdmin || profile?.role === "clinic_admin" || profile?.role === "chain_admin";
   const isGlobal     = isSuperAdmin && !activeClinicId;
 
   const [kpi,           setKpi]           = useState<KpiData | null>(null);
@@ -118,6 +121,16 @@ export default function OverviewPage() {
   const [recentPats,    setRecentPats]    = useState<RecentPatient[]>([]);
   const [loading,       setLoading]       = useState(true);
   const [showNewPat,    setShowNewPat]    = useState(false);
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+
+  // Superadmin panels
+  const [devModules,    setDevModules]    = useState<{ module_key: string; display_name: string; is_globally_killed: boolean; killed_reason: string | null }[]>([]);
+  const [demoList,      setDemoList]      = useState<{ id: string; name: string; admin_email: string; demo_created_at: string | null }[]>([]);
+  const [devLoading,    setDevLoading]    = useState(false);
+  const [demoName,      setDemoName]      = useState("");
+  const [demoCreating,  setDemoCreating]  = useState(false);
+  const [demoResult,    setDemoResult]    = useState<{ email: string; password: string; loginUrl: string | null } | null>(null);
+  const [demoClearing,  setDemoClearing]  = useState<string | null>(null);
 
   // Monthly revenue target — configurable later via system_settings
   const MONTHLY_TARGET = 500000;
@@ -202,11 +215,72 @@ export default function OverviewPage() {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // Superadmin: load dev panel + demo data
+  const fetchSuperAdminData = useCallback(async () => {
+    if (!isSuperAdmin) return;
+    setDevLoading(true);
+    const [modRes, demoRes] = await Promise.all([
+      supabase.from("module_registry").select("module_key,display_name,is_globally_killed,killed_reason").order("display_name"),
+      supabase.from("clinics").select("id,name,admin_email,demo_created_at").eq("is_demo", true).order("name"),
+    ]);
+    setDevModules(modRes.data ?? []);
+    setDemoList(demoRes.data ?? []);
+    setDevLoading(false);
+  }, [isSuperAdmin]);
+
+  useEffect(() => { fetchSuperAdminData(); }, [fetchSuperAdminData]);
+
+  async function toggleKillSwitch(moduleKey: string, killed: boolean) {
+    const update: Record<string, unknown> = { is_globally_killed: killed };
+    if (killed) update.killed_at = new Date().toISOString();
+    else { update.killed_at = null; update.killed_reason = null; }
+    await supabase.from("module_registry").update(update).eq("module_key", moduleKey);
+    setDevModules(prev => prev.map(m => m.module_key === moduleKey ? { ...m, is_globally_killed: killed } : m));
+  }
+
+  async function createDemoClinic() {
+    if (!demoName.trim()) return;
+    setDemoCreating(true);
+    const res = await fetch("/api/admin/demo/create", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: demoName.trim() }),
+    });
+    const json = await res.json();
+    setDemoCreating(false);
+    if (!res.ok) { const { toast: t } = await import("sonner"); t.error(json.error ?? "Creation failed"); return; }
+    setDemoName("");
+    setDemoResult({ email: json.email, password: json.password, loginUrl: json.loginUrl });
+    fetchSuperAdminData();
+  }
+
+  async function clearDemoClinic(clinicId: string) {
+    if (!confirm("Delete all data for this demo clinic?")) return;
+    setDemoClearing(clinicId);
+    await fetch("/api/admin/demo/clear", {
+      method: "DELETE", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clinicId }),
+    });
+    setDemoClearing(null);
+    fetchSuperAdminData();
+  }
+
   const targetPct = kpi ? Math.min(100, Math.round((kpi.monthlyCollection / kpi.monthlyTarget) * 100)) : 0;
 
   return (
     <div className="min-h-full flex flex-col" style={{ background: "var(--background)" }}>
       <TopBar />
+      {/* Dashboard Customize button */}
+      {isAdmin && (
+        <div className="flex justify-end px-8 pt-2">
+          <button
+            onClick={() => setCustomizeOpen(true)}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-colors"
+            style={{ background: "rgba(197,160,89,0.08)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.2)" }}
+          >
+            <Pencil size={12} /> Customize Dashboard
+          </button>
+        </div>
+      )}
       <div className="flex-1 px-8 pb-10 space-y-6 pt-2">
 
         {/* ── Global view banner ── */}
@@ -217,6 +291,154 @@ export default function OverviewPage() {
             <span style={{ fontSize: 12, fontWeight: 600, color: "#8B6914", fontFamily: "Georgia, serif" }}>
               Global View — combined stats across all clinics
             </span>
+          </div>
+        )}
+
+        {/* ── Superadmin: Dev Panel + Demo Manager ── */}
+        {isSuperAdmin && (
+          <div className="grid grid-cols-2 gap-5">
+
+            {/* Dev Panel — Module Kill Switches */}
+            <section className="luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
+              <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
+                <div className="flex items-center gap-2">
+                  <TerminalSquare size={15} style={{ color: "var(--gold)" }} />
+                  <h3 className="text-sm font-semibold" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>Dev Panel</h3>
+                  <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(180,60,60,0.1)", color: "#B43C3C", fontSize: 10, fontWeight: 700 }}>Kill Switches</span>
+                </div>
+                <button onClick={fetchSuperAdminData} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                  <RefreshCw size={13} style={{ color: "var(--text-muted)" }} className={devLoading ? "animate-spin" : ""} />
+                </button>
+              </div>
+              <div style={{ maxHeight: 320, overflowY: "auto" }}>
+                {devLoading ? (
+                  <div className="flex justify-center py-8"><Loader2 size={18} style={{ color: "rgba(197,160,89,0.4)", animation: "spin 1s linear infinite" }} /></div>
+                ) : devModules.length === 0 ? (
+                  <p className="text-center text-xs py-8" style={{ color: "var(--text-muted)" }}>No modules in registry</p>
+                ) : (
+                  <div className="divide-y" style={{ borderColor: "var(--border)" }}>
+                    {devModules.map(mod => (
+                      <div key={mod.module_key} className="px-5 py-3 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate" style={{ color: mod.is_globally_killed ? "#B43C3C" : "var(--foreground)", fontFamily: "Georgia, serif" }}>
+                            {mod.display_name}
+                          </p>
+                          <code className="text-xs" style={{ color: "var(--text-muted)" }}>{mod.module_key}</code>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {mod.is_globally_killed && <Skull size={12} style={{ color: "#B43C3C" }} />}
+                          <button
+                            onClick={() => toggleKillSwitch(mod.module_key, !mod.is_globally_killed)}
+                            style={{
+                              padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+                              border: `1px solid ${mod.is_globally_killed ? "rgba(180,60,60,0.4)" : "rgba(197,160,89,0.3)"}`,
+                              background: mod.is_globally_killed ? "rgba(180,60,60,0.1)" : "rgba(197,160,89,0.08)",
+                              color: mod.is_globally_killed ? "#B43C3C" : "var(--gold)", cursor: "pointer",
+                            }}
+                          >
+                            {mod.is_globally_killed ? "Revive" : "Kill"}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Demo Manager */}
+            <section className="luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
+              <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
+                <div className="flex items-center gap-2">
+                  <FlaskConical size={15} style={{ color: "#6366F1" }} />
+                  <h3 className="text-sm font-semibold" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>Demo Manager</h3>
+                </div>
+              </div>
+
+              {/* Create form */}
+              <div className="px-5 py-4" style={{ borderBottom: "1px solid var(--border)", background: "rgba(99,102,241,0.03)" }}>
+                <p className="text-xs font-semibold mb-2" style={{ color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>New Demo Clinic</p>
+                <div className="flex gap-2">
+                  <input type="text" value={demoName} onChange={e => setDemoName(e.target.value)}
+                    placeholder="Clinic name…"
+                    className="flex-1 text-sm px-3 py-1.5 rounded-lg outline-none"
+                    style={{ border: "1px solid var(--border)", background: "white", color: "var(--foreground)", fontFamily: "Georgia, serif" }} />
+                  <button onClick={createDemoClinic} disabled={demoCreating || !demoName.trim()}
+                    style={{ padding: "6px 14px", borderRadius: 8, border: "none", background: "#6366F1",
+                      cursor: demoCreating || !demoName.trim() ? "not-allowed" : "pointer",
+                      color: "white", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 5,
+                      opacity: !demoName.trim() ? 0.5 : 1 }}>
+                    {demoCreating ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Plus size={12} />}
+                    Create
+                  </button>
+                </div>
+
+                {/* Result card */}
+                {demoResult && (
+                  <div className="mt-3 p-3 rounded-xl" style={{ background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.2)" }}>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-bold" style={{ color: "#4F46E5" }}>Demo Clinic Created!</p>
+                      <button onClick={() => setDemoResult(null)} style={{ background: "none", border: "none", cursor: "pointer" }}>
+                        <X size={12} style={{ color: "#6366F1" }} />
+                      </button>
+                    </div>
+                    <div className="space-y-1 text-xs" style={{ color: "#4F46E5" }}>
+                      <p><strong>Email:</strong> <code style={{ background: "rgba(99,102,241,0.15)", padding: "1px 5px", borderRadius: 3 }}>{demoResult.email}</code></p>
+                      <p><strong>Password:</strong> <code style={{ background: "rgba(99,102,241,0.15)", padding: "1px 5px", borderRadius: 3 }}>{demoResult.password}</code></p>
+                    </div>
+                    <div className="flex gap-2 mt-2">
+                      {demoResult.loginUrl && (
+                        <a href={demoResult.loginUrl} target="_blank" rel="noreferrer"
+                          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, padding: "4px 10px",
+                            borderRadius: 6, background: "#6366F1", color: "white", fontWeight: 600, textDecoration: "none" }}>
+                          <ExternalLink size={10} /> Open Demo
+                        </a>
+                      )}
+                      <button onClick={() => navigator.clipboard.writeText(`Email: ${demoResult.email}\nPassword: ${demoResult.password}`)}
+                        style={{ fontSize: 11, padding: "4px 10px", borderRadius: 6,
+                          border: "1px solid rgba(99,102,241,0.3)", background: "transparent",
+                          color: "#6366F1", cursor: "pointer", fontWeight: 600 }}>
+                        Copy Credentials
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Demo list */}
+              <div style={{ maxHeight: 200, overflowY: "auto" }}>
+                {demoList.length === 0 ? (
+                  <p className="text-center text-xs py-6" style={{ color: "var(--text-muted)" }}>No demo clinics yet</p>
+                ) : demoList.map(d => (
+                  <div key={d.id} className="px-5 py-3 flex items-center justify-between gap-3" style={{ borderBottom: "1px solid var(--border)" }}>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold truncate" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>{d.name}</p>
+                      <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>{d.admin_email}</p>
+                    </div>
+                    <div className="flex gap-2 flex-shrink-0">
+                      <button onClick={() => {
+                        fetch("/api/admin/magic-link", {
+                          method: "POST", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ clinicId: d.id }),
+                        }).then(r => r.json()).then(j => { if (j.url) window.open(j.url, "_blank"); });
+                      }} style={{ fontSize: 11, padding: "3px 8px", borderRadius: 5,
+                        border: "1px solid rgba(99,102,241,0.3)", background: "rgba(99,102,241,0.08)",
+                        color: "#6366F1", cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}>
+                        <Eye size={9} /> Open
+                      </button>
+                      <button onClick={() => clearDemoClinic(d.id)} disabled={demoClearing === d.id}
+                        style={{ fontSize: 11, padding: "3px 8px", borderRadius: 5,
+                          border: "1px solid rgba(180,60,60,0.3)", background: "rgba(180,60,60,0.06)",
+                          color: "#B43C3C", cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }}>
+                        {demoClearing === d.id ? <Loader2 size={9} style={{ animation: "spin 1s linear infinite" }} /> : <Trash2 size={9} />}
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
           </div>
         )}
 
@@ -703,10 +925,66 @@ export default function OverviewPage() {
           </div>
         </section>
 
+
       </div>
 
       {/* New Patient Modal */}
       <NewPatientModal isOpen={showNewPat} onClose={() => setShowNewPat(false)} />
+
+      {/* Dashboard Customize Drawer */}
+      {customizeOpen && (
+        <div className="fixed inset-0 z-50 flex">
+          <div className="flex-1" style={{ background: "rgba(0,0,0,0.4)" }} onClick={() => setCustomizeOpen(false)} />
+          <div className="w-80 h-full overflow-y-auto flex flex-col" style={{ background: "#fff" }}>
+            <div className="flex justify-between items-center px-5 py-4" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
+              <h3 className="font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Customize Dashboard</h3>
+              <button onClick={() => setCustomizeOpen(false)} className="p-1.5 rounded-lg hover:bg-gray-100">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex-1 p-5">
+              <p className="text-xs mb-4" style={{ color: "#9ca3af" }}>Add widgets to your dashboard. Changes are saved to your profile.</p>
+              <div className="space-y-2">
+                {[
+                  { type: "kpi_tile",             label: "KPI Tile",                desc: "Revenue, patient count, etc." },
+                  { type: "line_chart",            label: "Line Chart",              desc: "Trend over time" },
+                  { type: "bar_chart",             label: "Bar Chart",               desc: "Compare categories" },
+                  { type: "appointment_list",      label: "Appointment List",        desc: "Today's schedule" },
+                  { type: "patient_list",          label: "Recent Patients",         desc: "Newly registered patients" },
+                  { type: "inventory_alert",       label: "Inventory Alerts",        desc: "Low-stock warnings" },
+                  { type: "rule_execution_summary",label: "Rule Execution Summary",  desc: "Automation health" },
+                ].map(widget => (
+                  <div key={widget.type} className="flex items-center justify-between p-3 rounded-xl"
+                    style={{ border: "1px solid rgba(197,160,89,0.15)", background: "rgba(197,160,89,0.03)" }}>
+                    <div>
+                      <p className="text-sm font-medium" style={{ color: "#1a1714" }}>{widget.label}</p>
+                      <p className="text-xs mt-0.5" style={{ color: "#9ca3af" }}>{widget.desc}</p>
+                    </div>
+                    <button
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium"
+                      style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)" }}
+                      onClick={async () => {
+                        if (!profile?.id || !profile?.clinic_id) return;
+                        const { data: existing } = await supabase.from("dashboard_configs")
+                          .select("id, widgets").eq("clinic_id", profile.clinic_id).eq("user_id", profile.id).single();
+                        const newWidget = { id: Math.random().toString(36).slice(2), type: widget.type, title: widget.label, config: {} };
+                        if (existing) {
+                          const widgets = [...(existing.widgets || []), newWidget];
+                          await supabase.from("dashboard_configs").update({ widgets }).eq("id", existing.id);
+                        } else {
+                          await supabase.from("dashboard_configs").insert({ clinic_id: profile.clinic_id, user_id: profile.id, widgets: [newWidget], layout: [] });
+                        }
+                      }}
+                    >
+                      + Add
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

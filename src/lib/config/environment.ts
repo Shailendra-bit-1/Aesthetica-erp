@@ -66,6 +66,14 @@ export const MODULE_KEYS = [
   "advanced_analytics",
   "intake",
   "multi_chain",
+  "sms_reminders",
+  "whatsapp_booking",
+  "leads",
+  "membership",
+  "counselling",
+  "crm",
+  "staff_hr",
+  "payroll",
 ] as const;
 
 export type ModuleKey = typeof MODULE_KEYS[number];

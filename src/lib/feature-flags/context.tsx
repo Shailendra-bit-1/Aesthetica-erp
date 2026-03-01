@@ -67,11 +67,27 @@ const FeatureFlagsContext = createContext<FeatureFlagsState | null>(null);
 export function FeatureFlagsProvider({ children }: { children: React.ReactNode }) {
   const { activeClinicId, loading: profileLoading } = useClinic();
 
-  const [modules, setModules] = useState<Record<string, ModuleEntry>>({});
-  const [flags,   setFlags]   = useState<Record<string, boolean>>(defaultFeatureFlags as Record<string, boolean>);
-  const [loading, setLoading] = useState(true);
+  const [modules,        setModules]        = useState<Record<string, ModuleEntry>>({});
+  const [flags,          setFlags]          = useState<Record<string, boolean>>(defaultFeatureFlags as Record<string, boolean>);
+  const [loading,        setLoading]        = useState(true);
+  const [killedModules,  setKilledModules]  = useState<Set<string>>(new Set());
 
-  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const channelRef       = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const killChannelRef   = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
+  // ── Kill switch fetch ────────────────────────────────────────────────────────
+
+  const fetchKilledModules = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from("module_registry")
+        .select("key, is_globally_killed")
+        .eq("is_globally_killed", true);
+      setKilledModules(new Set((data ?? []).map((r: { key: string }) => r.key)));
+    } catch {
+      // Non-fatal — keep previous kill set
+    }
+  }, []);
 
   // ── Data fetch ──────────────────────────────────────────────────────────────
 
@@ -144,6 +160,23 @@ export function FeatureFlagsProvider({ children }: { children: React.ReactNode }
 
   // ── Effects ─────────────────────────────────────────────────────────────────
 
+  // Subscribe to module_registry kill switch changes (global — runs once)
+  useEffect(() => {
+    fetchKilledModules();
+    killChannelRef.current = supabase
+      .channel("module_registry_kill_switch")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "module_registry" },
+        fetchKilledModules
+      )
+      .subscribe();
+    return () => {
+      killChannelRef.current?.unsubscribe();
+      killChannelRef.current = null;
+    };
+  }, [fetchKilledModules]);
+
   useEffect(() => {
     if (profileLoading) return;
     setLoading(true);
@@ -177,7 +210,9 @@ export function FeatureFlagsProvider({ children }: { children: React.ReactNode }
   // ── Accessors ────────────────────────────────────────────────────────────────
 
   function isEnabled(key: ModuleKey): boolean {
-    // Always-on modules are never gated
+    // Global kill switch — always respected, even for always-on modules
+    if (killedModules.has(key)) return false;
+    // Always-on modules are never gated (unless killed above)
     if (ALWAYS_ON_MODULES.includes(key as typeof ALWAYS_ON_MODULES[number])) return true;
     // While loading OR if no DB row exists → fail open (show the item)
     // Only hide when the DB explicitly sets is_enabled = false

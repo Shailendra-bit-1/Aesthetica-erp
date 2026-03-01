@@ -2,22 +2,28 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Search, ChevronDown, Building2, LogOut, Check } from "lucide-react";
+import { Search, ChevronDown, Building2, LogOut, Check, AlertTriangle, X } from "lucide-react";
 import { useClinic } from "@/contexts/ClinicContext";
+import { useImpersonation } from "@/contexts/ImpersonationContext";
 import { supabase } from "@/lib/supabase";
 
 export default function TopBar() {
   const router = useRouter();
   const { profile, clinics, activeClinicId, setActiveClinicId, loading } = useClinic();
+  const { isImpersonating, impersonated, stopImpersonation } = useImpersonation();
 
   const [clinicOpen,   setClinicOpen]   = useState(false);
   const [profileOpen,  setProfileOpen]  = useState(false);
+  const [today,        setToday]        = useState("");
   const clinicRef  = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
 
-  const today = new Date().toLocaleDateString("en-US", {
-    weekday: "long", year: "numeric", month: "long", day: "numeric",
-  });
+  // Compute date client-side only to avoid SSR/client timezone mismatch
+  useEffect(() => {
+    setToday(new Date().toLocaleDateString("en-US", {
+      weekday: "long", year: "numeric", month: "long", day: "numeric",
+    }));
+  }, []);
 
   // Initials from full_name
   const initials = profile?.full_name
@@ -41,8 +47,40 @@ export default function TopBar() {
   }
 
   return (
+    <div className="sticky top-0 z-10">
+      {/* ── Impersonation Banner ── */}
+      {isImpersonating && impersonated && (
+        <div
+          style={{
+            background: "rgba(217,119,6,0.12)",
+            borderBottom: "1px solid rgba(217,119,6,0.4)",
+            padding: "8px 24px",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+          }}
+        >
+          <AlertTriangle size={14} style={{ color: "#B45309", flexShrink: 0 }} />
+          <span style={{ fontSize: 13, color: "#92400E", fontFamily: "Georgia, serif" }}>
+            <strong>View Mode:</strong> Viewing as{" "}
+            <strong style={{ color: "#78350F" }}>{impersonated.clinicName}</strong>
+            {" "}— changes you make will affect this clinic.
+          </span>
+          <button
+            onClick={stopImpersonation}
+            style={{
+              marginLeft: 8, padding: "3px 10px", borderRadius: 6,
+              border: "1px solid rgba(217,119,6,0.5)",
+              background: "rgba(217,119,6,0.15)", cursor: "pointer",
+              color: "#92400E", fontSize: 12, fontWeight: 600,
+              display: "flex", alignItems: "center", gap: 4,
+            }}
+          >
+            <X size={11} />
+            Stop Impersonating
+          </button>
+        </div>
+      )}
     <header
-      className="px-8 py-5 flex items-center justify-between sticky top-0 z-10"
+      className="px-8 py-5 flex items-center justify-between"
       style={{
         background: "rgba(249,247,242,0.92)",
         backdropFilter: "blur(12px)",
@@ -213,5 +251,6 @@ export default function TopBar() {
         </div>
       </div>
     </header>
+    </div>
   );
 }

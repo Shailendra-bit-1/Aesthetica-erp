@@ -22,6 +22,15 @@ import {
   Zap,
   Scissors,
   Receipt,
+  Star,
+  MessageCircle,
+  Megaphone,
+  UserCheck2,
+  BarChart2,
+  FormInput,
+  Webhook,
+  Puzzle,
+  Banknote,
 } from "lucide-react";
 import clsx from "clsx";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -43,6 +52,10 @@ const SIDEBAR_ITEMS = [
   { label: "Inventory",           href: "/inventory",           icon: Package,              permission: "inventory.view",  module: "inventory"       },
   { label: "Services & Packages", href: "/settings/services",   icon: Scissors,             permission: "services.view",   module: "services"        },
   { label: "Billing",             href: "/billing",             icon: Receipt,              permission: "billing.view",    module: "billing"         },
+  { label: "Memberships",         href: "/membership",          icon: Star,                 permission: "membership.view", module: "membership"      },
+  { label: "Counselling",         href: "/counselling",         icon: MessageCircle,        permission: "counselling.view",module: "counselling"     },
+  { label: "CRM",                 href: "/crm",                 icon: Megaphone,            permission: "crm.view",        module: "crm"             },
+  { label: "Staff HR",            href: "/staff",               icon: UserCheck2,           permission: "staff_hr.view",   module: "staff_hr"        },
 ] as const;
 
 const ADMIN_ITEMS = [
@@ -54,6 +67,11 @@ const ADMIN_ITEMS = [
   { label: "Permissions Matrix", href: "/admin/permissions",         icon: ShieldCheck, superadminOnly: false },
   { label: "Team Permissions",   href: "/settings/team/permissions", icon: Users,      superadminOnly: false },
   { label: "Rule Builder",       href: "/admin/rules",               icon: Zap,        superadminOnly: false },
+  { label: "Reports",            href: "/admin/reports",             icon: BarChart2,  superadminOnly: false },
+  { label: "Form Builder",       href: "/admin/forms",               icon: FormInput,  superadminOnly: false },
+  { label: "Webhooks",           href: "/admin/webhooks",            icon: Webhook,    superadminOnly: false },
+  { label: "Plugins",            href: "/admin/plugins",             icon: Puzzle,     superadminOnly: false },
+  { label: "Payroll",            href: "/payroll",                   icon: Banknote,   superadminOnly: false },
 ] as const;
 
 const BOTTOM_ITEMS = [
@@ -182,7 +200,7 @@ export default function Sidebar() {
           ))
         )}
 
-        {/* ── Master Admin — STRICTLY locked to role === 'superadmin' ── */}
+        {/* ── Master Admin — STRICTLY superadmin ── */}
         {!loading && profile?.role === "superadmin" && (
           <div className="pt-5 pb-1">
             <MasterAdminLink pathname={pathname} />

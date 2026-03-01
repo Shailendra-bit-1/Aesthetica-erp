@@ -237,6 +237,15 @@ export default function RulesPage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
 
+  // ── Advanced Rules tab state ────────────────────────────────────────────────
+  const [rulesTab, setRulesTab] = useState<"quick" | "advanced" | "templates">("quick");
+  const [advRules, setAdvRules] = useState<Array<{ id: string; name: string; category: string; trigger_event: string; priority: number; run_mode: string; is_active: boolean; created_at: string }>>([]);
+  const [templates, setTemplates] = useState<Array<{ id: string; name: string; description: string | null; category: string; trigger_event: string; is_featured: boolean }>>([]);
+  const [advLoading, setAdvLoading] = useState(false);
+  const [advDrawer, setAdvDrawer] = useState(false);
+  const [advForm, setAdvForm] = useState({ name: "", category: "automation", trigger_event: "", priority: "10", run_mode: "async" });
+  const [advSaving, setAdvSaving] = useState(false);
+
   // ── Fetch data ─────────────────────────────────────────────────────────────
 
   const fetchRules = useCallback(async () => {
@@ -273,6 +282,51 @@ export default function RulesPage() {
     fetchClinics();
     fetchCustomNudgeRoles();
   }, [fetchRules, fetchTriggers, fetchClinics, fetchCustomNudgeRoles]);
+
+  const fetchAdvancedRules = useCallback(async () => {
+    const { profile: p } = { profile };
+    if (!p?.clinic_id) return;
+    setAdvLoading(true);
+    const { data } = await supabase.from("rule_definitions").select("*").eq("clinic_id", p.clinic_id).order("priority");
+    setAdvRules(data || []);
+    setAdvLoading(false);
+  }, [profile]);
+
+  const fetchTemplates = useCallback(async () => {
+    const { data } = await supabase.from("rule_templates").select("*").order("is_featured", { ascending: false });
+    setTemplates(data || []);
+  }, []);
+
+  useEffect(() => {
+    if (rulesTab === "advanced") fetchAdvancedRules();
+    if (rulesTab === "templates") fetchTemplates();
+  }, [rulesTab, fetchAdvancedRules, fetchTemplates]);
+
+  const saveAdvancedRule = async () => {
+    if (!profile?.clinic_id || !advForm.name || !advForm.trigger_event) return;
+    setAdvSaving(true);
+    await supabase.from("rule_definitions").insert({
+      clinic_id: profile.clinic_id, name: advForm.name,
+      category: advForm.category, trigger_event: advForm.trigger_event,
+      priority: parseInt(advForm.priority) || 10, run_mode: advForm.run_mode,
+      created_by: profile.id,
+    });
+    setAdvSaving(false);
+    setAdvDrawer(false);
+    setAdvForm({ name: "", category: "automation", trigger_event: "", priority: "10", run_mode: "async" });
+    fetchAdvancedRules();
+  };
+
+  const useTemplateRule = async (tmpl: typeof templates[0]) => {
+    if (!profile?.clinic_id) return;
+    await supabase.from("rule_definitions").insert({
+      clinic_id: profile.clinic_id, name: tmpl.name,
+      category: tmpl.category, trigger_event: tmpl.trigger_event,
+      priority: 10, run_mode: "async", created_by: profile.id,
+    });
+    setRulesTab("advanced");
+    toast.success(`Rule "${tmpl.name}" added from template`);
+  };
 
   // ── Rule CRUD ──────────────────────────────────────────────────────────────
 
@@ -612,6 +666,17 @@ export default function RulesPage() {
         ))}
       </div>
 
+      {/* ── Tab switcher ── */}
+      <div className="flex gap-1 mb-6 p-1 rounded-xl w-fit" style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.15)" }}>
+        {(["quick", "advanced", "templates"] as const).map(t => (
+          <button key={t} onClick={() => setRulesTab(t)}
+            className="px-5 py-2 rounded-lg text-sm font-medium transition-all"
+            style={rulesTab === t ? { background: "var(--gold)", color: "#fff", fontFamily: "Georgia, serif" } : { color: "rgba(197,160,89,0.7)" }}>
+            {t === "quick" ? "Quick Rules" : t === "advanced" ? "Advanced Rules" : "Templates"}
+          </button>
+        ))}
+      </div>
+
       {/* ── Read-only notice for non-admins ── */}
       {!isAdmin && (
         <div
@@ -623,7 +688,153 @@ export default function RulesPage() {
         </div>
       )}
 
+      {/* ── ADVANCED RULES TAB ── */}
+      {rulesTab === "advanced" && (
+        <div>
+          <div className="flex justify-between items-center mb-5">
+            <p className="text-sm" style={{ color: "#9C9584" }}>Rule definitions with condition trees and ordered action chains</p>
+            {isAdmin && (
+              <button onClick={() => setAdvDrawer(true)}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white"
+                style={{ background: "linear-gradient(135deg, #C5A059, #A8853A)" }}>
+                <Plus size={15} /> New Advanced Rule
+              </button>
+            )}
+          </div>
+          {advLoading ? (
+            <div className="space-y-3 animate-pulse">{[1,2,3].map(n => <div key={n} className="h-20 rounded-xl" style={{ background: "rgba(197,160,89,0.06)" }} />)}</div>
+          ) : advRules.length === 0 ? (
+            <div className="rounded-xl p-12 text-center" style={{ background: "white", border: "1px dashed rgba(197,160,89,0.3)" }}>
+              <Zap size={28} className="mx-auto mb-2" style={{ color: "rgba(197,160,89,0.4)" }} />
+              <p className="font-medium" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>No advanced rules yet</p>
+              <p className="text-sm mt-1" style={{ color: "#9C9584" }}>Create rules with multi-condition trees and chained actions</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {advRules.map(r => (
+                <div key={r.id} className="rounded-xl p-4" style={{ background: "white", border: "1px solid rgba(197,160,89,0.2)" }}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "rgba(197,160,89,0.1)" }}>
+                        <Zap size={14} style={{ color: "var(--gold)" }} />
+                      </div>
+                      <div>
+                        <p className="font-semibold text-sm" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>{r.name}</p>
+                        <p className="text-xs mt-0.5" style={{ color: "#9C9584" }}>{r.category} · {r.trigger_event} · priority {r.priority} · {r.run_mode}</p>
+                      </div>
+                    </div>
+                    <span className="text-xs px-2 py-1 rounded-full font-medium" style={{ background: r.is_active ? "rgba(34,197,94,0.12)" : "rgba(107,114,128,0.12)", color: r.is_active ? "#16a34a" : "#6b7280" }}>
+                      {r.is_active ? "Active" : "Inactive"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Advanced Rule Drawer */}
+          {advDrawer && mounted && createPortal(
+            <div className="fixed inset-0 z-50 flex" style={{ background: "rgba(0,0,0,0.4)" }}>
+              <div className="flex-1" onClick={() => setAdvDrawer(false)} />
+              <div className="w-[460px] h-full overflow-y-auto flex flex-col" style={{ background: "#fff" }}>
+                <div className="flex justify-between items-center px-6 py-5" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
+                  <h3 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>New Advanced Rule</h3>
+                  <button onClick={() => setAdvDrawer(false)} className="p-2 rounded-lg hover:bg-gray-100"><X size={18} /></button>
+                </div>
+                <div className="flex-1 p-6 space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Rule Name *</label>
+                    <input value={advForm.name} onChange={e => setAdvForm(f => ({ ...f, name: e.target.value }))}
+                      placeholder="e.g. VIP Patient Follow-up" className="w-full px-3 py-2 rounded-lg border outline-none text-sm"
+                      style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Category</label>
+                      <select value={advForm.category} onChange={e => setAdvForm(f => ({ ...f, category: e.target.value }))}
+                        className="w-full px-3 py-2 rounded-lg border outline-none text-sm bg-white"
+                        style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                        <option value="automation">Automation</option>
+                        <option value="validation">Validation</option>
+                        <option value="calculation">Calculation</option>
+                        <option value="notification">Notification</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Run Mode</label>
+                      <select value={advForm.run_mode} onChange={e => setAdvForm(f => ({ ...f, run_mode: e.target.value }))}
+                        className="w-full px-3 py-2 rounded-lg border outline-none text-sm bg-white"
+                        style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                        <option value="async">Async</option>
+                        <option value="sync">Sync</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Trigger Event *</label>
+                    <input value={advForm.trigger_event} onChange={e => setAdvForm(f => ({ ...f, trigger_event: e.target.value }))}
+                      placeholder="e.g. patient.created, appointment.completed" className="w-full px-3 py-2 rounded-lg border outline-none text-sm"
+                      style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Priority (lower = higher priority)</label>
+                    <input type="number" value={advForm.priority} onChange={e => setAdvForm(f => ({ ...f, priority: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-lg border outline-none text-sm"
+                      style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+                  </div>
+                  <div className="rounded-lg p-3 text-xs" style={{ background: "rgba(197,160,89,0.06)", color: "#9C9584", border: "1px solid rgba(197,160,89,0.15)" }}>
+                    After saving, add conditions and actions from the rule detail view.
+                  </div>
+                </div>
+                <div className="px-6 py-4 flex gap-3" style={{ borderTop: "1px solid rgba(197,160,89,0.15)" }}>
+                  <button onClick={() => setAdvDrawer(false)} className="flex-1 px-4 py-2 rounded-lg text-sm border" style={{ borderColor: "rgba(197,160,89,0.2)", color: "#6b7280" }}>Cancel</button>
+                  <button onClick={saveAdvancedRule} disabled={advSaving || !advForm.name || !advForm.trigger_event}
+                    className="flex-1 px-4 py-2 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
+                    style={{ background: "linear-gradient(135deg, #C5A059, #A8853A)" }}>
+                    {advSaving ? "Saving…" : "Create Rule"}
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )}
+        </div>
+      )}
+
+      {/* ── TEMPLATES TAB ── */}
+      {rulesTab === "templates" && (
+        <div>
+          <p className="text-sm mb-5" style={{ color: "#9C9584" }}>Featured rule templates — click "Use This" to fork into your clinic</p>
+          {templates.length === 0 ? (
+            <div className="rounded-xl p-12 text-center" style={{ background: "white", border: "1px dashed rgba(197,160,89,0.3)" }}>
+              <Sparkles size={28} className="mx-auto mb-2" style={{ color: "rgba(197,160,89,0.4)" }} />
+              <p className="font-medium" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>No templates yet</p>
+              <p className="text-sm mt-1" style={{ color: "#9C9584" }}>Templates are added by superadmins</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              {templates.map(t => (
+                <div key={t.id} className="rounded-xl p-5" style={{ background: "white", border: "1px solid rgba(197,160,89,0.2)" }}>
+                  <div className="flex justify-between items-start mb-2">
+                    <p className="font-semibold text-sm" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>{t.name}</p>
+                    {t.is_featured && <span className="text-xs px-1.5 py-0.5 rounded font-medium" style={{ background: "rgba(197,160,89,0.12)", color: "var(--gold)" }}>Featured</span>}
+                  </div>
+                  {t.description && <p className="text-xs mb-3" style={{ color: "#9C9584" }}>{t.description}</p>}
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-mono px-2 py-0.5 rounded" style={{ background: "rgba(197,160,89,0.06)", color: "var(--gold)" }}>{t.trigger_event}</span>
+                    <button onClick={() => useTemplateRule(t)}
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium text-white"
+                      style={{ background: "var(--gold)" }}>Use This</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Rules list ── */}
+      {rulesTab === "quick" && (<>
       {loading ? (
         <div className="space-y-3 animate-pulse">
           {[1, 2, 3].map((n) => (
@@ -784,6 +995,7 @@ export default function RulesPage() {
           })}
         </div>
       )}
+      </>)}
 
       {/* ── Rule Drawer ── */}
       {mounted && ruleDrawer && createPortal(

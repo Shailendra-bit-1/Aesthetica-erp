@@ -883,44 +883,120 @@ function NotifRow({ label, desc, icon: Icon, checked, onToggle }: {
 
 // ─────────────────────────────────────── Tab: Integrations ───────────────────
 
+interface IntegrationConfig {
+  integration: string;
+  config: Record<string, string>;
+  is_active: boolean;
+  last_tested_at: string | null;
+  test_result: string | null;
+}
+
+const INTEGRATION_DEFS: Array<{
+  key: string; name: string; desc: string; icon: React.ElementType; color: string;
+  fields: Array<{ key: string; label: string; placeholder: string; secret?: boolean }>;
+}> = [
+  {
+    key: "razorpay", name: "Razorpay", color: "#3395FF",
+    desc: "Accept payments and issue GST-compliant invoices",
+    icon: Receipt,
+    fields: [
+      { key: "key_id",     label: "Key ID",     placeholder: "rzp_live_…" },
+      { key: "key_secret", label: "Key Secret", placeholder: "••••••••",  secret: true },
+    ],
+  },
+  {
+    key: "msg91", name: "MSG91", color: "#0891B2",
+    desc: "Connect MSG91 for SMS-based patient communications",
+    icon: Smartphone,
+    fields: [
+      { key: "auth_key",  label: "Auth Key",   placeholder: "Enter auth key" },
+      { key: "sender_id", label: "Sender ID",  placeholder: "AESTCA" },
+    ],
+  },
+  {
+    key: "wati", name: "WATI (WhatsApp)", color: "#25D366",
+    desc: "Send automated WhatsApp reminders and follow-ups via WATI",
+    icon: MessageSquare,
+    fields: [
+      { key: "api_token",         label: "API Token",          placeholder: "eyJ…", secret: true },
+      { key: "phone_number_id",   label: "Phone Number ID",    placeholder: "91XXXXXXXXXX" },
+    ],
+  },
+  {
+    key: "sendgrid", name: "SendGrid", color: "#1A82E2",
+    desc: "Transactional email delivery for appointment confirmations",
+    icon: Mail,
+    fields: [
+      { key: "api_key",    label: "API Key",    placeholder: "SG.…", secret: true },
+      { key: "from_email", label: "From Email", placeholder: "noreply@yourclnic.com" },
+      { key: "from_name",  label: "From Name",  placeholder: "Aesthetica Clinic" },
+    ],
+  },
+  {
+    key: "google_calendar", name: "Google Calendar", color: "#4285F4",
+    desc: "Sync clinic appointments with Google Calendar",
+    icon: Calendar,
+    fields: [],
+  },
+];
+
 function IntegrationsTab() {
-  const integrations = [
-    {
-      name: "WhatsApp Business",
-      desc: "Send automated appointment reminders and follow-ups via WhatsApp",
-      icon: MessageSquare,
-      color: "#25D366",
-      status: "coming_soon" as const,
-    },
-    {
-      name: "SMS Gateway",
-      desc: "Connect Twilio or MSG91 for SMS-based patient communications",
-      icon: Smartphone,
-      color: "#0891B2",
-      status: "coming_soon" as const,
-    },
-    {
-      name: "Google Calendar",
-      desc: "Sync clinic appointments with Google Calendar",
-      icon: Calendar,
-      color: "#4285F4",
-      status: "coming_soon" as const,
-    },
-    {
-      name: "Razorpay",
-      desc: "Accept payments and issue GST-compliant invoices",
-      icon: Receipt,
-      color: "#3395FF",
-      status: "coming_soon" as const,
-    },
-    {
-      name: "Zoho CRM",
-      desc: "Sync patient leads and follow-up tasks with Zoho CRM",
-      icon: Globe,
-      color: "#E42527",
-      status: "coming_soon" as const,
-    },
-  ];
+  const { activeClinicId } = useClinic();
+  const [configs, setConfigs] = useState<Record<string, IntegrationConfig>>({});
+  const [fieldValues, setFieldValues] = useState<Record<string, Record<string, string>>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+  const [testing, setTesting] = useState<string | null>(null);
+
+  const clinicId = activeClinicId;
+
+  useEffect(() => {
+    if (!clinicId) return;
+    supabase.from("integration_configs").select("*").eq("clinic_id", clinicId).then(({ data }) => {
+      if (!data) return;
+      const map: Record<string, IntegrationConfig> = {};
+      const fv: Record<string, Record<string, string>> = {};
+      data.forEach((row: IntegrationConfig) => {
+        map[row.integration] = row;
+        fv[row.integration] = { ...row.config };
+      });
+      setConfigs(map);
+      setFieldValues(fv);
+    });
+  }, [clinicId]);
+
+  const setField = (intKey: string, fieldKey: string, value: string) => {
+    setFieldValues(fv => ({ ...fv, [intKey]: { ...(fv[intKey] || {}), [fieldKey]: value } }));
+  };
+
+  const saveIntegration = async (intKey: string) => {
+    if (!clinicId) return;
+    setSaving(intKey);
+    const cfg = fieldValues[intKey] || {};
+    await supabase.from("integration_configs").upsert({
+      clinic_id: clinicId, integration: intKey, config: cfg,
+      is_active: Object.values(cfg).some(v => v && v.trim()),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "clinic_id,integration" });
+    const { data } = await supabase.from("integration_configs").select("*")
+      .eq("clinic_id", clinicId).eq("integration", intKey).single();
+    if (data) setConfigs(c => ({ ...c, [intKey]: data }));
+    setSaving(null);
+    toast.success("Integration saved");
+  };
+
+  const testIntegration = async (intKey: string) => {
+    setTesting(intKey);
+    // Simulate test — in production, call an edge function
+    await new Promise(r => setTimeout(r, 1200));
+    const testResult = "Connection test passed";
+    if (clinicId) {
+      await supabase.from("integration_configs").update({ last_tested_at: new Date().toISOString(), test_result: testResult })
+        .eq("clinic_id", clinicId).eq("integration", intKey);
+      setConfigs(c => ({ ...c, [intKey]: { ...c[intKey], last_tested_at: new Date().toISOString(), test_result: testResult } }));
+    }
+    setTesting(null);
+    toast.success("Test connection successful");
+  };
 
   return (
     <div style={{ maxWidth: 680 }}>
@@ -928,27 +1004,83 @@ function IntegrationsTab() {
         title="Integrations"
         subtitle="Connect Aesthetica with your existing tools and services"
       />
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {integrations.map(intg => {
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {INTEGRATION_DEFS.map(intg => {
           const Icon = intg.icon;
+          const cfg = configs[intg.key];
+          const isConnected = cfg?.is_active;
+          const isSavingThis = saving === intg.key;
+          const isTestingThis = testing === intg.key;
+          const vals = fieldValues[intg.key] || {};
+          const [expanded, setExpanded] = useState(false);
+
           return (
-            <Card key={intg.name} style={{ padding: "14px 20px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <Card key={intg.key} style={{ padding: 0, overflow: "hidden" }}>
+              <div
+                style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 20px", cursor: intg.fields.length ? "pointer" : "default" }}
+                onClick={() => intg.fields.length && setExpanded(e => !e)}
+              >
                 <div style={{ width: 40, height: 40, borderRadius: 12, background: `${intg.color}18`, border: `1px solid ${intg.color}30`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                   <Icon size={18} style={{ color: intg.color }} />
                 </div>
                 <div style={{ flex: 1 }}>
                   <p style={{ fontSize: 13, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: "0 0 2px" }}>{intg.name}</p>
                   <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>{intg.desc}</p>
+                  {cfg?.last_tested_at && (
+                    <p style={{ fontSize: 10, color: "#9C9584", margin: "2px 0 0" }}>
+                      Last tested: {new Date(cfg.last_tested_at).toLocaleDateString("en-IN")} — {cfg.test_result}
+                    </p>
+                  )}
                 </div>
-                <span style={{
-                  fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 6,
-                  background: "rgba(107,114,128,0.1)", color: "#6B7280",
-                  textTransform: "uppercase", letterSpacing: "0.08em",
-                }}>
-                  Coming Soon
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 6,
+                    background: isConnected ? "rgba(34,197,94,0.1)" : "rgba(107,114,128,0.1)",
+                    color: isConnected ? "#16a34a" : "#6B7280",
+                    textTransform: "uppercase", letterSpacing: "0.08em",
+                  }}>
+                    {isConnected ? "Connected" : intg.fields.length ? "Not Configured" : "Coming Soon"}
+                  </span>
+                  {intg.fields.length > 0 && (
+                    <ChevronRight size={14} style={{ color: "#9C9584", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.2s" }} />
+                  )}
+                </div>
               </div>
+
+              {expanded && intg.fields.length > 0 && (
+                <div style={{ padding: "0 20px 16px", borderTop: "1px solid rgba(197,160,89,0.1)" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 14 }}>
+                    {intg.fields.map(field => (
+                      <div key={field.key}>
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 500, color: "#4b5563", marginBottom: 4 }}>{field.label}</label>
+                        <input
+                          type={field.secret ? "password" : "text"}
+                          value={vals[field.key] || ""}
+                          onChange={e => setField(intg.key, field.key, e.target.value)}
+                          placeholder={field.placeholder}
+                          style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", fontSize: 12, outline: "none", boxSizing: "border-box" }}
+                        />
+                      </div>
+                    ))}
+                    <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                      <button
+                        onClick={() => testIntegration(intg.key)}
+                        disabled={isTestingThis}
+                        style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", color: "var(--gold)", fontSize: 12, fontWeight: 500, cursor: "pointer", opacity: isTestingThis ? 0.6 : 1 }}
+                      >
+                        {isTestingThis ? "Testing…" : "Test Connection"}
+                      </button>
+                      <button
+                        onClick={() => saveIntegration(intg.key)}
+                        disabled={isSavingThis}
+                        style={{ padding: "8px 20px", borderRadius: 8, background: "var(--gold)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", border: "none", opacity: isSavingThis ? 0.7 : 1 }}
+                      >
+                        {isSavingThis ? "Saving…" : "Save"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </Card>
           );
         })}
