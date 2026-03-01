@@ -48,7 +48,8 @@ const SIDEBAR_ITEMS = [
 const ADMIN_ITEMS = [
   { label: "User Management",    href: "/admin/users",               icon: UserCog,    superadminOnly: false },
   { label: "Billing & Plans",    href: "/admin/billing",             icon: CreditCard, superadminOnly: true  },
-  { label: "Analytics",          href: "/admin/settings",            icon: BarChart3,  superadminOnly: false },
+  { label: "Analytics",          href: "/admin/analytics",           icon: BarChart3,  superadminOnly: false },
+  { label: "God Mode",           href: "/admin/god-mode",            icon: Crown,      superadminOnly: true  },
   { label: "Audit Log",          href: "/admin/audit",               icon: ScrollText, superadminOnly: false },
   { label: "Permissions Matrix", href: "/admin/permissions",         icon: ShieldCheck, superadminOnly: false },
   { label: "Team Permissions",   href: "/settings/team/permissions", icon: Users,      superadminOnly: false },

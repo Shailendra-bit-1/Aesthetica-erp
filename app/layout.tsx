@@ -5,6 +5,8 @@ import ConditionalSidebar from "@/components/ConditionalSidebar";
 import InactivityGuard from "@/components/InactivityGuard";
 import { ClinicProvider } from "@/contexts/ClinicContext";
 import { FeatureFlagsProvider } from "@flags/context";
+import { ImpersonationProvider } from "@/contexts/ImpersonationContext";
+import ImpersonationBanner from "@/components/ImpersonationBanner";
 import { Toaster } from "sonner";
 
 const geistSans = Geist({
@@ -33,14 +35,17 @@ export default function RootLayout({
         <ClinicProvider>
           {/* FeatureFlagsProvider MUST be inside ClinicProvider (needs activeClinicId) */}
           <FeatureFlagsProvider>
-            <InactivityGuard>
-              <div className="flex h-screen overflow-hidden" style={{ background: "var(--background)" }}>
-                <ConditionalSidebar />
-                <main className="flex-1 overflow-y-auto">
-                  {children}
-                </main>
-              </div>
-            </InactivityGuard>
+            <ImpersonationProvider>
+              <InactivityGuard>
+                <ImpersonationBanner />
+                <div className="flex h-screen overflow-hidden" style={{ background: "var(--background)" }}>
+                  <ConditionalSidebar />
+                  <main className="flex-1 overflow-y-auto">
+                    {children}
+                  </main>
+                </div>
+              </InactivityGuard>
+            </ImpersonationProvider>
           </FeatureFlagsProvider>
         </ClinicProvider>
         <Toaster
