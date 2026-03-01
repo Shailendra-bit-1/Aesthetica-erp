@@ -201,15 +201,25 @@ export default function MembershipPage() {
       else if (plan.duration_type === "annual") d.setFullYear(d.getFullYear() + 1);
       expires_at = d.toISOString().split("T")[0];
     }
-    await supabase.from("patient_memberships").insert({
-      clinic_id: clinicId, patient_id: assignForm.patient_id, plan_id: assignForm.plan_id,
-      status: "active", auto_renew: assignForm.auto_renew, started_at: new Date().toISOString().split("T")[0],
-      expires_at,
-    });
-    setSaving(false);
-    setAssignDrawer(false);
-    setAssignForm({ patient_search: "", patient_id: "", plan_id: "", auto_renew: true });
-    fetchMemberships();
+    try {
+      // C-4 fix: RPC checks for duplicate active membership before inserting
+      const { error } = await supabase.rpc("assign_membership_safe", {
+        p_patient_id: assignForm.patient_id,
+        p_plan_id:    assignForm.plan_id,
+        p_clinic_id:  clinicId,
+        p_auto_renew: assignForm.auto_renew,
+        p_started_at: new Date().toISOString().split("T")[0],
+        p_expires_at: expires_at,
+      });
+      if (error) throw error;
+      setAssignDrawer(false);
+      setAssignForm({ patient_search: "", patient_id: "", plan_id: "", auto_renew: true });
+      fetchMemberships();
+    } catch (e: unknown) {
+      alert((e as Error).message ?? "Failed to assign membership");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const cancelMembership = async (id: string) => {
@@ -264,6 +274,19 @@ export default function MembershipPage() {
   const filteredMembers = memberships.filter(m =>
     !searchPatient || m.patients?.full_name?.toLowerCase().includes(searchPatient.toLowerCase())
   );
+
+  // H-8 fix: block non-admin roles from managing memberships
+  const ALLOWED_ROLES = ["superadmin", "chain_admin", "clinic_admin"];
+  if (profile && !ALLOWED_ROLES.includes(profile.role ?? "")) {
+    return (
+      <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
+        <TopBar />
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <p style={{ color: "#6b7280", fontFamily: "Georgia, serif" }}>You don&apos;t have permission to manage memberships.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>

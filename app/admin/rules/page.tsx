@@ -196,8 +196,13 @@ const EMPTY_TRIGGER_FORM: TriggerForm = {
 
 // ── Template preview ──────────────────────────────────────────────────────────
 
+/** H-10 fix: strip any HTML tags before the template is used in external messages */
+function sanitizeTemplate(t: string): string {
+  return t.replace(/<[^>]*>/g, "");
+}
+
 function buildPreview(template: string, form: RuleForm): string {
-  return template
+  return sanitizeTemplate(template)
     .replace(/\{patient_name\}/g, "Sarah Mitchell")
     .replace(/\{treatment_name\}/g, form.condition_treatment || "Hydrafacial")
     .replace(/\{clinic_name\}/g, "Aesthetica Clinic")
@@ -458,7 +463,7 @@ export default function RulesPage() {
       nudge_target_roles:  ruleForm.action === "nudge_staff" ? ruleForm.nudge_target_roles : [],
       nudge_target_role:   ruleForm.action === "nudge_staff" && ruleForm.nudge_target_roles[0]
                              ? ruleForm.nudge_target_roles[0] : null,   // legacy compat
-      message_template:    ruleForm.message_template,
+      message_template:    sanitizeTemplate(ruleForm.message_template),
       scope_type:          ruleForm.scope_type,
       clinic_ids:          ruleForm.scope_type === "clinic" ? ruleForm.clinic_ids : [],
       status:              "active",

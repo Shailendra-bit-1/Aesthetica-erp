@@ -940,6 +940,9 @@ const INTEGRATION_DEFS: Array<{
   },
 ];
 
+// Sentinel: secret field already configured — don't overwrite unless user types a new value
+const SECRET_PLACEHOLDER = "__configured__";
+
 function IntegrationsTab() {
   const { activeClinicId } = useClinic();
   const [configs, setConfigs] = useState<Record<string, IntegrationConfig>>({});
@@ -957,7 +960,14 @@ function IntegrationsTab() {
       const fv: Record<string, Record<string, string>> = {};
       data.forEach((row: IntegrationConfig) => {
         map[row.integration] = row;
-        fv[row.integration] = { ...row.config };
+        // C-9 fix: for secret fields that have a value, store sentinel instead of plaintext
+        const maskedConfig: Record<string, string> = {};
+        const intgDef = INTEGRATION_DEFS.find(d => d.key === row.integration);
+        Object.entries(row.config as Record<string, string>).forEach(([k, v]) => {
+          const fieldDef = intgDef?.fields.find(f => f.key === k);
+          maskedConfig[k] = (fieldDef?.secret && v) ? SECRET_PLACEHOLDER : (v ?? "");
+        });
+        fv[row.integration] = maskedConfig;
       });
       setConfigs(map);
       setFieldValues(fv);
@@ -971,15 +981,36 @@ function IntegrationsTab() {
   const saveIntegration = async (intKey: string) => {
     if (!clinicId) return;
     setSaving(intKey);
-    const cfg = fieldValues[intKey] || {};
+    const displayedValues = fieldValues[intKey] || {};
+    const existingConfig = (configs[intKey]?.config ?? {}) as Record<string, string>;
+    const intgDef = INTEGRATION_DEFS.find(d => d.key === intKey);
+    // C-9 fix: if a secret field still shows the sentinel, keep the existing stored value
+    const cfg: Record<string, string> = {};
+    Object.entries(displayedValues).forEach(([k, v]) => {
+      const fieldDef = intgDef?.fields.find(f => f.key === k);
+      if (fieldDef?.secret && v === SECRET_PLACEHOLDER) {
+        cfg[k] = existingConfig[k] ?? "";  // preserve existing secret
+      } else {
+        cfg[k] = v;
+      }
+    });
     await supabase.from("integration_configs").upsert({
       clinic_id: clinicId, integration: intKey, config: cfg,
       is_active: Object.values(cfg).some(v => v && v.trim()),
       updated_at: new Date().toISOString(),
     }, { onConflict: "clinic_id,integration" });
+    // Re-load and re-mask
     const { data } = await supabase.from("integration_configs").select("*")
       .eq("clinic_id", clinicId).eq("integration", intKey).single();
-    if (data) setConfigs(c => ({ ...c, [intKey]: data }));
+    if (data) {
+      setConfigs(c => ({ ...c, [intKey]: data }));
+      const maskedCfg: Record<string, string> = {};
+      Object.entries((data.config as Record<string, string>)).forEach(([k, v]) => {
+        const fieldDef = intgDef?.fields.find(f => f.key === k);
+        maskedCfg[k] = (fieldDef?.secret && v) ? SECRET_PLACEHOLDER : (v ?? "");
+      });
+      setFieldValues(fv => ({ ...fv, [intKey]: maskedCfg }));
+    }
     setSaving(null);
     toast.success("Integration saved");
   };
@@ -1055,9 +1086,15 @@ function IntegrationsTab() {
                         <label style={{ display: "block", fontSize: 11, fontWeight: 500, color: "#4b5563", marginBottom: 4 }}>{field.label}</label>
                         <input
                           type={field.secret ? "password" : "text"}
-                          value={vals[field.key] || ""}
+                          value={vals[field.key] ?? ""}
+                          onFocus={() => {
+                            // Clear sentinel on focus so user can type a new value cleanly
+                            if (vals[field.key] === SECRET_PLACEHOLDER) {
+                              setField(intg.key, field.key, "");
+                            }
+                          }}
                           onChange={e => setField(intg.key, field.key, e.target.value)}
-                          placeholder={field.placeholder}
+                          placeholder={vals[field.key] === SECRET_PLACEHOLDER ? "••••••••••••••••" : field.placeholder}
                           style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", fontSize: 12, outline: "none", boxSizing: "border-box" }}
                         />
                       </div>

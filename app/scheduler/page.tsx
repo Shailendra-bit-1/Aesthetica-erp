@@ -1034,24 +1034,19 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
     setUpdating(true);
     try {
       if (status === "no_show") {
-        // Return reserved credit
-        if (a.credit_id) {
-          await supabase.from("patient_service_credits")
-            .update({ status: "active" })
-            .eq("id", a.credit_id);
-        }
-        // Increment no_show_count
-        if (a.patient_id) {
-          const { data: pat } = await supabase.from("patients").select("no_show_count").eq("id", a.patient_id).single();
-          await supabase.from("patients").update({ no_show_count: (pat?.no_show_count ?? 0) + 1 }).eq("id", a.patient_id);
-        }
+        // Single atomic RPC: restores credit + increments no_show_count + updates appointment (C-1 fix)
+        const { error: nsErr } = await supabase.rpc("increment_no_show", {
+          p_appointment_id: a.id,
+          p_credit_id:      a.credit_id ?? null,
+          p_patient_id:     a.patient_id ?? null,
+          p_clinic_id:      activeClinicId,
+        });
+        if (nsErr) throw nsErr;
+      } else {
+        const patch: Record<string, unknown> = { status, updated_at: new Date().toISOString(), ...extra };
+        const { error } = await supabase.from("appointments").update(patch).eq("id", a.id);
+        if (error) throw error;
       }
-
-      const patch: Record<string, unknown> = { status, updated_at: new Date().toISOString(), ...extra };
-      if (status === "no_show") { patch.credit_reserved = false; patch.credit_id = null; }
-
-      const { error } = await supabase.from("appointments").update(patch).eq("id", a.id);
-      if (error) throw error;
       toast.success(`Marked as ${STATUS_CFG[status].label}`);
       onUpdated();
     } catch (e) {
@@ -1076,7 +1071,13 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
             p_provider_id: a.provider_id ?? "",
             p_service_id:  a.service_id  ?? null,
           });
-        const commissionPct = (commPctRow as number | null) ?? 10;
+        const rawCommPct = commPctRow as number | null;
+        if (rawCommPct === null && a.provider_id) {
+          toast.error("No commission rate configured for this provider. Please set one in Staff settings before consuming.");
+          setUpdating(false);
+          return;
+        }
+        const commissionPct = rawCommPct ?? 0;
 
         // Single atomic RPC — all 5 writes or none (GAP-3)
         const { data: result, error } = await supabase.rpc("consume_session", {
@@ -1103,7 +1104,13 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
             p_provider_id: a.provider_id ?? "",
             p_service_id:  a.service_id  ?? null,
           });
-        const commissionPct = (commPctRow as number | null) ?? 10;
+        const rawCommPct2 = commPctRow as number | null;
+        if (rawCommPct2 === null && a.provider_id) {
+          toast.error("No commission rate configured for this provider. Please set one in Staff settings before consuming.");
+          setUpdating(false);
+          return;
+        }
+        const commissionPct = rawCommPct2 ?? 0;
 
         // Invoice creation (GAP-10)
         const { error: invErr } = await supabase.rpc("create_invoice_with_items", {
@@ -2301,13 +2308,19 @@ function CheckoutModal({ appointment: a, credit, activeClinicId, onClose, onComp
   async function handleCheckout() {
     setProcessing(true);
     try {
-      // 1. Resolve commission rate (GAP-14)
+      // 1. Resolve commission rate (H-1 fix: error on missing rate)
       const { data: commPctRow } = await supabase.rpc("get_commission_pct", {
         p_clinic_id:   activeClinicId,
         p_provider_id: a.provider_id ?? "",
         p_service_id:  a.service_id  ?? null,
       });
-      const commissionPct = (commPctRow as number | null) ?? 10;
+      const rawCheckoutCommPct = commPctRow as number | null;
+      if (rawCheckoutCommPct === null && a.provider_id) {
+        toast.error("No commission rate configured for this provider. Please set one in Staff settings before checking out.");
+        setProcessing(false);
+        return;
+      }
+      const commissionPct = rawCheckoutCommPct ?? 0;
 
       // 2. Consume credit session atomically (GAP-3)
       if (credit) {

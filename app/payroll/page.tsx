@@ -38,6 +38,7 @@ interface StaffProfile {
   id: string;
   full_name: string;
   role: string;
+  basic_salary: number;
 }
 
 const RUN_STATUS_CONFIG: Record<RunStatus, { bg: string; color: string; label: string }> = {
@@ -93,7 +94,7 @@ export default function PayrollPage() {
 
   const fetchStaff = useCallback(async () => {
     if (!clinicId) return;
-    const { data } = await supabase.from("profiles").select("id, full_name, role")
+    const { data } = await supabase.from("profiles").select("id, full_name, role, basic_salary")
       .eq("clinic_id", clinicId).eq("is_active", true).order("full_name");
     setStaffList(data || []);
   }, [clinicId, supabase]);
@@ -121,52 +122,85 @@ export default function PayrollPage() {
     const lastDay = new Date(year, month + 1, 0).getDate();
     const periodEnd = `${year}-${String(month + 1).padStart(2, "0")}-${lastDay}`;
 
-    // Create run
-    const { data: run } = await supabase.from("payroll_runs").insert({
-      clinic_id: clinicId, period_start: periodStart, period_end: periodEnd,
-      status: "draft", created_by: profile?.id,
-    }).select().single();
-
-    if (run) {
-      // Auto-generate payslips for all staff
-      const { data: attData } = await supabase.from("staff_attendance")
-        .select("staff_id, status")
-        .eq("clinic_id", clinicId)
-        .gte("date", periodStart).lte("date", periodEnd)
-        .eq("status", "present");
-
-      const attendanceCounts: Record<string, number> = {};
-      (attData || []).forEach((a: { staff_id: string }) => {
-        attendanceCounts[a.staff_id] = (attendanceCounts[a.staff_id] || 0) + 1;
-      });
-
-      // Commission totals
-      const { data: commData } = await supabase.from("staff_commissions")
-        .select("provider_id, commission_amount")
-        .eq("clinic_id", clinicId).eq("status", "pending");
-
-      const commTotals: Record<string, number> = {};
-      (commData || []).forEach((c: { provider_id: string; commission_amount: number }) => {
-        commTotals[c.provider_id] = (commTotals[c.provider_id] || 0) + (c.commission_amount || 0);
-      });
-
-      if (staffList.length > 0) {
-        const payslipInserts = staffList.map(s => ({
-          clinic_id: clinicId, run_id: run.id, staff_id: s.id,
-          basic_salary: 0, commission_total: commTotals[s.id] || 0,
-          allowances: 0, deductions: 0, tds: 0,
-          net_pay: commTotals[s.id] || 0,
-          attendance_days: attendanceCounts[s.id] || 0,
-          breakdown: {},
-        }));
-        await supabase.from("payslips").insert(payslipInserts);
+    try {
+      // C-6 fix: idempotency check — block duplicate runs for same period
+      const { data: existing } = await supabase.from("payroll_runs")
+        .select("id").eq("clinic_id", clinicId)
+        .eq("period_start", periodStart).eq("period_end", periodEnd).maybeSingle();
+      if (existing) {
+        alert(`A payroll run already exists for ${year}-${String(month + 1).padStart(2, "0")}. Delete or modify the existing run first.`);
+        setSaving(false);
+        return;
       }
-    }
 
-    setSaving(false);
-    setNewRunDrawer(false);
-    fetchRuns();
-    if (run) loadRunPayslips(run);
+      // Create run
+      const { data: run, error: runErr } = await supabase.from("payroll_runs").insert({
+        clinic_id: clinicId, period_start: periodStart, period_end: periodEnd,
+        status: "draft", created_by: profile?.id,
+      }).select().single();
+      if (runErr) throw runErr;
+
+      if (run) {
+        // Attendance counts
+        const { data: attData } = await supabase.from("staff_attendance")
+          .select("staff_id, status")
+          .eq("clinic_id", clinicId)
+          .gte("date", periodStart).lte("date", periodEnd)
+          .eq("status", "present");
+
+        const attendanceCounts: Record<string, number> = {};
+        (attData || []).forEach((a: { staff_id: string }) => {
+          attendanceCounts[a.staff_id] = (attendanceCounts[a.staff_id] || 0) + 1;
+        });
+
+        // C-7 fix: only include unprocessed commissions
+        const { data: commData } = await supabase.from("staff_commissions")
+          .select("id, provider_id, commission_amount")
+          .eq("clinic_id", clinicId)
+          .eq("status", "pending")
+          .eq("is_processed", false);
+
+        const commTotals: Record<string, number> = {};
+        const commIds: string[] = [];
+        (commData || []).forEach((c: { id: string; provider_id: string; commission_amount: number }) => {
+          commTotals[c.provider_id] = (commTotals[c.provider_id] || 0) + (c.commission_amount || 0);
+          commIds.push(c.id);
+        });
+
+        if (staffList.length > 0) {
+          // H-7 fix: use basic_salary from staff profile
+          const payslipInserts = staffList.map(s => {
+            const basic = s.basic_salary ?? 0;
+            const commission = commTotals[s.id] || 0;
+            return {
+              clinic_id: clinicId, run_id: run.id, staff_id: s.id,
+              basic_salary: basic,
+              commission_total: commission,
+              allowances: 0, deductions: 0, tds: 0,
+              net_pay: basic + commission,
+              attendance_days: attendanceCounts[s.id] || 0,
+              breakdown: {},
+            };
+          });
+          await supabase.from("payslips").insert(payslipInserts);
+        }
+
+        // C-7 fix: mark included commissions as processed so they are not double-counted
+        if (commIds.length > 0) {
+          await supabase.from("staff_commissions")
+            .update({ is_processed: true, processed_run_id: run.id })
+            .in("id", commIds);
+        }
+      }
+
+      setNewRunDrawer(false);
+      fetchRuns();
+      if (run) loadRunPayslips(run);
+    } catch (e: unknown) {
+      alert((e as Error).message ?? "Failed to create payroll run");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const approveRun = async (runId: string) => {
@@ -212,6 +246,19 @@ export default function PayrollPage() {
     w?.document.write(content);
     w?.print();
   };
+
+  // H-8 fix: payroll is admin-only — front_desk / therapists cannot access payroll
+  const PAYROLL_ROLES = ["superadmin", "chain_admin", "clinic_admin"];
+  if (profile && !PAYROLL_ROLES.includes(profile.role ?? "")) {
+    return (
+      <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
+        <TopBar />
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <p style={{ color: "#6b7280", fontFamily: "Georgia, serif" }}>You don&apos;t have permission to access payroll.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>

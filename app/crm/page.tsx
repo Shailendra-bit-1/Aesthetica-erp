@@ -145,15 +145,20 @@ export default function CRMPage() {
 
   const convertLead = async (lead: Lead) => {
     if (!clinicId || lead.patient_id) return;
-    // Create patient record
-    const { data: patient } = await supabase.from("patients").insert({
-      clinic_id: clinicId, full_name: lead.full_name,
-      phone: lead.phone, email: lead.email,
-    }).select("id").single();
-    if (patient) {
-      await supabase.from("crm_leads").update({ patient_id: patient.id, status: "converted" }).eq("id", lead.id);
+    try {
+      // C-5 fix: atomic RPC — patient INSERT + lead UPDATE in single transaction
+      const { error } = await supabase.rpc("convert_lead", {
+        p_lead_id:   lead.id,
+        p_clinic_id: clinicId,
+        p_full_name: lead.full_name,
+        p_phone:     lead.phone  || null,
+        p_email:     lead.email  || null,
+      });
+      if (error) throw error;
+      fetchLeads();
+    } catch (e: unknown) {
+      alert((e as Error).message ?? "Failed to convert lead");
     }
-    fetchLeads();
   };
 
   const saveCampaign = async () => {
@@ -176,6 +181,19 @@ export default function CRMPage() {
     !search || l.full_name.toLowerCase().includes(search.toLowerCase()) ||
     l.phone?.includes(search) || l.email?.toLowerCase().includes(search.toLowerCase())
   );
+
+  // H-8 fix: CRM is admin + front_desk; block therapists/doctors from lead management
+  const CRM_ROLES = ["superadmin", "chain_admin", "clinic_admin", "front_desk"];
+  if (profile && !CRM_ROLES.includes(profile.role ?? "")) {
+    return (
+      <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
+        <TopBar />
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <p style={{ color: "#6b7280", fontFamily: "Georgia, serif" }}>You don&apos;t have permission to access CRM.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>

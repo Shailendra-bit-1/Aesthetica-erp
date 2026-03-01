@@ -4,7 +4,8 @@
  * ImpersonationContext
  * ──────────────────────────────────────────────────────────────────────────────
  * Allows a superadmin to "view as" a clinic without changing their JWT.
- * State persists to localStorage so a page refresh keeps the impersonation active.
+ * State persists to sessionStorage (H-9 fix: not sessionStorage, so it is not
+ * readable across tabs and is cleared when the browser session ends).
  *
  * Usage:
  *   const { isImpersonating, impersonated, startImpersonation, stopImpersonation, auditMeta } = useImpersonation();
@@ -34,10 +35,10 @@ const ImpersonationContext = createContext<ImpersonationState | null>(null);
 export function ImpersonationProvider({ children }: { children: React.ReactNode }) {
   const [impersonated, setImpersonated] = useState<ImpersonatedClinic | null>(null);
 
-  // Restore from localStorage on mount
+  // Restore from sessionStorage on mount
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = sessionStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as ImpersonatedClinic;
         if (parsed.clinicId && parsed.clinicName) {
@@ -52,12 +53,12 @@ export function ImpersonationProvider({ children }: { children: React.ReactNode 
   function startImpersonation(clinicId: string, clinicName: string) {
     const value: ImpersonatedClinic = { clinicId, clinicName };
     setImpersonated(value);
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(value)); } catch { /* noop */ }
+    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(value)); } catch { /* noop */ }
   }
 
   function stopImpersonation() {
     setImpersonated(null);
-    try { localStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
+    try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
   }
 
   function auditMeta() {

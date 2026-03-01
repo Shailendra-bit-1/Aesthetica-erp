@@ -147,6 +147,19 @@ export default function CounsellingPage() {
 
   const kanbanCols: ConversionStatus[] = ["pending", "converted", "partial", "declined"];
 
+  // H-8 fix: counselling is for counsellors, doctors, and admins
+  const COUNSELLING_ROLES = ["superadmin", "chain_admin", "clinic_admin", "doctor", "counsellor"];
+  if (profile && !COUNSELLING_ROLES.includes(profile.role ?? "")) {
+    return (
+      <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
+        <TopBar />
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <p style={{ color: "#6b7280", fontFamily: "Georgia, serif" }}>You don&apos;t have permission to access Counselling.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
       <TopBar />

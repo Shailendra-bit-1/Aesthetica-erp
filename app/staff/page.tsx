@@ -179,6 +179,19 @@ export default function StaffHRPage() {
     else setViewMonth(m => m + 1);
   };
 
+  // H-8 fix: HR features are admin-only
+  const HR_ROLES = ["superadmin", "chain_admin", "clinic_admin"];
+  if (profile && !HR_ROLES.includes(profile.role ?? "")) {
+    return (
+      <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
+        <TopBar />
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <p style={{ color: "#6b7280", fontFamily: "Georgia, serif" }}>You don&apos;t have permission to access Staff HR.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
       <TopBar />

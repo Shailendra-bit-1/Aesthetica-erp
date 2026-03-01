@@ -1216,6 +1216,11 @@ function ReceiveDrawer({ product, suppliers, products, batches, clinicId, profil
     if (!batchNum.trim()) { toast.error("Batch number is required"); return; }
     const qtyN = parseInt(qty);
     if (!qtyN || qtyN <= 0) { toast.error("Enter a valid quantity"); return; }
+    // H-6 fix: reject stock receipts with expired batches
+    if (expDate) {
+      const today = new Date().toISOString().split("T")[0];
+      if (expDate < today) { toast.error("Expiry date cannot be in the past. Check the batch before receiving."); return; }
+    }
     const costN = parseFloat(costPrice) || 0;
 
     setSaving(true);

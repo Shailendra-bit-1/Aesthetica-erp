@@ -51,6 +51,29 @@ function genSecret() {
   return Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** C-10 fix: show only last 8 chars of a secret */
+function maskSecret(s: string) {
+  if (!s || s.length <= 8) return "••••••••";
+  return "••••••••" + s.slice(-8);
+}
+
+/** C-11 fix: reject private/loopback/SSRF-risk URLs */
+function validateWebhookUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return "URL must use HTTPS";
+    const host = u.hostname.toLowerCase();
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return "localhost URLs are not allowed";
+    if (/^10\./.test(host)) return "Private IP ranges are not allowed";
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return "Private IP ranges are not allowed";
+    if (/^192\.168\./.test(host)) return "Private IP ranges are not allowed";
+    if (/^169\.254\./.test(host)) return "Link-local addresses are not allowed";
+    return null;
+  } catch {
+    return "Invalid URL format";
+  }
+}
+
 export default function WebhooksPage() {
   const { profile, activeClinicId } = useClinic();
 
@@ -94,6 +117,8 @@ export default function WebhooksPage() {
 
   const saveEndpoint = async () => {
     if (!clinicId || !form.name || !form.url || form.events.length === 0) return;
+    const urlError = validateWebhookUrl(form.url);
+    if (urlError) { alert(urlError); return; }
     setSaving(true);
     await supabase.from("webhook_endpoints").insert({
       clinic_id: clinicId, name: form.name, url: form.url,

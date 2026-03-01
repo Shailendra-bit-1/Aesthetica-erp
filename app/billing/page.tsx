@@ -903,23 +903,17 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
     if (!pay || pay <= 0) { toast.error("Enter a valid amount"); return; }
     setSaving(true);
     try {
-      const { error: pe } = await supabase.from("invoice_payments").insert({
-        invoice_id: inv.id, clinic_id: clinicId,
-        amount: pay, payment_mode: mode,
-        transaction_ref: ref   || null,
-        notes:           notes || null,
+      // C-3 fix: single atomic RPC — inserts payment + recomputes invoice status
+      const { data: newStatus, error: pe } = await supabase.rpc("record_payment", {
+        p_invoice_id:      inv.id,
+        p_clinic_id:       clinicId,
+        p_amount:          pay,
+        p_payment_mode:    mode,
+        p_transaction_ref: ref   || null,
+        p_notes:           notes || null,
+        p_recorded_by:     null,
       });
       if (pe) throw pe;
-
-      const newStatus: InvoiceStatus = pay >= due ? "paid" : "partial";
-      const { error: ie } = await supabase.from("pending_invoices").update({
-        status:       newStatus,
-        payment_mode: mode,
-        payment_ref:  ref || null,
-        paid_at:      newStatus === "paid" ? new Date().toISOString() : null,
-        updated_at:   new Date().toISOString(),
-      }).eq("id", inv.id);
-      if (ie) throw ie;
 
       await logAction({
         action:     "record_payment",
@@ -1116,6 +1110,10 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
       const svcNames = items.filter(it => it.description).map(it => it.description).join(", ");
       // Atomic invoice + line items in single DB transaction (GAP-10)
       const validItems = items.filter(it => it.description.trim() && it.unit_price > 0);
+      // H-3 fix: compute effective GST from line items (weighted average)
+      const lineSub  = validItems.reduce((s, it) => s + it.unit_price * it.quantity * (1 - it.discount_pct / 100), 0);
+      const lineGst  = validItems.reduce((s, it) => { const b = it.unit_price * it.quantity * (1 - it.discount_pct / 100); return s + b * (it.gst_pct / 100); }, 0);
+      const effGstPct = lineSub > 0 ? Math.round(lineGst / lineSub * 100) : 0;
       const { data: result, error: ie } = await supabase.rpc("create_invoice_with_items", {
         p_clinic_id:     clinicId,
         p_patient_id:    selPat?.id   ?? null,
@@ -1123,7 +1121,7 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
         p_provider_id:   null,
         p_provider_name: "",
         p_due_date:      dueDate || null,
-        p_gst_pct:       18,
+        p_gst_pct:       effGstPct,
         p_invoice_type:  "ad_hoc",
         p_notes:         notes || null,
         p_items: JSON.stringify(validItems.map(it => ({
