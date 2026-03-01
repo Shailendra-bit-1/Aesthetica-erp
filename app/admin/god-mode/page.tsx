@@ -76,18 +76,6 @@ export default function GodModePage() {
   const [pushing,     setPushing]     = useState(false);
   const [pushTarget,  setPushTarget]  = useState<"platinum" | "gold" | "silver" | null>(null);
 
-  if (profile?.role !== "superadmin") {
-    return (
-      <div style={{ background: "#F9F7F2", minHeight: "100vh" }}>
-        <TopBar />
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "60vh", gap: 12 }}>
-          <Shield size={36} style={{ color: "rgba(197,160,89,0.35)" }} />
-          <p style={{ fontSize: 16, fontFamily: "Georgia, serif", color: "#9C9584" }}>Superadmin access required</p>
-        </div>
-      </div>
-    );
-  }
-
   // ── Load clinics + features ──────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -114,6 +102,36 @@ export default function GodModePage() {
   }, []);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  // ── Derived state (must be hooks, must stay before any early return) ─────────
+  const filteredClinics = useMemo(() => {
+    if (!search.trim()) return clinics;
+    const q = search.toLowerCase();
+    return clinics.filter(c =>
+      c.name.toLowerCase().includes(q) ||
+      (c.location ?? "").toLowerCase().includes(q) ||
+      (c.chain_name ?? "").toLowerCase().includes(q)
+    );
+  }, [clinics, search]);
+
+  const totalEnabled = useMemo(() => {
+    let count = 0;
+    Object.values(featureMap).forEach(fm => Object.values(fm).forEach(v => v && count++));
+    return count;
+  }, [featureMap]);
+
+  // ── Access guard (after all hooks) ──────────────────────────────────────────
+  if (profile?.role !== "superadmin") {
+    return (
+      <div style={{ background: "#F9F7F2", minHeight: "100vh" }}>
+        <TopBar />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "60vh", gap: 12 }}>
+          <Shield size={36} style={{ color: "rgba(197,160,89,0.35)" }} />
+          <p style={{ fontSize: 16, fontFamily: "Georgia, serif", color: "#9C9584" }}>Superadmin access required</p>
+        </div>
+      </div>
+    );
+  }
 
   // ── Toggle a single feature for a clinic ────────────────────────────────────
   async function toggleFeature(clinicId: string, slug: string, currentValue: boolean) {
@@ -192,24 +210,6 @@ export default function GodModePage() {
     toast.success(`Now viewing as ${clinic.name}`);
     window.location.href = "/";
   }
-
-  // ── Filtered clinics ──────────────────────────────────────────────────────────
-  const filteredClinics = useMemo(() => {
-    if (!search.trim()) return clinics;
-    const q = search.toLowerCase();
-    return clinics.filter(c =>
-      c.name.toLowerCase().includes(q) ||
-      (c.location ?? "").toLowerCase().includes(q) ||
-      (c.chain_name ?? "").toLowerCase().includes(q)
-    );
-  }, [clinics, search]);
-
-  // ── Platform stats ───────────────────────────────────────────────────────────
-  const totalEnabled = useMemo(() => {
-    let count = 0;
-    Object.values(featureMap).forEach(fm => Object.values(fm).forEach(v => v && count++));
-    return count;
-  }, [featureMap]);
 
   return (
     <div style={{ background: "#F9F7F2", minHeight: "100vh" }}>
