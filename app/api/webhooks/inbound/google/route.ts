@@ -85,10 +85,8 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (error || !lead) {
-      return NextResponse.json(
-        { error: error?.message ?? "Failed to create lead" },
-        { status: 500 }
-      );
+      console.error("[webhooks/google] lead insert error:", error?.message);
+      return NextResponse.json({ error: "Failed to process lead" }, { status: 500 });
     }
 
     void fireWebhookEvent(clinicId, "lead.created", {
@@ -99,7 +97,7 @@ export async function POST(req: NextRequest) {
     // Google requires a 200 response within 2 seconds
     return NextResponse.json({ success: true });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error("[webhooks/google] unhandled error:", err);
+    return NextResponse.json({ error: "An error occurred" }, { status: 500 });
   }
 }

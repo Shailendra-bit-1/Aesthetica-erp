@@ -29,7 +29,7 @@ export async function GET(
       .from("profiles")
       .select("id, full_name, role")
       .eq("clinic_id", clinicId)
-      .eq("status", "active")
+      .eq("is_active", true)
       .not("full_name", "is", null)
       .in("role", ["doctor", "nurse", "therapist", "counsellor"])
       .order("full_name"),
