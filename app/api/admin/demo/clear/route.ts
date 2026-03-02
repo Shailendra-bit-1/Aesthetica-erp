@@ -49,6 +49,11 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "Can only clear demo clinics" }, { status: 403 });
     }
 
+    // Collect all auth user IDs for this clinic (admin + demo staff) before deleting profiles
+    const { data: profileRows } = await admin.from("profiles")
+      .select("id").eq("clinic_id", clinicId);
+    const authUserIds = (profileRows ?? []).map((p: { id: string }) => p.id);
+
     // Delete all clinic-scoped data (cascade handles most via FK ON DELETE CASCADE)
     // Explicitly clear tables that may not cascade
     await Promise.all([
@@ -58,6 +63,11 @@ export async function DELETE(req: NextRequest) {
       admin.from("profiles").delete().eq("clinic_id", clinicId),
       admin.from("audit_logs").delete().eq("clinic_id", clinicId),
     ]);
+
+    // Delete auth users for this clinic (admin + staff)
+    for (const uid of authUserIds) {
+      try { await admin.auth.admin.deleteUser(uid); } catch {}
+    }
 
     // Finally delete the clinic itself
     const { error } = await admin.from("clinics").delete().eq("id", clinicId);
