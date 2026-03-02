@@ -57,13 +57,12 @@ interface KpiData {
 
 interface Appointment {
   id: string;
-  patient_name: string | null;
   service_name: string | null;
   start_time: string;
   end_time: string | null;
   status: string;
   provider_id: string | null;
-  patient_tier: string | null;
+  patient: { full_name: string | null; patient_tier: string | null } | null;
 }
 
 interface ClinicRevenue {
@@ -74,9 +73,9 @@ interface ClinicRevenue {
 
 interface InventoryAlert {
   id: string;
-  product_name: string;
-  quantity: number;
-  reorder_level: number | null;
+  name: string;
+  current_stock: number;
+  low_stock_threshold: number | null;
 }
 
 interface RecentPatient {
@@ -232,7 +231,7 @@ export default function OverviewPage() {
       // Today's appointment count
       scope(supabase.from("appointments").select("id", { count: "exact", head: true }).gte("start_time", todayStart()).lte("start_time", todayEnd())),
       // Today's appointment list (for the live widget)
-      scope(supabase.from("appointments").select("id,patient_name,service_name,start_time,end_time,status,provider_id,patient_tier").gte("start_time", todayStart()).lte("start_time", todayEnd()).order("start_time")),
+      scope(supabase.from("appointments").select("id,service_name,start_time,end_time,status,provider_id,patient:patients!patient_id(full_name,patient_tier)").gte("start_time", todayStart()).lte("start_time", todayEnd()).order("start_time")),
       // Revenue collected today
       scope(supabase.from("pending_invoices").select("total_amount").eq("status","paid").gte("created_at", todayStart()).lte("created_at", todayEnd())),
       // Revenue collected this month
@@ -240,7 +239,7 @@ export default function OverviewPage() {
       // Pending invoice amount
       scope(supabase.from("pending_invoices").select("total_amount").eq("status","pending")),
       // Inventory low-stock alerts
-      scope(supabase.from("inventory_products").select("id,product_name,quantity,reorder_level").lt("quantity", 10).order("quantity").limit(5)),
+      scope(supabase.from("inventory_products").select("id,name,current_stock,low_stock_threshold").lt("current_stock", 10).order("current_stock").limit(5)),
       // Recent patients
       scope(supabase.from("patients").select("id,full_name,primary_concern,created_at").order("created_at", { ascending: false }).limit(6)),
       // Branch revenue for chain view
@@ -825,7 +824,7 @@ export default function OverviewPage() {
                 {appts.map((a) => {
                   const s = STATUS_CFG[a.status] ?? STATUS_CFG.planned;
                   const Icon = s.icon;
-                  const initials = (a.patient_name ?? "?").split(" ").map(n => n[0]).slice(0, 2).join("").toUpperCase();
+                  const initials = (a.patient?.full_name ?? "?").split(" ").map(n => n[0]).slice(0, 2).join("").toUpperCase();
                   return (
                     <Link key={a.id} href="/scheduler"
                       className="px-6 py-3.5 flex items-center gap-4 hover:bg-stone-50 transition-colors cursor-pointer group"
@@ -838,14 +837,14 @@ export default function OverviewPage() {
 
                       {/* Avatar */}
                       <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
-                        style={{ background: a.patient_tier === "vip" ? "#C5A059" : a.patient_tier === "hni" ? "#8B7EC8" : "#7A9E8E" }}>
+                        style={{ background: a.patient?.patient_tier === "vip" ? "#C5A059" : a.patient?.patient_tier === "hni" ? "#8B7EC8" : "#7A9E8E" }}>
                         {initials}
                       </div>
 
                       {/* Info */}
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold truncate" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>
-                          {a.patient_name ?? "Walk-in"}
+                          {a.patient?.full_name ?? "Walk-in"}
                         </p>
                         <p className="text-xs truncate" style={{ color: "var(--text-muted)" }}>
                           {a.service_name ?? "Consultation"}
@@ -945,19 +944,19 @@ export default function OverviewPage() {
                     <p className="text-xs" style={{ color: "var(--text-muted)" }}>All stock levels OK</p>
                   </div>
                 ) : invAlerts.map((item) => {
-                  const isUrgent = item.quantity <= 3;
+                  const isUrgent = item.current_stock <= 3;
                   return (
                     <Link key={item.id} href="/inventory" className="flex items-center justify-between group">
                       <div className="flex items-center gap-2 min-w-0">
                         <Circle size={5} fill={isUrgent ? "#E8935A" : "#C5A059"} stroke="none" className="flex-shrink-0" />
-                        <p className="text-xs font-medium truncate" style={{ color: "var(--foreground)" }}>{item.product_name}</p>
+                        <p className="text-xs font-medium truncate" style={{ color: "var(--foreground)" }}>{item.name}</p>
                       </div>
                       <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ml-2"
                         style={{
                           background: isUrgent ? "rgba(232,147,90,0.15)" : "rgba(197,160,89,0.12)",
                           color:      isUrgent ? "#C8673A" : "#A8853A",
                         }}>
-                        {item.quantity} left
+                        {item.current_stock} left
                       </span>
                     </Link>
                   );
