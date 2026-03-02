@@ -1,9 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
+
+async function getSuperadminSession() {
+  const cookieStore = await cookies();
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll: () => cookieStore.getAll(),
+        setAll: () => {},
+      },
+    }
+  );
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", user.id)
+    .maybeSingle();
+  if (profile?.role !== "superadmin") return null;
+  return user;
+}
 
 // POST { email: string, clinicId: string }
-// Uses SUPABASE_SERVICE_ROLE_KEY for admin-level operations.
 export async function POST(req: NextRequest) {
+  // Auth guard: superadmin only
+  const caller = await getSuperadminSession();
+  if (!caller) {
+    return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
+  }
+
   try {
     const body = await req.json();
     const { email, clinicId } = body as { email: string; clinicId: string };
@@ -21,46 +51,7 @@ export async function POST(req: NextRequest) {
       { auth: { autoRefreshToken: false, persistSession: false } }
     );
 
-    // Step 1: Search profiles table for this email
-    const { data: existingProfile, error: profileErr } = await supabaseAdmin
-      .from("profiles")
-      .select("id, email, role, clinic_id, status")
-      .eq("email", email)
-      .maybeSingle();
-
-    if (profileErr) {
-      return NextResponse.json(
-        { success: false, error: profileErr.message },
-        { status: 500 }
-      );
-    }
-
-    if (existingProfile) {
-      // Found in profiles — update role, clinic_id, status
-      const { error: updateErr } = await supabaseAdmin
-        .from("profiles")
-        .update({
-          role: "clinic_admin",
-          clinic_id: clinicId,
-          status: "active",
-        })
-        .eq("id", existingProfile.id);
-
-      if (updateErr) {
-        return NextResponse.json(
-          { success: false, error: updateErr.message },
-          { status: 500 }
-        );
-      }
-
-      return NextResponse.json({
-        success: true,
-        created: false,
-        isPlaceholder: false,
-      });
-    }
-
-    // Step 2: Not in profiles — search auth.users
+    // Step 1: Search auth.users by email, then look up profile by user id
     const { data: authData, error: authListErr } =
       await supabaseAdmin.auth.admin.listUsers();
 
@@ -76,16 +67,15 @@ export async function POST(req: NextRequest) {
     );
 
     if (authUser) {
-      // Found in auth.users — upsert profile
+      // Found in auth.users — upsert profile (profiles has no email column)
       const { error: upsertErr } = await supabaseAdmin
         .from("profiles")
         .upsert(
           {
             id: authUser.id,
-            email,
             role: "clinic_admin",
             clinic_id: clinicId,
-            status: "active",
+            is_active: true,
           },
           { onConflict: "id" }
         );
@@ -97,22 +87,18 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      return NextResponse.json({
-        success: true,
-        created: true,
-        isPlaceholder: false,
-      });
+      return NextResponse.json({ success: true, created: false, isPlaceholder: false });
     }
 
-    // Step 3: Not found anywhere — insert placeholder profile
+    // Step 2: Not found in auth.users — insert placeholder profile
+    // (will be linked when user signs up with this email via magic link)
     const placeholderId = crypto.randomUUID();
 
     const { error: insertErr } = await supabaseAdmin.from("profiles").insert({
       id: placeholderId,
-      email,
       role: "clinic_admin",
       clinic_id: clinicId,
-      status: "pending",
+      is_active: false,
       full_name: null,
     });
 
@@ -123,11 +109,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({
-      success: true,
-      created: true,
-      isPlaceholder: true,
-    });
+    return NextResponse.json({ success: true, created: true, isPlaceholder: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ success: false, error: message }, { status: 500 });

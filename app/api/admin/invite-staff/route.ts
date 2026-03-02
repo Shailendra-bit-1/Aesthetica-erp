@@ -1,16 +1,43 @@
 import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
 import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { ROLE_PERMISSIONS, type StaffRole } from "@/lib/permissions";
 
-export async function POST(request: NextRequest) {
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+async function getSuperadminSession() {
+  const cookieStore = await cookies();
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll: () => cookieStore.getAll(),
+        setAll: () => {},
+      },
+    }
+  );
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", user.id)
+    .maybeSingle();
+  if (profile?.role !== "superadmin") return null;
+  return user;
+}
 
+export async function POST(request: NextRequest) {
+  // Auth guard: superadmin only
+  const caller = await getSuperadminSession();
+  if (!caller) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!serviceKey) {
     return NextResponse.json(
-      {
-        error:
-          "Service role key not configured. Add SUPABASE_SERVICE_ROLE_KEY to .env.local.",
-      },
+      { error: "Service role key not configured." },
       { status: 501 }
     );
   }
@@ -29,18 +56,17 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Admin client — service role key, bypasses RLS
   const admin = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     serviceKey,
     { auth: { autoRefreshToken: false, persistSession: false } }
   );
 
-  // ── 1. Create the auth user directly (account is live immediately) ──────────
+  // 1. Create the auth user
   const { data: created, error: createErr } =
     await admin.auth.admin.createUser({
       email,
-      email_confirm: true,          // confirmed — no manual signup step
+      email_confirm: true,
       user_metadata: { full_name: name, role },
     });
 
@@ -50,20 +76,15 @@ export async function POST(request: NextRequest) {
 
   const userId = created.user.id;
 
-  // ── 2. Send a "set your password" recovery email ─────────────────────────────
-  // The staff member gets an email with a link to choose their own password.
-  await admin.auth.admin.generateLink({
-    type: "recovery",
-    email,
-  });
+  // 2. Send a "set your password" recovery email
+  await admin.auth.admin.generateLink({ type: "recovery", email });
 
-  // ── 3. Create (or update) the profile with role + clinic_id ──────────────────
+  // 3. Create (or update) the profile with role + clinic_id
   const profilePayload: Record<string, unknown> = {
     id: userId,
     role,
     full_name: name,
-    email,
-    status: "active",
+    is_active: true,
   };
   if (clinicId) profilePayload.clinic_id = clinicId;
 
@@ -72,11 +93,10 @@ export async function POST(request: NextRequest) {
     .upsert(profilePayload, { onConflict: "id" });
 
   if (profileErr) {
-    // Non-fatal: log but don't fail the whole request
     console.error("[invite-staff] profile upsert error:", profileErr.message);
   }
 
-  // ── 4. Seed default permissions for this role ─────────────────────────────────
+  // 4. Seed default permissions for this role
   const defaultPerms = ROLE_PERMISSIONS[role];
   await admin.from("user_permissions").upsert(
     {
