@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import { supabaseEnv, appEnv } from "@/src/lib/config/environment";
+import { ROLE_PERMISSIONS } from "@/lib/permissions";
 
 function adminClient() {
   return createClient(supabaseEnv.url, supabaseEnv.serviceRoleKey, {
@@ -134,7 +135,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ── 5. Create staff auth users + profiles ───────────────────────────────
+    // ── 5a. Scheduler settings ──────────────────────────────────────────────
+    // Must exist for the scheduler to function (upsert requires the row).
+    await admin.from("scheduler_settings").upsert({
+      clinic_id:             clinicId,
+      enable_double_booking: false,
+      buffer_time_minutes:   15,
+      credit_lock:           true,
+      working_start:         "09:00:00",
+      working_end:           "21:00:00",
+      slot_duration_minutes: 30,
+    }, { onConflict: "clinic_id" });
+
+    // ── 5b. User permissions for clinic admin ───────────────────────────────
+    // clinic_admin gets full permissions (use_custom: false = role defaults applied)
+    await admin.from("user_permissions").upsert({
+      user_id: authUserId, use_custom: false, system_override: false,
+      view_patients: true, edit_patients: true, view_scheduler: true,
+      edit_scheduler: true, view_photos: true, edit_photos: true,
+      view_inventory: true, view_revenue: true, edit_notes: true,
+      view_medical: true, access_billing: true, delete_patient_photos: true,
+      edit_staff: true,
+    }, { onConflict: "user_id" });
+
+    // ── 5c. Create staff auth users + profiles + permissions ─────────────────
     const staffIds: string[] = [];
     for (const s of STAFF_DEFS) {
       try {
@@ -149,6 +173,13 @@ export async function POST(req: NextRequest) {
             full_name: s.full_name, role: s.role,
             is_active: true, basic_salary: s.basic_salary,
           });
+          // Seed role-default permissions (use_custom: false = role template used)
+          const roleKey = s.role as keyof typeof ROLE_PERMISSIONS;
+          const perms = ROLE_PERMISSIONS[roleKey] ?? {};
+          await admin.from("user_permissions").upsert({
+            user_id: su.user.id, use_custom: false, system_override: false,
+            ...perms,
+          }, { onConflict: "user_id" });
           staffIds.push(su.user.id);
         }
       } catch (e) { console.error(`[demo/create] staff ${s.role} error:`, e); }
