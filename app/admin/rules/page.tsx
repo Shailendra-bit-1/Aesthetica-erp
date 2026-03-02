@@ -34,6 +34,14 @@ import {
   Shield,
   Users,
   PenLine,
+  ArrowUp,
+  ArrowDown,
+  ArrowRight,
+  Activity,
+  AlertTriangle,
+  RefreshCw,
+  BookOpen,
+  ChevronRight,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -111,6 +119,59 @@ interface TriggerForm {
   label: string;
   description: string;
   icon: string;
+}
+
+interface ConditionRow {
+  id: string;
+  field_path: string;
+  operator: string;
+  value: string;
+  logic_op: "AND" | "OR";
+}
+
+interface ActionRow {
+  id: string;
+  action_type: string;
+  params: Record<string, string>;
+  on_failure: "stop" | "continue" | "dlq_notify";
+}
+
+interface AdvancedRuleFull {
+  id: string;
+  conditions: Array<{ field_path: string; operator: string; value: Record<string,unknown>; logic_op: string; sort_order: number }>;
+  actions: Array<{ action_type: string; params: Record<string,unknown>; on_failure: string; sort_order: number }>;
+}
+
+interface DLQItem {
+  id: string;
+  clinic_id: string;
+  rule_id: string;
+  action_index: number;
+  action_type: string;
+  params: Record<string,unknown> | null;
+  error_message: string;
+  trigger_payload: Record<string,unknown> | null;
+  status: "pending" | "resolved" | "dismissed";
+  retry_count: number;
+  created_at: string;
+  rule_definitions?: { name: string } | null;
+}
+
+interface ClinicOverride {
+  rule_id: string;
+  clinic_id: string;
+  is_enabled: boolean;
+}
+
+interface BuiltinTemplate {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  trigger_event: string;
+  is_featured: boolean;
+  conditions: Array<{ field_path: string; operator: string; value: Record<string,unknown>; logic_op: string }>;
+  actions: Array<{ action_type: string; params: Record<string,unknown>; on_failure: string }>;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -194,6 +255,264 @@ const EMPTY_TRIGGER_FORM: TriggerForm = {
   icon: "Zap",
 };
 
+const TRIGGER_EVENTS = [
+  { value: "appointment.completed",  label: "Appt Completed",    icon: CalendarX    },
+  { value: "appointment.booked",     label: "Appt Booked",       icon: UserCheck    },
+  { value: "appointment.noshow",     label: "No-Show",           icon: CalendarX    },
+  { value: "treatment.completed",    label: "Treatment Done",    icon: Sparkles     },
+  { value: "patient.created",        label: "New Patient",       icon: Users        },
+  { value: "patient.birthday",       label: "Patient Birthday",  icon: Gift         },
+  { value: "lead.created",           label: "New Lead",          icon: UserX        },
+  { value: "invoice.overdue",        label: "Invoice Overdue",   icon: CreditCard   },
+  { value: "invoice.paid",           label: "Invoice Paid",      icon: CreditCard   },
+  { value: "membership.expiring",    label: "Membership Expiry", icon: Star         },
+  { value: "credit.expiring",        label: "Credit Expiry",     icon: Package      },
+  { value: "inventory.low_stock",    label: "Low Stock",         icon: Package      },
+  { value: "form.submitted",         label: "Form Submitted",    icon: ClipboardList},
+];
+
+const FIELD_PATHS = [
+  { value: "treatment_name",     label: "Treatment Name"     },
+  { value: "patient.membership", label: "Patient Membership" },
+  { value: "invoice.amount",     label: "Invoice Amount"     },
+  { value: "lead.source",        label: "Lead Source"        },
+  { value: "product.quantity",   label: "Product Quantity"   },
+  { value: "appointment.type",   label: "Appointment Type"   },
+  { value: "patient.tag",        label: "Patient Tag"        },
+  { value: "lead.status",        label: "Lead Status"        },
+  { value: "no_booking_after",   label: "No Booking After"   },
+  { value: "staff.role",         label: "Staff Role"         },
+];
+
+const OPERATORS = [
+  { value: "eq",       label: "equals"       },
+  { value: "neq",      label: "not equals"   },
+  { value: "gt",       label: "greater than" },
+  { value: "lt",       label: "less than"    },
+  { value: "contains", label: "contains"     },
+  { value: "in",       label: "is one of"    },
+  { value: "between",  label: "between"      },
+  { value: "is_null",  label: "is empty"     },
+  { value: "not_null", label: "is not empty" },
+];
+
+const ADV_ACTION_TYPES = [
+  { value: "send_whatsapp", label: "Send WhatsApp",  icon: MessageSquare, paramKeys: ["message"]           },
+  { value: "send_sms",      label: "Send SMS",        icon: Smartphone,    paramKeys: ["message"]           },
+  { value: "send_email",    label: "Send Email",      icon: Mail,          paramKeys: ["subject", "body"]   },
+  { value: "nudge_staff",   label: "Notify Staff",    icon: Bell,          paramKeys: ["role", "message"]   },
+  { value: "create_task",   label: "Create Task",     icon: ClipboardList, paramKeys: ["title", "assigned_role"] },
+  { value: "update_field",  label: "Update Field",    icon: PenLine,       paramKeys: ["field_path", "value"]},
+  { value: "add_tag",       label: "Add Tag",         icon: Star,          paramKeys: ["tag"]               },
+];
+
+const CATEGORY_COLORS: Record<string, { bg: string; color: string; label: string }> = {
+  post_treatment:  { bg: "rgba(139,92,246,0.1)",  color: "#7C3AED", label: "Post-Treatment" },
+  engagement:      { bg: "rgba(34,197,94,0.1)",   color: "#16a34a", label: "Engagement"     },
+  lead_management: { bg: "rgba(59,130,246,0.1)",  color: "#2563EB", label: "Lead Mgmt"      },
+  billing:         { bg: "rgba(220,38,38,0.1)",   color: "#DC2626", label: "Billing"        },
+  staff_alert:     { bg: "rgba(234,179,8,0.1)",   color: "#ca8a04", label: "Staff Alert"    },
+};
+
+const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
+  {
+    id: "bt-001", name: "Post-Treatment WhatsApp Follow-Up",
+    description: "Send care reminder 3 days after treatment",
+    category: "post_treatment", trigger_event: "appointment.completed", is_featured: true,
+    conditions: [],
+    actions: [{ action_type: "send_whatsapp", params: { message: "Hi {patient_name}, hope you're feeling great after your {treatment_name}! Avoid direct sunlight for 72h and apply SPF 50+. See you soon! — {clinic_name}" }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-002", name: "Post-Treatment Care Email",
+    description: "Detailed aftercare instructions via email after any treatment",
+    category: "post_treatment", trigger_event: "appointment.completed", is_featured: true,
+    conditions: [],
+    actions: [{ action_type: "send_email", params: { subject: "Your Aftercare Guide from {clinic_name}", body: "Dear {patient_name},\n\nThank you for your {treatment_name} session. Please follow these care instructions:\n• Avoid direct sunlight for 72h\n• Apply SPF 50+ daily\n• Avoid makeup for 24h\n\nWarm regards,\n{clinic_name}" }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-003", name: "48h Safety Check — Post-Injection",
+    description: "Alert doctor + check in with patient 48h after botox/filler",
+    category: "post_treatment", trigger_event: "appointment.completed", is_featured: true,
+    conditions: [{ field_path: "treatment_name", operator: "contains", value: { v: "botox" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "doctor", message: "Patient {patient_name} had {treatment_name} — 48h check-in due. Review for adverse reactions." }, on_failure: "dlq_notify" },
+      { action_type: "send_whatsapp", params: { message: "Hi {patient_name}, it's been 48h since your {treatment_name}. Any redness, swelling or discomfort? Reply YES if you need us to call you. — {clinic_name}" }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-004", name: "Skin Review Reminder (28 days)",
+    description: "Monthly check-in SMS after skin treatment completion",
+    category: "post_treatment", trigger_event: "treatment.completed", is_featured: false,
+    conditions: [],
+    actions: [{ action_type: "send_sms", params: { message: "Hi {patient_name}, it's been 4 weeks since your {treatment_name}. Time for your monthly skin check! Book at {clinic_name}. Reply BOOK." }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-005", name: "Treatment Anniversary Celebration",
+    description: "1-year anniversary offer: 10% off next session",
+    category: "post_treatment", trigger_event: "treatment.completed", is_featured: false,
+    conditions: [],
+    actions: [{ action_type: "send_whatsapp", params: { message: "Hi {patient_name}! It's been one year since your {treatment_name} at {clinic_name}. Enjoy 10% off your next session — mention ANNIVERSARY10 when you book!" }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-006", name: "Birthday Greeting with Offer",
+    description: "Personalised birthday WhatsApp with 15% off voucher",
+    category: "engagement", trigger_event: "patient.birthday", is_featured: true,
+    conditions: [],
+    actions: [{ action_type: "send_whatsapp", params: { message: "Happy Birthday {patient_name}! As our gift to you, enjoy 15% off any treatment this month. Mention BDAY15 when you book. With love, {clinic_name}" }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-007", name: "Re-Engagement Campaign (60-day inactive)",
+    description: "Reconnect with patients who haven't visited in 60 days",
+    category: "engagement", trigger_event: "patient.created", is_featured: false,
+    conditions: [],
+    actions: [{ action_type: "send_sms", params: { message: "Hi {patient_name}, we miss you at {clinic_name}! Book now for a complimentary skin consultation. Reply BOOK." }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-008", name: "Appointment Reminder — 24h",
+    description: "SMS reminder with reschedule info 24 hours before appointment",
+    category: "engagement", trigger_event: "appointment.booked", is_featured: true,
+    conditions: [],
+    actions: [{ action_type: "send_sms", params: { message: "Reminder: You have an appointment at {clinic_name} tomorrow. To reschedule, reply CHANGE. See you soon!" }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-009", name: "Injectable Refill Reminder (3 months)",
+    description: "WhatsApp top-up reminder 3 months after injectable treatment",
+    category: "engagement", trigger_event: "treatment.completed", is_featured: true,
+    conditions: [{ field_path: "treatment_name", operator: "contains", value: { v: "injectable" }, logic_op: "AND" }],
+    actions: [{ action_type: "send_whatsapp", params: { message: "Hi {patient_name}! It's been 3 months since your injectable treatment. Most patients benefit from a top-up now. Ready to book? Reply YES — {clinic_name}" }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-010", name: "Package Completion Celebration",
+    description: "Congratulate patient on completing package + encourage re-booking",
+    category: "engagement", trigger_event: "credit.expiring", is_featured: false,
+    conditions: [],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Congratulations {patient_name}! You've completed your package at {clinic_name}. Ready to continue your journey? Reply REBOOK." }, on_failure: "continue" },
+      { action_type: "nudge_staff", params: { role: "front_desk", message: "Patient {patient_name} completed their package. Please follow up for re-booking." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-011", name: "New Lead → Counsellor Instant Alert",
+    description: "Instantly alert counsellor when a new lead arrives",
+    category: "lead_management", trigger_event: "lead.created", is_featured: true,
+    conditions: [],
+    actions: [{ action_type: "nudge_staff", params: { role: "counsellor", message: "New lead: {patient_name} from {lead_source}. Please call within 2 hours." }, on_failure: "dlq_notify" }],
+  },
+  {
+    id: "bt-012", name: "High-Value Lead Nurture (Meta/Google)",
+    description: "Instant WhatsApp response for paid ad leads + counsellor alert",
+    category: "lead_management", trigger_event: "lead.created", is_featured: true,
+    conditions: [{ field_path: "lead.source", operator: "in", value: { v: "meta_ads,google_ads" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Hi {patient_name}! Thank you for your interest in {clinic_name}. Our specialist would love to connect — can we schedule a free consultation this week?" }, on_failure: "continue" },
+      { action_type: "nudge_staff", params: { role: "counsellor", message: "High-value lead from paid ads: {patient_name}. Respond immediately." }, on_failure: "dlq_notify" },
+    ],
+  },
+  {
+    id: "bt-013", name: "Lead Inactivity Warning (3-day)",
+    description: "Alert front desk if lead not contacted in 3 days",
+    category: "lead_management", trigger_event: "lead.created", is_featured: false,
+    conditions: [],
+    actions: [{ action_type: "nudge_staff", params: { role: "front_desk", message: "Lead {patient_name} has not been contacted in 3 days. Please follow up immediately." }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-014", name: "Consultation Booked → Pre-Visit Prep",
+    description: "Send pre-visit checklist when consultation is booked",
+    category: "lead_management", trigger_event: "appointment.booked", is_featured: true,
+    conditions: [],
+    actions: [{ action_type: "send_whatsapp", params: { message: "Hi {patient_name}! Your consultation at {clinic_name} is confirmed. Please come with a clean face, stay hydrated, and bring a medication list. See you soon!" }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-015", name: "Lost Lead Re-engagement (30 days)",
+    description: "Re-engage lost leads with an offer after 30 days",
+    category: "lead_management", trigger_event: "lead.created", is_featured: false,
+    conditions: [{ field_path: "lead.status", operator: "eq", value: { v: "lost" }, logic_op: "AND" }],
+    actions: [{ action_type: "send_sms", params: { message: "Hi {patient_name}, we'd love another chance to help at {clinic_name}. Free consultation this month. Reply YES!" }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-016", name: "Invoice Overdue Admin Alert",
+    description: "Alert admin + gentle reminder to patient for overdue invoice",
+    category: "billing", trigger_event: "invoice.overdue", is_featured: true,
+    conditions: [],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "clinic_admin", message: "Invoice overdue for {patient_name}. Please follow up." }, on_failure: "dlq_notify" },
+      { action_type: "send_email", params: { subject: "Gentle Payment Reminder — {clinic_name}", body: "Dear {patient_name},\n\nThis is a gentle reminder that your invoice from {clinic_name} is now due. Please contact us to arrange payment.\n\nWarm regards,\n{clinic_name}" }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-017", name: "Membership Expiring Soon (7 days)",
+    description: "Prompt member to renew 7 days before expiry",
+    category: "billing", trigger_event: "membership.expiring", is_featured: true,
+    conditions: [],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Hi {patient_name}! Your membership at {clinic_name} expires in 7 days. Renew now to keep your benefits. Reply RENEW!" }, on_failure: "continue" },
+      { action_type: "nudge_staff", params: { role: "front_desk", message: "Membership renewal due: {patient_name}. Expires in 7 days." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-018", name: "Credit Package Near Expiry (14 days)",
+    description: "SMS reminder when credit package has 14 days remaining",
+    category: "billing", trigger_event: "credit.expiring", is_featured: false,
+    conditions: [],
+    actions: [{ action_type: "send_sms", params: { message: "Hi {patient_name}, your credit package at {clinic_name} expires in 14 days. Book now! Reply BOOK." }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-019", name: "High Invoice Approval Required",
+    description: "Flag large invoices (>₹50,000) to clinic admin for review",
+    category: "billing", trigger_event: "invoice.paid", is_featured: false,
+    conditions: [{ field_path: "invoice.amount", operator: "gt", value: { v: "50000" }, logic_op: "AND" }],
+    actions: [{ action_type: "nudge_staff", params: { role: "clinic_admin", message: "High-value invoice paid by {patient_name}. Please review for compliance." }, on_failure: "dlq_notify" }],
+  },
+  {
+    id: "bt-020", name: "Wallet Top-Up Thank You",
+    description: "Send thank you WhatsApp with balance after wallet top-up",
+    category: "billing", trigger_event: "invoice.paid", is_featured: false,
+    conditions: [],
+    actions: [{ action_type: "send_whatsapp", params: { message: "Thank you {patient_name}! Your payment has been received at {clinic_name}. Enjoy your treatments!" }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-021", name: "Appointment No-Show Follow-Up",
+    description: "Alert front desk + SMS patient when they no-show",
+    category: "staff_alert", trigger_event: "appointment.noshow", is_featured: true,
+    conditions: [],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "front_desk", message: "No-show: {patient_name} missed their appointment. Please call and reschedule." }, on_failure: "dlq_notify" },
+      { action_type: "send_sms", params: { message: "Hi {patient_name}, we missed you at {clinic_name} today! Please call us to reschedule." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-022", name: "Low Stock Critical Alert",
+    description: "Alert clinic admin when product drops below threshold",
+    category: "staff_alert", trigger_event: "inventory.low_stock", is_featured: true,
+    conditions: [{ field_path: "product.quantity", operator: "lt", value: { v: "10" }, logic_op: "AND" }],
+    actions: [{ action_type: "nudge_staff", params: { role: "clinic_admin", message: "Low stock alert: {product_name} has only {quantity} units. Please reorder immediately." }, on_failure: "dlq_notify" }],
+  },
+  {
+    id: "bt-023", name: "VIP Patient Appointment → Doctor Alert",
+    description: "Pre-alert doctor when VIP membership patient books",
+    category: "staff_alert", trigger_event: "appointment.booked", is_featured: false,
+    conditions: [{ field_path: "patient.membership", operator: "eq", value: { v: "VIP" }, logic_op: "AND" }],
+    actions: [{ action_type: "nudge_staff", params: { role: "doctor", message: "VIP patient {patient_name} has booked. Please review their history and prepare a personalised consultation." }, on_failure: "continue" }],
+  },
+  {
+    id: "bt-024", name: "New Patient First Visit Welcome Protocol",
+    description: "Welcome new patients + alert front desk with intake form",
+    category: "staff_alert", trigger_event: "patient.created", is_featured: true,
+    conditions: [],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "front_desk", message: "New patient: {patient_name}. Please ensure intake form is completed before first visit." }, on_failure: "continue" },
+      { action_type: "send_whatsapp", params: { message: "Welcome to {clinic_name}, {patient_name}! Please complete your intake form before your first visit. See you soon!" }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-025", name: "Post-Consultation No-Booking Alert",
+    description: "Alert counsellor when patient leaves without rebooking",
+    category: "staff_alert", trigger_event: "appointment.completed", is_featured: false,
+    conditions: [{ field_path: "no_booking_after", operator: "eq", value: { v: "true" }, logic_op: "AND" }],
+    actions: [{ action_type: "nudge_staff", params: { role: "counsellor", message: "{patient_name} did not rebook after consultation. Please follow up within 24h." }, on_failure: "continue" }],
+  },
+];
+
 // ── Template preview ──────────────────────────────────────────────────────────
 
 /** H-10 fix: strip any HTML tags before the template is used in external messages */
@@ -243,13 +562,42 @@ export default function RulesPage() {
   useEffect(() => { setMounted(true); }, []);
 
   // ── Advanced Rules tab state ────────────────────────────────────────────────
-  const [rulesTab, setRulesTab] = useState<"quick" | "advanced" | "templates">("quick");
-  const [advRules, setAdvRules] = useState<Array<{ id: string; name: string; category: string; trigger_event: string; priority: number; run_mode: string; is_active: boolean; created_at: string }>>([]);
-  const [templates, setTemplates] = useState<Array<{ id: string; name: string; description: string | null; category: string; trigger_event: string; is_featured: boolean }>>([]);
+  const [rulesTab, setRulesTab] = useState<"quick" | "workflows" | "templates" | "analytics" | "dlq">("quick");
+  const [advRules, setAdvRules] = useState<Array<{ id: string; name: string; category: string; trigger_event: string; priority: number; run_mode: string; is_active: boolean; workflow_status: string; description: string | null; created_at: string }>>([]);
   const [advLoading, setAdvLoading] = useState(false);
   const [advDrawer, setAdvDrawer] = useState(false);
   const [advForm, setAdvForm] = useState({ name: "", category: "automation", trigger_event: "", priority: "10", run_mode: "async" });
   const [advSaving, setAdvSaving] = useState(false);
+
+  // Workflow designer state
+  const [advStep,           setAdvStep]          = useState<1|2|3>(1);
+  const [advConditions,     setAdvConditions]     = useState<ConditionRow[]>([]);
+  const [advActions,        setAdvActions]        = useState<ActionRow[]>([]);
+  const [advWorkflowStatus, setAdvWorkflowStatus] = useState<"draft"|"live">("live");
+  const [advDescription,    setAdvDescription]    = useState("");
+
+  // Expandable rule detail
+  const [expandedRuleId,   setExpandedRuleId]  = useState<string|null>(null);
+  const [ruleDetails,      setRuleDetails]     = useState<Record<string, AdvancedRuleFull>>({});
+  const [detailLoading,    setDetailLoading]   = useState<string|null>(null);
+
+  // Branch overrides (superadmin)
+  const [overridesOpen,    setOverridesOpen]   = useState<string|null>(null);
+  const [overrides,        setOverrides]       = useState<ClinicOverride[]>([]);
+  const [overridesLoading, setOverridesLoading]= useState(false);
+
+  // DLQ
+  const [dlqItems,   setDlqItems]   = useState<DLQItem[]>([]);
+  const [dlqLoading, setDlqLoading] = useState(false);
+
+  // Analytics
+  const [analyticsRuleId, setAnalyticsRuleId] = useState<string>("");
+  const [execLogs,        setExecLogs]        = useState<Array<{id:string; result:string; executed_at:string; duration_ms:number|null}>>([]);
+  const [actionLogs,      setActionLogs]      = useState<Array<{action_index:number; result:string; action_type:string}>>([]);
+  const [analyticsLoading,setAnalyticsLoading]= useState(false);
+
+  // Template category filter
+  const [tmplCategory, setTmplCategory] = useState<string>("all");
 
   // ── Fetch data ─────────────────────────────────────────────────────────────
 
@@ -297,40 +645,181 @@ export default function RulesPage() {
     setAdvLoading(false);
   }, [profile]);
 
-  const fetchTemplates = useCallback(async () => {
-    const { data } = await supabase.from("rule_templates").select("*").order("is_featured", { ascending: false });
-    setTemplates(data || []);
+  const fetchDLQ = useCallback(async () => {
+    if (!profile?.clinic_id) return;
+    setDlqLoading(true);
+    const { data } = await supabase
+      .from("workflow_dlq")
+      .select("*, rule_definitions(name)")
+      .eq("clinic_id", profile.clinic_id)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false });
+    setDlqItems((data || []) as DLQItem[]);
+    setDlqLoading(false);
+  }, [profile]);
+
+  const fetchAnalytics = useCallback(async (ruleId: string) => {
+    if (!ruleId) return;
+    setAnalyticsLoading(true);
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const [{ data: eLogs }, { data: aLogs }] = await Promise.all([
+      supabase.from("rule_execution_log").select("id,result,executed_at,duration_ms")
+        .eq("rule_id", ruleId).gte("executed_at", thirtyDaysAgo)
+        .order("executed_at", { ascending: false }),
+      supabase.from("workflow_action_log").select("action_index,result,action_type")
+        .eq("rule_id", ruleId).gte("executed_at", thirtyDaysAgo),
+    ]);
+    setExecLogs((eLogs || []) as typeof execLogs);
+    setActionLogs((aLogs || []) as typeof actionLogs);
+    setAnalyticsLoading(false);
   }, []);
 
-  useEffect(() => {
-    if (rulesTab === "advanced") fetchAdvancedRules();
-    if (rulesTab === "templates") fetchTemplates();
-  }, [rulesTab, fetchAdvancedRules, fetchTemplates]);
+  const loadRuleDetail = useCallback(async (ruleId: string) => {
+    if (ruleDetails[ruleId]) return;
+    setDetailLoading(ruleId);
+    const [{ data: conds }, { data: acts }] = await Promise.all([
+      supabase.from("rule_conditions").select("*").eq("rule_id", ruleId).order("sort_order"),
+      supabase.from("rule_actions").select("*").eq("rule_id", ruleId).order("sort_order"),
+    ]);
+    setRuleDetails(prev => ({ ...prev, [ruleId]: { id: ruleId, conditions: conds || [], actions: acts || [] } }));
+    setDetailLoading(null);
+  }, [ruleDetails]);
 
-  const saveAdvancedRule = async () => {
-    if (!profile?.clinic_id || !advForm.name || !advForm.trigger_event) return;
-    setAdvSaving(true);
-    await supabase.from("rule_definitions").insert({
-      clinic_id: profile.clinic_id, name: advForm.name,
-      category: advForm.category, trigger_event: advForm.trigger_event,
-      priority: parseInt(advForm.priority) || 10, run_mode: advForm.run_mode,
-      created_by: profile.id,
-    });
-    setAdvSaving(false);
-    setAdvDrawer(false);
-    setAdvForm({ name: "", category: "automation", trigger_event: "", priority: "10", run_mode: "async" });
-    fetchAdvancedRules();
+  const loadOverrides = useCallback(async (ruleId: string) => {
+    setOverridesLoading(true);
+    const { data } = await supabase.from("workflow_clinic_overrides")
+      .select("*").eq("rule_id", ruleId);
+    setOverrides((data || []) as ClinicOverride[]);
+    setOverridesLoading(false);
+  }, []);
+
+  const toggleOverride = async (ruleId: string, clinicId: string, currentEnabled: boolean) => {
+    await supabase.from("workflow_clinic_overrides").upsert(
+      { rule_id: ruleId, clinic_id: clinicId, is_enabled: !currentEnabled, updated_by: profile?.id },
+      { onConflict: "rule_id,clinic_id" }
+    );
+    loadOverrides(ruleId);
   };
 
-  const useTemplateRule = async (tmpl: typeof templates[0]) => {
+  useEffect(() => {
+    if (rulesTab === "workflows") fetchAdvancedRules();
+    if (rulesTab === "dlq") fetchDLQ();
+  }, [rulesTab, fetchAdvancedRules, fetchDLQ]);
+
+  const saveAdvancedRule = async (status: "draft"|"live") => {
+    if (!profile?.clinic_id || !advForm.name || !advForm.trigger_event) return;
+    setAdvSaving(true);
+    const { data: rule, error } = await supabase.from("rule_definitions").insert({
+      clinic_id: profile.clinic_id,
+      name: advForm.name,
+      description: advDescription || null,
+      category: advForm.category,
+      trigger_event: advForm.trigger_event,
+      priority: parseInt(advForm.priority) || 10,
+      run_mode: advForm.run_mode,
+      workflow_status: status,
+      is_active: status === "live",
+      created_by: profile.id,
+    }).select("id").single();
+
+    if (!error && rule) {
+      if (advConditions.length > 0) {
+        await supabase.from("rule_conditions").insert(
+          advConditions.map((c, i) => ({
+            rule_id: rule.id,
+            field_path: c.field_path,
+            operator: c.operator,
+            value: { v: c.value },
+            logic_op: c.logic_op,
+            sort_order: i,
+          }))
+        );
+      }
+      if (advActions.length > 0) {
+        await supabase.from("rule_actions").insert(
+          advActions.map((a, i) => ({
+            rule_id: rule.id,
+            action_type: a.action_type,
+            params: a.params,
+            on_failure: a.on_failure,
+            sort_order: i,
+          }))
+        );
+      }
+      toast.success(status === "draft" ? "Saved as draft." : "Workflow published live.");
+      setAdvDrawer(false);
+      setAdvStep(1);
+      setAdvConditions([]);
+      setAdvActions([]);
+      setAdvDescription("");
+      setAdvWorkflowStatus("live");
+      setAdvForm({ name: "", category: "automation", trigger_event: "", priority: "10", run_mode: "async" });
+      fetchAdvancedRules();
+    } else if (error) {
+      toast.error(error.message);
+    }
+    setAdvSaving(false);
+  };
+
+  const useBuiltinTemplate = async (tmpl: BuiltinTemplate) => {
     if (!profile?.clinic_id) return;
-    await supabase.from("rule_definitions").insert({
-      clinic_id: profile.clinic_id, name: tmpl.name,
-      category: tmpl.category, trigger_event: tmpl.trigger_event,
-      priority: 10, run_mode: "async", created_by: profile.id,
+    const { data: rule, error } = await supabase.from("rule_definitions").insert({
+      clinic_id: profile.clinic_id,
+      name: tmpl.name,
+      description: tmpl.description,
+      category: tmpl.category,
+      trigger_event: tmpl.trigger_event,
+      priority: 10,
+      run_mode: "async",
+      workflow_status: "live",
+      is_active: true,
+      created_by: profile.id,
+    }).select("id").single();
+
+    if (!error && rule) {
+      if (tmpl.conditions.length > 0) {
+        await supabase.from("rule_conditions").insert(
+          tmpl.conditions.map((c, i) => ({ rule_id: rule.id, ...c, sort_order: i }))
+        );
+      }
+      if (tmpl.actions.length > 0) {
+        await supabase.from("rule_actions").insert(
+          tmpl.actions.map((a, i) => ({ rule_id: rule.id, ...a, sort_order: i }))
+        );
+      }
+      setRulesTab("workflows");
+      fetchAdvancedRules();
+      toast.success(`"${tmpl.name}" added as a live workflow.`);
+    } else if (error) {
+      toast.error(error.message);
+    }
+  };
+
+  const saveRuleAsTemplate = async (ruleId: string, ruleName: string) => {
+    const detail = ruleDetails[ruleId];
+    if (!detail) { toast.error("Load rule details first"); return; }
+    const { error } = await supabase.from("rule_templates").insert({
+      name: ruleName,
+      description: "",
+      category: "automation",
+      trigger_event: advRules.find(r => r.id === ruleId)?.trigger_event || "",
+      conditions: detail.conditions,
+      actions: detail.actions,
+      is_featured: false,
     });
-    setRulesTab("advanced");
-    toast.success(`Rule "${tmpl.name}" added from template`);
+    if (error) toast.error(error.message);
+    else toast.success("Saved as template.");
+  };
+
+  const promoteToLive = async (ruleId: string) => {
+    const { error } = await supabase.from("rule_definitions")
+      .update({ workflow_status: "live", is_active: true })
+      .eq("id", ruleId);
+    if (error) toast.error(error.message);
+    else {
+      toast.success("Workflow promoted to live.");
+      fetchAdvancedRules();
+    }
   };
 
   // ── Rule CRUD ──────────────────────────────────────────────────────────────
@@ -673,11 +1162,22 @@ export default function RulesPage() {
 
       {/* ── Tab switcher ── */}
       <div className="flex gap-1 mb-6 p-1 rounded-xl w-fit" style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.15)" }}>
-        {(["quick", "advanced", "templates"] as const).map(t => (
-          <button key={t} onClick={() => setRulesTab(t)}
-            className="px-5 py-2 rounded-lg text-sm font-medium transition-all"
-            style={rulesTab === t ? { background: "var(--gold)", color: "#fff", fontFamily: "Georgia, serif" } : { color: "rgba(197,160,89,0.7)" }}>
-            {t === "quick" ? "Quick Rules" : t === "advanced" ? "Advanced Rules" : "Templates"}
+        {([
+          { key: "quick",     label: "Quick Rules" },
+          { key: "workflows", label: "Workflows"   },
+          { key: "templates", label: "Templates"   },
+          { key: "analytics", label: "Analytics"   },
+          { key: "dlq",       label: "Dead Letter Queue", badge: dlqItems.filter(i=>i.status==="pending").length },
+        ] as const).map(t => (
+          <button key={t.key} onClick={() => setRulesTab(t.key)}
+            className="px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-1.5"
+            style={rulesTab === t.key ? { background: "var(--gold)", color: "#fff", fontFamily: "Georgia,serif" } : { color: "rgba(197,160,89,0.7)" }}>
+            {t.label}
+            {"badge" in t && t.badge > 0 && (
+              <span className="text-xs px-1.5 py-0.5 rounded-full font-bold" style={{ background: "#DC2626", color: "#fff", fontSize: 10 }}>
+                {t.badge}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -693,111 +1193,463 @@ export default function RulesPage() {
         </div>
       )}
 
-      {/* ── ADVANCED RULES TAB ── */}
-      {rulesTab === "advanced" && (
+      {/* ── WORKFLOWS TAB ── */}
+      {rulesTab === "workflows" && (
         <div>
           <div className="flex justify-between items-center mb-5">
-            <p className="text-sm" style={{ color: "#9C9584" }}>Rule definitions with condition trees and ordered action chains</p>
+            <p className="text-sm" style={{ color: "#9C9584" }}>Visual workflows with condition trees and ordered action chains</p>
             {isAdmin && (
-              <button onClick={() => setAdvDrawer(true)}
+              <button onClick={() => { setAdvStep(1); setAdvDrawer(true); }}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white"
                 style={{ background: "linear-gradient(135deg, #C5A059, #A8853A)" }}>
-                <Plus size={15} /> New Advanced Rule
+                <Plus size={15} /> New Workflow Rule
               </button>
             )}
           </div>
+
           {advLoading ? (
             <div className="space-y-3 animate-pulse">{[1,2,3].map(n => <div key={n} className="h-20 rounded-xl" style={{ background: "rgba(197,160,89,0.06)" }} />)}</div>
           ) : advRules.length === 0 ? (
             <div className="rounded-xl p-12 text-center" style={{ background: "white", border: "1px dashed rgba(197,160,89,0.3)" }}>
               <Zap size={28} className="mx-auto mb-2" style={{ color: "rgba(197,160,89,0.4)" }} />
-              <p className="font-medium" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>No advanced rules yet</p>
-              <p className="text-sm mt-1" style={{ color: "#9C9584" }}>Create rules with multi-condition trees and chained actions</p>
+              <p className="font-medium" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>No workflows yet</p>
+              <p className="text-sm mt-1" style={{ color: "#9C9584" }}>Create workflows with multi-condition trees and chained actions</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {advRules.map(r => (
-                <div key={r.id} className="rounded-xl p-4" style={{ background: "white", border: "1px solid rgba(197,160,89,0.2)" }}>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "rgba(197,160,89,0.1)" }}>
-                        <Zap size={14} style={{ color: "var(--gold)" }} />
+              {advRules.map(r => {
+                const TrigEvt = TRIGGER_EVENTS.find(t => t.value === r.trigger_event);
+                const TIcon = TrigEvt?.icon ?? Zap;
+                const isExpanded = expandedRuleId === r.id;
+                const detail = ruleDetails[r.id];
+                const catColor = CATEGORY_COLORS[r.category] ?? { bg: "rgba(197,160,89,0.1)", color: "#A8853A", label: r.category };
+                return (
+                  <div key={r.id} className="rounded-xl overflow-hidden" style={{ background: "white", border: "1px solid rgba(197,160,89,0.2)" }}>
+                    {/* Card header */}
+                    <div className="flex items-center gap-3 p-4">
+                      <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: "rgba(197,160,89,0.1)" }}>
+                        <TIcon size={15} style={{ color: "var(--gold)" }} />
                       </div>
-                      <div>
-                        <p className="font-semibold text-sm" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>{r.name}</p>
-                        <p className="text-xs mt-0.5" style={{ color: "#9C9584" }}>{r.category} · {r.trigger_event} · priority {r.priority} · {r.run_mode}</p>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-semibold text-sm" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>{r.name}</p>
+                          <span className="text-xs px-2 py-0.5 rounded-full font-medium"
+                            style={{ background: r.workflow_status === "live" ? "rgba(34,197,94,0.12)" : "rgba(107,114,128,0.1)", color: r.workflow_status === "live" ? "#16a34a" : "#6b7280" }}>
+                            {r.workflow_status === "live" ? "Live" : "Draft"}
+                          </span>
+                          <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: catColor.bg, color: catColor.color }}>
+                            {catColor.label}
+                          </span>
+                        </div>
+                        <p className="text-xs mt-0.5" style={{ color: "#9C9584" }}>
+                          {r.trigger_event} · priority {r.priority} · {r.run_mode}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <button onClick={async () => {
+                          const next = !r.is_active;
+                          await supabase.from("rule_definitions").update({ is_active: next }).eq("id", r.id);
+                          fetchAdvancedRules();
+                        }}>
+                          {r.is_active ? <ToggleRight size={22} style={{ color: "var(--gold)" }} /> : <ToggleLeft size={22} style={{ color: "#9C9584" }} />}
+                        </button>
+                        {isAdmin && (
+                          <button onClick={async () => {
+                            if (!confirm("Delete this workflow?")) return;
+                            await supabase.from("rule_definitions").delete().eq("id", r.id);
+                            fetchAdvancedRules();
+                            toast.success("Workflow deleted.");
+                          }} className="p-1.5 rounded-lg" style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444" }}>
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                        <button onClick={() => {
+                          const next = isExpanded ? null : r.id;
+                          setExpandedRuleId(next);
+                          if (next) { loadRuleDetail(next); if (isSuperAdmin) loadOverrides(next); }
+                        }} className="p-1.5 rounded-lg" style={{ background: "rgba(197,160,89,0.08)", color: "var(--gold)" }}>
+                          <ChevronDown size={14} style={{ transform: isExpanded ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+                        </button>
                       </div>
                     </div>
-                    <span className="text-xs px-2 py-1 rounded-full font-medium" style={{ background: r.is_active ? "rgba(34,197,94,0.12)" : "rgba(107,114,128,0.12)", color: r.is_active ? "#16a34a" : "#6b7280" }}>
-                      {r.is_active ? "Active" : "Inactive"}
-                    </span>
+
+                    {/* Expanded detail */}
+                    {isExpanded && (
+                      <div className="px-4 pb-4 border-t" style={{ borderColor: "rgba(197,160,89,0.12)" }}>
+                        {detailLoading === r.id ? (
+                          <p className="text-xs py-3" style={{ color: "#9C9584" }}>Loading details…</p>
+                        ) : detail ? (
+                          <>
+                            {/* IF conditions */}
+                            <div className="mt-3 mb-2">
+                              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#7C6D3E" }}>IF</p>
+                              {detail.conditions.length === 0 ? (
+                                <span className="text-xs px-2 py-1 rounded" style={{ background: "rgba(197,160,89,0.06)", color: "#9C9584" }}>Always runs</span>
+                              ) : (
+                                <div className="flex flex-wrap gap-2">
+                                  {detail.conditions.map((c, i) => (
+                                    <span key={i} className="text-xs px-2 py-1 rounded-lg inline-flex items-center gap-1" style={{ background: "rgba(197,160,89,0.08)", color: "#7C6D3E" }}>
+                                      {i > 0 && <span className="font-bold mr-1" style={{ color: "var(--gold)" }}>{c.logic_op}</span>}
+                                      {c.field_path} {c.operator} {String((c.value as Record<string,unknown>)?.v ?? "")}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            {/* THEN actions */}
+                            <div className="mb-3">
+                              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "#7C6D3E" }}>THEN</p>
+                              {detail.actions.length === 0 ? (
+                                <span className="text-xs" style={{ color: "#9C9584" }}>No actions defined</span>
+                              ) : (
+                                <div className="space-y-1">
+                                  {detail.actions.map((a, i) => {
+                                    const at = ADV_ACTION_TYPES.find(t => t.value === a.action_type);
+                                    const msgKey = Object.keys(a.params || {}).find(k => k === "message" || k === "body");
+                                    const preview = msgKey ? String((a.params as Record<string,unknown>)[msgKey]).slice(0, 60) + "…" : "";
+                                    return (
+                                      <div key={i} className="flex items-start gap-2 text-xs" style={{ color: "#4b5563" }}>
+                                        <span className="font-bold" style={{ color: "var(--gold)", minWidth: 16 }}>{i+1}.</span>
+                                        <ArrowRight size={12} className="mt-0.5 flex-shrink-0" style={{ color: "var(--gold)" }} />
+                                        <span className="font-medium">{at?.label ?? a.action_type}</span>
+                                        {preview && <span style={{ color: "#9C9584" }}>{preview}</span>}
+                                        {a.on_failure === "dlq_notify" && (
+                                          <span className="px-1.5 py-0.5 rounded text-xs" style={{ background: "rgba(234,179,8,0.1)", color: "#ca8a04" }}>DLQ</span>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                            {/* Action buttons */}
+                            <div className="flex flex-wrap gap-2 pt-2 border-t" style={{ borderColor: "rgba(197,160,89,0.12)" }}>
+                              {r.workflow_status === "draft" && (
+                                <button onClick={() => promoteToLive(r.id)}
+                                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium text-white"
+                                  style={{ background: "linear-gradient(135deg,#C5A059,#A8853A)" }}>
+                                  <ArrowUp size={12} /> Promote to Live
+                                </button>
+                              )}
+                              <button onClick={() => saveRuleAsTemplate(r.id, r.name)}
+                                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium"
+                                style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)" }}>
+                                <Star size={12} /> Save as Template
+                              </button>
+                              {isSuperAdmin && (
+                                <button onClick={() => { setOverridesOpen(overridesOpen === r.id ? null : r.id); if (overridesOpen !== r.id) loadOverrides(r.id); }}
+                                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium"
+                                  style={{ background: "rgba(59,130,246,0.1)", color: "#2563EB" }}>
+                                  <Building2 size={12} /> Branch Overrides
+                                </button>
+                              )}
+                            </div>
+                            {/* Branch overrides panel */}
+                            {isSuperAdmin && overridesOpen === r.id && (
+                              <div className="mt-3 rounded-xl p-3" style={{ background: "rgba(59,130,246,0.05)", border: "1px solid rgba(59,130,246,0.15)" }}>
+                                <p className="text-xs font-semibold mb-2" style={{ color: "#2563EB" }}>Per-Clinic Activation</p>
+                                {overridesLoading ? <p className="text-xs" style={{ color: "#9C9584" }}>Loading…</p> : (
+                                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                                    {clinics.map(c => {
+                                      const ov = overrides.find(o => o.clinic_id === c.id);
+                                      const enabled = ov ? ov.is_enabled : true;
+                                      return (
+                                        <div key={c.id} className="flex items-center justify-between py-1">
+                                          <span className="text-xs" style={{ color: "#1C1917" }}>{c.name}</span>
+                                          <button onClick={() => toggleOverride(r.id, c.id, enabled)}>
+                                            {enabled ? <ToggleRight size={18} style={{ color: "var(--gold)" }} /> : <ToggleLeft size={18} style={{ color: "#9C9584" }} />}
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
-          {/* Advanced Rule Drawer */}
+          {/* 3-Step Workflow Designer Drawer */}
           {advDrawer && mounted && createPortal(
             <div className="fixed inset-0 z-50 flex" style={{ background: "rgba(0,0,0,0.4)" }}>
-              <div className="flex-1" onClick={() => setAdvDrawer(false)} />
-              <div className="w-[460px] h-full overflow-y-auto flex flex-col" style={{ background: "#fff" }}>
-                <div className="flex justify-between items-center px-6 py-5" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
-                  <h3 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>New Advanced Rule</h3>
-                  <button onClick={() => setAdvDrawer(false)} className="p-2 rounded-lg hover:bg-gray-100"><X size={18} /></button>
+              <div className="flex-1" onClick={() => { setAdvDrawer(false); setAdvStep(1); setAdvConditions([]); setAdvActions([]); }} />
+              <div className="w-[580px] h-full overflow-y-auto flex flex-col" style={{ background: "#FDFCFA", borderLeft: "1px solid rgba(197,160,89,0.2)" }}>
+                {/* Header */}
+                <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
+                  <div>
+                    <h3 className="text-base font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>New Workflow Rule</h3>
+                    <p className="text-xs mt-0.5" style={{ color: "#9C9584" }}>Define trigger, conditions, and chained actions</p>
+                  </div>
+                  <button onClick={() => { setAdvDrawer(false); setAdvStep(1); setAdvConditions([]); setAdvActions([]); }} className="p-2 rounded-lg hover:bg-gray-100"><X size={18} /></button>
                 </div>
-                <div className="flex-1 p-6 space-y-4">
-                  <div>
-                    <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Rule Name *</label>
-                    <input value={advForm.name} onChange={e => setAdvForm(f => ({ ...f, name: e.target.value }))}
-                      placeholder="e.g. VIP Patient Follow-up" className="w-full px-3 py-2 rounded-lg border outline-none text-sm"
-                      style={{ borderColor: "rgba(197,160,89,0.3)" }} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Category</label>
-                      <select value={advForm.category} onChange={e => setAdvForm(f => ({ ...f, category: e.target.value }))}
-                        className="w-full px-3 py-2 rounded-lg border outline-none text-sm bg-white"
-                        style={{ borderColor: "rgba(197,160,89,0.3)" }}>
-                        <option value="automation">Automation</option>
-                        <option value="validation">Validation</option>
-                        <option value="calculation">Calculation</option>
-                        <option value="notification">Notification</option>
-                      </select>
+
+                {/* Step indicator */}
+                <div className="flex items-center gap-0 px-6 py-3" style={{ borderBottom: "1px solid rgba(197,160,89,0.1)", background: "rgba(197,160,89,0.03)" }}>
+                  {([["1","Trigger"],["2","Conditions"],["3","Actions"]] as const).map(([n, label], idx) => (
+                    <div key={n} className="flex items-center">
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
+                          style={{ background: advStep >= parseInt(n) ? "var(--gold)" : "rgba(197,160,89,0.15)", color: advStep >= parseInt(n) ? "#fff" : "#9C9584" }}>
+                          {n}
+                        </div>
+                        <span className="text-xs font-medium" style={{ color: advStep >= parseInt(n) ? "#7C6D3E" : "#9C9584" }}>{label}</span>
+                      </div>
+                      {idx < 2 && <div className="w-8 h-px mx-2" style={{ background: advStep > idx + 1 ? "var(--gold)" : "rgba(197,160,89,0.2)" }} />}
                     </div>
-                    <div>
-                      <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Run Mode</label>
-                      <select value={advForm.run_mode} onChange={e => setAdvForm(f => ({ ...f, run_mode: e.target.value }))}
-                        className="w-full px-3 py-2 rounded-lg border outline-none text-sm bg-white"
-                        style={{ borderColor: "rgba(197,160,89,0.3)" }}>
-                        <option value="async">Async</option>
-                        <option value="sync">Sync</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Trigger Event *</label>
-                    <input value={advForm.trigger_event} onChange={e => setAdvForm(f => ({ ...f, trigger_event: e.target.value }))}
-                      placeholder="e.g. patient.created, appointment.completed" className="w-full px-3 py-2 rounded-lg border outline-none text-sm"
-                      style={{ borderColor: "rgba(197,160,89,0.3)" }} />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Priority (lower = higher priority)</label>
-                    <input type="number" value={advForm.priority} onChange={e => setAdvForm(f => ({ ...f, priority: e.target.value }))}
-                      className="w-full px-3 py-2 rounded-lg border outline-none text-sm"
-                      style={{ borderColor: "rgba(197,160,89,0.3)" }} />
-                  </div>
-                  <div className="rounded-lg p-3 text-xs" style={{ background: "rgba(197,160,89,0.06)", color: "#9C9584", border: "1px solid rgba(197,160,89,0.15)" }}>
-                    After saving, add conditions and actions from the rule detail view.
-                  </div>
+                  ))}
                 </div>
+
+                {/* Body */}
+                <div className="flex-1 p-6 space-y-5">
+
+                  {/* Step 1: Trigger & Basics */}
+                  {advStep === 1 && (
+                    <>
+                      <div>
+                        <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Rule Name *</label>
+                        <input value={advForm.name} onChange={e => setAdvForm(f => ({ ...f, name: e.target.value }))}
+                          placeholder="e.g. Post-injection safety check" className="w-full px-3 py-2.5 rounded-xl border outline-none text-sm"
+                          style={{ borderColor: "rgba(197,160,89,0.3)", background: "white", color: "#1C1917" }} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Description</label>
+                        <textarea value={advDescription} onChange={e => setAdvDescription(e.target.value)}
+                          rows={2} placeholder="Optional — explain when this workflow fires"
+                          className="w-full px-3 py-2 rounded-xl border outline-none text-sm resize-none"
+                          style={{ borderColor: "rgba(197,160,89,0.3)", background: "white", color: "#1C1917" }} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium mb-2" style={{ color: "#4b5563" }}>Workflow Status</label>
+                        <div className="flex gap-2">
+                          {(["draft","live"] as const).map(s => (
+                            <button key={s} onClick={() => setAdvWorkflowStatus(s)}
+                              className="px-4 py-1.5 rounded-lg text-sm font-medium border transition-all"
+                              style={{ background: advWorkflowStatus === s ? (s === "live" ? "var(--gold)" : "#6b7280") : "white", color: advWorkflowStatus === s ? "#fff" : "#6b7280", borderColor: advWorkflowStatus === s ? "transparent" : "rgba(197,160,89,0.3)" }}>
+                              {s === "draft" ? "Draft" : "Live"}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium mb-2" style={{ color: "#4b5563" }}>Trigger Event *</label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {TRIGGER_EVENTS.map(t => {
+                            const Icon = t.icon;
+                            const active = advForm.trigger_event === t.value;
+                            return (
+                              <button key={t.value} onClick={() => setAdvForm(f => ({ ...f, trigger_event: t.value }))}
+                                className="flex flex-col items-center gap-1 p-2.5 rounded-xl text-xs text-center transition-all"
+                                style={{ border: active ? "1.5px solid var(--gold)" : "1px solid rgba(197,160,89,0.2)", background: active ? "rgba(197,160,89,0.1)" : "white", color: active ? "#7C6D3E" : "#9C9584" }}>
+                                <Icon size={16} style={{ color: active ? "var(--gold)" : "#9C9584" }} />
+                                {t.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Category</label>
+                          <select value={advForm.category} onChange={e => setAdvForm(f => ({ ...f, category: e.target.value }))}
+                            className="w-full px-3 py-2 rounded-xl border outline-none text-sm bg-white" style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                            <option value="automation">Automation</option>
+                            <option value="validation">Validation</option>
+                            <option value="notification">Notification</option>
+                            <option value="post_treatment">Post-Treatment</option>
+                            <option value="engagement">Engagement</option>
+                            <option value="lead_management">Lead Mgmt</option>
+                            <option value="billing">Billing</option>
+                            <option value="staff_alert">Staff Alert</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Run Mode</label>
+                          <select value={advForm.run_mode} onChange={e => setAdvForm(f => ({ ...f, run_mode: e.target.value }))}
+                            className="w-full px-3 py-2 rounded-xl border outline-none text-sm bg-white" style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                            <option value="async">Async</option>
+                            <option value="sync">Sync</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Priority</label>
+                          <input type="number" value={advForm.priority} onChange={e => setAdvForm(f => ({ ...f, priority: e.target.value }))}
+                            className="w-full px-3 py-2 rounded-xl border outline-none text-sm" style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Step 2: Conditions */}
+                  {advStep === 2 && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-semibold" style={{ color: "#1C1917" }}>IF Conditions</p>
+                          <p className="text-xs mt-0.5" style={{ color: "#9C9584" }}>Leave empty to run on every trigger event</p>
+                        </div>
+                        <button onClick={() => setAdvConditions(cs => [...cs, { id: crypto.randomUUID(), field_path: "", operator: "eq", value: "", logic_op: "AND" }])}
+                          className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium"
+                          style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)" }}>
+                          <Plus size={12} /> Add Condition
+                        </button>
+                      </div>
+                      {advConditions.length === 0 ? (
+                        <div className="rounded-xl p-6 text-center" style={{ background: "rgba(197,160,89,0.04)", border: "1px dashed rgba(197,160,89,0.25)" }}>
+                          <p className="text-sm" style={{ color: "#9C9584" }}>No conditions — workflow will always run when triggered</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {advConditions.map((c, i) => (
+                            <div key={c.id} className="flex items-center gap-2">
+                              {i > 0 && (
+                                <button onClick={() => setAdvConditions(cs => cs.map((x, j) => j === i ? { ...x, logic_op: x.logic_op === "AND" ? "OR" : "AND" } : x))}
+                                  className="text-xs px-2 py-1 rounded font-bold w-10 flex-shrink-0"
+                                  style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)" }}>
+                                  {c.logic_op}
+                                </button>
+                              )}
+                              {i === 0 && <div className="w-10 flex-shrink-0" />}
+                              <select value={c.field_path} onChange={e => setAdvConditions(cs => cs.map((x,j) => j===i ? {...x,field_path:e.target.value} : x))}
+                                className="flex-1 px-2 py-1.5 rounded-lg border outline-none text-xs bg-white" style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                                <option value="">Field…</option>
+                                {FIELD_PATHS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                              </select>
+                              <select value={c.operator} onChange={e => setAdvConditions(cs => cs.map((x,j) => j===i ? {...x,operator:e.target.value} : x))}
+                                className="w-28 px-2 py-1.5 rounded-lg border outline-none text-xs bg-white" style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                                {OPERATORS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                              </select>
+                              {c.operator !== "is_null" && c.operator !== "not_null" && (
+                                <input value={c.value} onChange={e => setAdvConditions(cs => cs.map((x,j) => j===i ? {...x,value:e.target.value} : x))}
+                                  placeholder="value" className="w-24 px-2 py-1.5 rounded-lg border outline-none text-xs" style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+                              )}
+                              <button onClick={() => setAdvConditions(cs => cs.filter((_,j) => j!==i))} className="p-1 rounded" style={{ color: "#ef4444" }}><X size={13} /></button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {/* Step 3: Actions */}
+                  {advStep === 3 && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-semibold" style={{ color: "#1C1917" }}>THEN Actions</p>
+                          <p className="text-xs mt-0.5" style={{ color: "#9C9584" }}>Actions run in order when conditions match</p>
+                        </div>
+                        <button onClick={() => setAdvActions(as => [...as, { id: crypto.randomUUID(), action_type: "", params: {}, on_failure: "continue" }])}
+                          className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium"
+                          style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)" }}>
+                          <Plus size={12} /> Add Action Step
+                        </button>
+                      </div>
+                      {advActions.length === 0 ? (
+                        <div className="rounded-xl p-6 text-center" style={{ background: "rgba(197,160,89,0.04)", border: "1px dashed rgba(197,160,89,0.25)" }}>
+                          <p className="text-sm" style={{ color: "#9C9584" }}>Add at least one action step</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {advActions.map((a, i) => {
+                            const at = ADV_ACTION_TYPES.find(t => t.value === a.action_type);
+                            return (
+                              <div key={a.id} className="rounded-xl p-3 space-y-2" style={{ background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.15)" }}>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-bold w-5 text-center flex-shrink-0" style={{ color: "var(--gold)" }}>{i+1}</span>
+                                  <div className="flex gap-1 flex-shrink-0">
+                                    <button disabled={i===0} onClick={() => setAdvActions(as => { const n=[...as]; [n[i-1],n[i]]=[n[i],n[i-1]]; return n; })} className="p-1 rounded disabled:opacity-30" style={{ background: "rgba(197,160,89,0.1)" }}><ArrowUp size={10} /></button>
+                                    <button disabled={i===advActions.length-1} onClick={() => setAdvActions(as => { const n=[...as]; [n[i],n[i+1]]=[n[i+1],n[i]]; return n; })} className="p-1 rounded disabled:opacity-30" style={{ background: "rgba(197,160,89,0.1)" }}><ArrowDown size={10} /></button>
+                                  </div>
+                                  <select value={a.action_type} onChange={e => setAdvActions(as => as.map((x,j) => j===i ? {...x,action_type:e.target.value,params:{}} : x))}
+                                    className="flex-1 px-2 py-1.5 rounded-lg border outline-none text-xs bg-white" style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                                    <option value="">Select action…</option>
+                                    {ADV_ACTION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                                  </select>
+                                  <button onClick={() => setAdvActions(as => as.map((x,j) => j===i ? {...x,on_failure:x.on_failure==="continue"?"stop":x.on_failure==="stop"?"dlq_notify":"continue"} : x))}
+                                    className="text-xs px-2 py-1 rounded font-medium flex-shrink-0"
+                                    style={{ background: a.on_failure==="dlq_notify"?"rgba(234,179,8,0.12)":a.on_failure==="stop"?"rgba(239,68,68,0.08)":"rgba(197,160,89,0.08)", color: a.on_failure==="dlq_notify"?"#ca8a04":a.on_failure==="stop"?"#ef4444":"#9C9584" }}>
+                                    {a.on_failure === "dlq_notify" ? "⚡DLQ" : a.on_failure === "stop" ? "⛔stop" : "✓continue"}
+                                  </button>
+                                  <button onClick={() => setAdvActions(as => as.filter((_,j) => j!==i))} className="p-1 rounded flex-shrink-0" style={{ color: "#ef4444" }}><X size={13} /></button>
+                                </div>
+                                {at && at.paramKeys.map(pk => (
+                                  <div key={pk}>
+                                    <label className="block text-xs mb-1" style={{ color: "#6b7280" }}>{pk}</label>
+                                    {pk === "role" ? (
+                                      <select value={a.params[pk] ?? ""} onChange={e => setAdvActions(as => as.map((x,j) => j===i ? {...x,params:{...x.params,[pk]:e.target.value}} : x))}
+                                        className="w-full px-2 py-1.5 rounded-lg border outline-none text-xs bg-white" style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                                        <option value="">Select role…</option>
+                                        {BUILTIN_NUDGE_ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                                      </select>
+                                    ) : pk === "message" || pk === "body" ? (
+                                      <textarea value={a.params[pk] ?? ""} onChange={e => setAdvActions(as => as.map((x,j) => j===i ? {...x,params:{...x.params,[pk]:e.target.value}} : x))}
+                                        rows={2} placeholder={`Enter ${pk}…`} className="w-full px-2 py-1.5 rounded-lg border outline-none text-xs resize-none"
+                                        style={{ borderColor: "rgba(197,160,89,0.3)", background: "white" }} />
+                                    ) : (
+                                      <input value={a.params[pk] ?? ""} onChange={e => setAdvActions(as => as.map((x,j) => j===i ? {...x,params:{...x.params,[pk]:e.target.value}} : x))}
+                                        placeholder={`Enter ${pk}…`} className="w-full px-2 py-1.5 rounded-lg border outline-none text-xs"
+                                        style={{ borderColor: "rgba(197,160,89,0.3)", background: "white" }} />
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {advActions.some(a => a.on_failure === "dlq_notify") && (
+                        <div className="flex items-start gap-2 px-3 py-2.5 rounded-xl text-xs" style={{ background: "rgba(234,179,8,0.08)", border: "1px solid rgba(234,179,8,0.2)", color: "#92400e" }}>
+                          <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" style={{ color: "#ca8a04" }} />
+                          Actions set to &apos;⚡DLQ&apos; will insert to the Dead Letter Queue and alert staff if they fail.
+                        </div>
+                      )}
+                      {/* Rule summary */}
+                      <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "rgba(197,160,89,0.06)", color: "#7C6D3E" }}>
+                        <Zap size={12} />
+                        <span>{advForm.trigger_event || "No trigger"}</span>
+                        <ArrowRight size={10} />
+                        <span>{advConditions.length} condition{advConditions.length !== 1 ? "s" : ""}</span>
+                        <ArrowRight size={10} />
+                        <span>{advActions.length} action{advActions.length !== 1 ? "s" : ""}</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Footer */}
                 <div className="px-6 py-4 flex gap-3" style={{ borderTop: "1px solid rgba(197,160,89,0.15)" }}>
-                  <button onClick={() => setAdvDrawer(false)} className="flex-1 px-4 py-2 rounded-lg text-sm border" style={{ borderColor: "rgba(197,160,89,0.2)", color: "#6b7280" }}>Cancel</button>
-                  <button onClick={saveAdvancedRule} disabled={advSaving || !advForm.name || !advForm.trigger_event}
-                    className="flex-1 px-4 py-2 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
-                    style={{ background: "linear-gradient(135deg, #C5A059, #A8853A)" }}>
-                    {advSaving ? "Saving…" : "Create Rule"}
+                  <button onClick={() => { if (advStep > 1) setAdvStep(s => (s - 1) as 1|2|3); else { setAdvDrawer(false); setAdvStep(1); setAdvConditions([]); setAdvActions([]); } }}
+                    className="px-4 py-2 rounded-xl text-sm border" style={{ borderColor: "rgba(197,160,89,0.3)", color: "#6b7280" }}>
+                    {advStep > 1 ? "← Back" : "Cancel"}
                   </button>
+                  {advStep < 3 ? (
+                    <button onClick={() => setAdvStep(s => (s + 1) as 1|2|3)}
+                      disabled={advStep === 1 && (!advForm.name || !advForm.trigger_event)}
+                      className="flex-1 py-2 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
+                      style={{ background: "linear-gradient(135deg,#C5A059,#A8853A)" }}>
+                      Next →
+                    </button>
+                  ) : (
+                    <>
+                      <button onClick={() => saveAdvancedRule("draft")} disabled={advSaving}
+                        className="flex-1 py-2 rounded-xl text-sm font-semibold border disabled:opacity-50"
+                        style={{ borderColor: "rgba(197,160,89,0.3)", color: "#6b7280" }}>
+                        {advSaving ? "Saving…" : "Save as Draft"}
+                      </button>
+                      <button onClick={() => saveAdvancedRule("live")} disabled={advSaving || advActions.length === 0}
+                        className="flex-1 py-2 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
+                        style={{ background: "linear-gradient(135deg,#C5A059,#A8853A)" }}>
+                        {advSaving ? "Saving…" : "Publish Live"}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>,
@@ -809,27 +1661,251 @@ export default function RulesPage() {
       {/* ── TEMPLATES TAB ── */}
       {rulesTab === "templates" && (
         <div>
-          <p className="text-sm mb-5" style={{ color: "#9C9584" }}>Featured rule templates — click "Use This" to fork into your clinic</p>
-          {templates.length === 0 ? (
+          <p className="text-sm mb-4" style={{ color: "#9C9584" }}>25 ERP-grade workflow templates — click &quot;Use This&quot; to add to your workflows</p>
+          {/* Category filter pills */}
+          <div className="flex flex-wrap gap-2 mb-6">
+            {[{ value: "all", label: `All (${BUILTIN_TEMPLATES.length})` },
+              { value: "post_treatment", label: `Post-Treatment (5)` },
+              { value: "engagement", label: `Engagement (5)` },
+              { value: "lead_management", label: `Lead Mgmt (5)` },
+              { value: "billing", label: `Billing (5)` },
+              { value: "staff_alert", label: `Staff Alerts (5)` },
+            ].map(f => (
+              <button key={f.value} onClick={() => setTmplCategory(f.value)}
+                className="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
+                style={{ background: tmplCategory === f.value ? "var(--gold)" : "rgba(197,160,89,0.1)", color: tmplCategory === f.value ? "#fff" : "#7C6D3E" }}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            {BUILTIN_TEMPLATES.filter(t => tmplCategory === "all" || t.category === tmplCategory).map(t => {
+              const catColor = CATEGORY_COLORS[t.category] ?? { bg: "rgba(197,160,89,0.1)", color: "#A8853A", label: t.category };
+              const isPreviewOpen = expandedRuleId === `tmpl-${t.id}`;
+              return (
+                <div key={t.id} className="rounded-xl overflow-hidden" style={{ background: "white", border: "1px solid rgba(197,160,89,0.2)" }}>
+                  <div className="p-4">
+                    <div className="flex items-start justify-between mb-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: catColor.bg, color: catColor.color }}>{catColor.label}</span>
+                      {t.is_featured && <span className="text-xs px-1.5 py-0.5 rounded font-medium flex items-center gap-0.5" style={{ background: "rgba(197,160,89,0.12)", color: "var(--gold)" }}><Star size={9} /> Featured</span>}
+                    </div>
+                    <p className="font-semibold text-sm mt-1" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>{t.name}</p>
+                    <p className="text-xs mt-1 mb-3" style={{ color: "#9C9584" }}>{t.description}</p>
+                    <div className="flex items-center gap-2 flex-wrap text-xs mb-3">
+                      <span className="px-2 py-0.5 rounded font-mono" style={{ background: "rgba(197,160,89,0.06)", color: "var(--gold)" }}>{t.trigger_event}</span>
+                      <span className="px-2 py-0.5 rounded" style={{ background: "rgba(107,114,128,0.08)", color: "#6b7280" }}>{t.conditions.length} cond{t.conditions.length !== 1 ? "s" : ""}</span>
+                      <span className="px-2 py-0.5 rounded" style={{ background: "rgba(107,114,128,0.08)", color: "#6b7280" }}>{t.actions.length} action{t.actions.length !== 1 ? "s" : ""}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <button onClick={() => setExpandedRuleId(isPreviewOpen ? null : `tmpl-${t.id}`)}
+                        className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg"
+                        style={{ background: "rgba(197,160,89,0.08)", color: "#7C6D3E" }}>
+                        <ChevronDown size={11} style={{ transform: isPreviewOpen ? "rotate(180deg)" : "none" }} /> Preview
+                      </button>
+                      <button onClick={() => useBuiltinTemplate(t)}
+                        className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-semibold text-white"
+                        style={{ background: "var(--gold)" }}>
+                        Use This <ArrowRight size={11} />
+                      </button>
+                    </div>
+                  </div>
+                  {isPreviewOpen && (
+                    <div className="px-4 pb-3 border-t" style={{ borderColor: "rgba(197,160,89,0.12)" }}>
+                      <div className="mt-2 space-y-1">
+                        <p className="text-xs font-medium" style={{ color: "#7C6D3E" }}>IF: {t.conditions.length === 0 ? "Always runs" : t.conditions.map((c,i) => `${i>0?c.logic_op+' ':''}${c.field_path} ${c.operator} ${String(c.value?.v ?? "")}`).join(", ")}</p>
+                        {t.actions.map((a, i) => {
+                          const at = ADV_ACTION_TYPES.find(x => x.value === a.action_type);
+                          const msgKey = Object.keys(a.params || {}).find(k => k === "message" || k === "body");
+                          const msg = msgKey ? String((a.params as Record<string,unknown>)[msgKey]).slice(0, 80) + "…" : "";
+                          return (
+                            <p key={i} className="text-xs" style={{ color: "#4b5563" }}>
+                              <span className="font-medium">{i+1}. {at?.label ?? a.action_type}</span>{msg ? <span style={{ color: "#9C9584" }}> — &quot;{msg}&quot;</span> : null}
+                            </p>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── ANALYTICS TAB ── */}
+      {rulesTab === "analytics" && (
+        <div className="space-y-5">
+          <div className="flex items-center gap-3">
+            <select value={analyticsRuleId} onChange={e => { setAnalyticsRuleId(e.target.value); fetchAnalytics(e.target.value); }}
+              className="flex-1 px-3 py-2 rounded-xl border outline-none text-sm bg-white" style={{ borderColor: "rgba(197,160,89,0.3)", maxWidth: 360 }}>
+              <option value="">Select a workflow…</option>
+              {advRules.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+            <span className="text-xs" style={{ color: "#9C9584" }}>Last 30 days</span>
+          </div>
+          {!analyticsRuleId ? (
             <div className="rounded-xl p-12 text-center" style={{ background: "white", border: "1px dashed rgba(197,160,89,0.3)" }}>
-              <Sparkles size={28} className="mx-auto mb-2" style={{ color: "rgba(197,160,89,0.4)" }} />
-              <p className="font-medium" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>No templates yet</p>
-              <p className="text-sm mt-1" style={{ color: "#9C9584" }}>Templates are added by superadmins</p>
+              <Activity size={28} className="mx-auto mb-2" style={{ color: "rgba(197,160,89,0.4)" }} />
+              <p className="text-sm" style={{ color: "#9C9584" }}>Select a workflow above to see analytics</p>
+            </div>
+          ) : analyticsLoading ? (
+            <div className="animate-pulse space-y-3">{[1,2,3].map(n=><div key={n} className="h-16 rounded-xl" style={{background:"rgba(197,160,89,0.06)"}}/>)}</div>
+          ) : (
+            <>
+              {/* Summary */}
+              <div className="grid grid-cols-4 gap-3">
+                {[
+                  { label: "Total Runs", value: execLogs.length, color: "#1C1917" },
+                  { label: "Success", value: execLogs.filter(e=>e.result==="success").length, color: "#16a34a" },
+                  { label: "Failed", value: execLogs.filter(e=>e.result==="failed").length, color: "#DC2626" },
+                  { label: "Avg Duration", value: execLogs.length > 0 ? `${(execLogs.filter(e=>e.duration_ms).reduce((s,e)=>s+(e.duration_ms||0),0)/Math.max(execLogs.filter(e=>e.duration_ms).length,1)/1000).toFixed(1)}s` : "—", color: "#7C6D3E" },
+                ].map(s => (
+                  <div key={s.label} className="rounded-xl p-3 text-center" style={{ background: "white", border: "1px solid rgba(197,160,89,0.2)" }}>
+                    <p className="text-2xl font-bold" style={{ color: s.color, fontFamily: "Georgia,serif" }}>{s.value}</p>
+                    <p className="text-xs mt-0.5" style={{ color: "#9C9584" }}>{s.label}</p>
+                  </div>
+                ))}
+              </div>
+              {/* Funnel */}
+              <div className="rounded-xl p-5" style={{ background: "white", border: "1px solid rgba(197,160,89,0.2)" }}>
+                <p className="text-sm font-semibold mb-4" style={{ fontFamily: "Georgia,serif", color: "#1C1917" }}>Step Funnel</p>
+                {execLogs.length === 0 ? (
+                  <p className="text-sm text-center py-4" style={{ color: "#9C9584" }}>No executions yet</p>
+                ) : (
+                  <div className="space-y-3">
+                    {/* Triggered */}
+                    <div>
+                      <div className="flex items-center justify-between text-xs mb-1" style={{ color: "#4b5563" }}>
+                        <span className="font-medium">Triggered</span>
+                        <span>{execLogs.length} (100%)</span>
+                      </div>
+                      <div className="h-7 rounded-lg overflow-hidden" style={{ background: "rgba(197,160,89,0.08)" }}>
+                        <div className="h-full rounded-lg flex items-center px-2 text-xs font-medium text-white" style={{ width: "100%", background: "linear-gradient(90deg,#C5A059,#A8853A)" }}>
+                          {execLogs.length}
+                        </div>
+                      </div>
+                    </div>
+                    {/* Per action step */}
+                    {Array.from(new Set(actionLogs.map(a=>a.action_index))).sort().map(idx => {
+                      const stepLogs = actionLogs.filter(a=>a.action_index===idx);
+                      const success = stepLogs.filter(a=>a.result==="success").length;
+                      const pct = execLogs.length > 0 ? Math.round((success/execLogs.length)*100) : 0;
+                      const at = ADV_ACTION_TYPES.find(t => t.value === stepLogs[0]?.action_type);
+                      return (
+                        <div key={idx}>
+                          <div className="flex items-center justify-between text-xs mb-1" style={{ color: "#4b5563" }}>
+                            <span className="font-medium">Step {idx+1} {at ? `· ${at.label}` : ""}</span>
+                            <span>{success} ({pct}%)</span>
+                          </div>
+                          <div className="h-7 rounded-lg overflow-hidden" style={{ background: "rgba(197,160,89,0.08)" }}>
+                            <div className="h-full rounded-lg flex items-center px-2 text-xs font-medium text-white transition-all"
+                              style={{ width: `${pct}%`, minWidth: pct > 0 ? 24 : 0, background: pct >= 90 ? "linear-gradient(90deg,#C5A059,#A8853A)" : pct >= 70 ? "#f59e0b" : "#ef4444" }}>
+                              {pct > 10 && success}
+                            </div>
+                          </div>
+                          {success < execLogs.length && (
+                            <p className="text-xs mt-0.5 flex items-center gap-1" style={{ color: "#DC2626" }}>
+                              <AlertTriangle size={10} /> Drop-off: {execLogs.length - success}
+                              <button onClick={() => setRulesTab("dlq")} className="underline ml-1">View in DLQ</button>
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              {/* Recent executions */}
+              <div className="rounded-xl overflow-hidden" style={{ background: "white", border: "1px solid rgba(197,160,89,0.2)" }}>
+                <div className="px-4 py-3 border-b" style={{ borderColor: "rgba(197,160,89,0.12)", background: "rgba(197,160,89,0.04)" }}>
+                  <p className="text-sm font-semibold" style={{ fontFamily: "Georgia,serif", color: "#1C1917" }}>Recent Executions</p>
+                </div>
+                {execLogs.slice(0, 10).map(e => (
+                  <div key={e.id} className="flex items-center justify-between px-4 py-2.5 border-b" style={{ borderColor: "rgba(197,160,89,0.08)" }}>
+                    <span className="text-xs" style={{ color: "#6b7280" }}>{new Date(e.executed_at).toLocaleString()}</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium"
+                      style={{ background: e.result==="success"?"rgba(34,197,94,0.1)":"rgba(239,68,68,0.1)", color: e.result==="success"?"#16a34a":"#DC2626" }}>
+                      {e.result}
+                    </span>
+                    <span className="text-xs" style={{ color: "#9C9584" }}>{e.duration_ms ? `${(e.duration_ms/1000).toFixed(2)}s` : "—"}</span>
+                  </div>
+                ))}
+                {execLogs.length === 0 && <p className="text-sm text-center py-6" style={{ color: "#9C9584" }}>No executions recorded</p>}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ── DEAD LETTER QUEUE TAB ── */}
+      {rulesTab === "dlq" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="text-sm px-3 py-1.5 rounded-xl" style={{ background: "rgba(239,68,68,0.08)", color: "#DC2626" }}>
+                Pending: {dlqItems.length}
+              </div>
+            </div>
+            <button onClick={fetchDLQ} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl border" style={{ borderColor: "rgba(197,160,89,0.3)", color: "var(--gold)" }}>
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+          {dlqLoading ? (
+            <div className="animate-pulse space-y-3">{[1,2,3].map(n=><div key={n} className="h-24 rounded-xl" style={{background:"rgba(197,160,89,0.06)"}}/>)}</div>
+          ) : dlqItems.length === 0 ? (
+            <div className="rounded-xl p-12 text-center" style={{ background: "white", border: "1px dashed rgba(197,160,89,0.3)" }}>
+              <CheckSquare size={28} className="mx-auto mb-2" style={{ color: "rgba(34,197,94,0.5)" }} />
+              <p className="font-medium" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>Dead Letter Queue is clear</p>
+              <p className="text-sm mt-1" style={{ color: "#9C9584" }}>No failed workflow actions pending</p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-4">
-              {templates.map(t => (
-                <div key={t.id} className="rounded-xl p-5" style={{ background: "white", border: "1px solid rgba(197,160,89,0.2)" }}>
-                  <div className="flex justify-between items-start mb-2">
-                    <p className="font-semibold text-sm" style={{ fontFamily: "Georgia, serif", color: "#1C1917" }}>{t.name}</p>
-                    {t.is_featured && <span className="text-xs px-1.5 py-0.5 rounded font-medium" style={{ background: "rgba(197,160,89,0.12)", color: "var(--gold)" }}>Featured</span>}
+            <div className="space-y-3">
+              {dlqItems.map(item => (
+                <div key={item.id} className="rounded-xl p-4" style={{ background: "white", border: "1px solid rgba(239,68,68,0.2)" }}>
+                  <div className="flex items-start justify-between gap-3 mb-2">
+                    <div>
+                      <p className="font-semibold text-sm" style={{ fontFamily: "Georgia,serif", color: "#1C1917" }}>
+                        {(item.rule_definitions as {name?:string})?.name ?? "Unknown Workflow"}
+                      </p>
+                      <p className="text-xs mt-0.5" style={{ color: "#9C9584" }}>
+                        Action {item.action_index + 1}: <span className="font-mono">{item.action_type}</span>
+                        {" · "}Attempt: {item.retry_count + 1}
+                        {" · "}{new Date(item.created_at).toLocaleString()}
+                      </p>
+                    </div>
+                    <span className="text-xs px-2 py-0.5 rounded-full flex-shrink-0 font-medium" style={{ background: "rgba(239,68,68,0.1)", color: "#DC2626" }}>
+                      {item.status}
+                    </span>
                   </div>
-                  {t.description && <p className="text-xs mb-3" style={{ color: "#9C9584" }}>{t.description}</p>}
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono px-2 py-0.5 rounded" style={{ background: "rgba(197,160,89,0.06)", color: "var(--gold)" }}>{t.trigger_event}</span>
-                    <button onClick={() => useTemplateRule(t)}
-                      className="text-xs px-3 py-1.5 rounded-lg font-medium text-white"
-                      style={{ background: "var(--gold)" }}>Use This</button>
+                  <div className="rounded-lg px-3 py-2 mb-3 text-xs" style={{ background: "rgba(239,68,68,0.05)", border: "1px solid rgba(239,68,68,0.12)", color: "#7f1d1d" }}>
+                    <span className="font-medium">Error:</span> {item.error_message}
+                  </div>
+                  {item.params && Object.keys(item.params).length > 0 && expandedRuleId === `dlq-${item.id}` && (
+                    <div className="rounded-lg px-3 py-2 mb-3 text-xs font-mono" style={{ background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.15)", color: "#4b5563" }}>
+                      {JSON.stringify(item.params, null, 2)}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setExpandedRuleId(expandedRuleId === `dlq-${item.id}` ? null : `dlq-${item.id}`)}
+                      className="text-xs px-3 py-1.5 rounded-lg" style={{ background: "rgba(197,160,89,0.08)", color: "var(--gold)" }}>
+                      {expandedRuleId === `dlq-${item.id}` ? "Hide" : "View"} Details
+                    </button>
+                    <button onClick={async () => {
+                      await supabase.from("workflow_dlq").update({ status: "dismissed" }).eq("id", item.id);
+                      fetchDLQ();
+                      toast.success("Dismissed.");
+                    }} className="text-xs px-3 py-1.5 rounded-lg" style={{ background: "rgba(107,114,128,0.08)", color: "#6b7280" }}>
+                      Dismiss
+                    </button>
+                    <button onClick={async () => {
+                      await supabase.from("workflow_dlq").update({ retry_count: item.retry_count + 1 }).eq("id", item.id);
+                      fetchDLQ();
+                      toast.success("Retry queued.");
+                    }} className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg font-medium"
+                      style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)" }}>
+                      <RefreshCw size={11} /> Retry
+                    </button>
                   </div>
                 </div>
               ))}
