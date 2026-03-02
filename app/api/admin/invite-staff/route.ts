@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
 
   // 4. Seed default permissions for this role
   const defaultPerms = ROLE_PERMISSIONS[role];
-  await admin.from("user_permissions").upsert(
+  const { error: permsErr } = await admin.from("user_permissions").upsert(
     {
       user_id: userId,
       use_custom: false,
@@ -107,6 +107,10 @@ export async function POST(request: NextRequest) {
     },
     { onConflict: "user_id" }
   );
+
+  if (permsErr) {
+    console.error("[invite-staff] permissions upsert error:", permsErr.message);
+  }
 
   return NextResponse.json({ success: true, userId });
 }
