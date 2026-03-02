@@ -9,6 +9,7 @@ import {
   Calendar, Camera, Package, BarChart3, Network,
   ChevronRight, Check, Loader2, AlertCircle,
   Sparkles, LogOut, Smartphone, Sliders, Plus, X, Pencil, Trash2,
+  Target, Key, Copy,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -914,7 +915,7 @@ interface IntegrationConfig {
 
 const INTEGRATION_DEFS: Array<{
   key: string; name: string; desc: string; icon: React.ElementType; color: string;
-  fields: Array<{ key: string; label: string; placeholder: string; secret?: boolean }>;
+  fields: Array<{ key: string; label: string; placeholder: string; secret?: boolean; autoGenerate?: boolean; readOnly?: boolean }>;
 }> = [
   {
     key: "razorpay", name: "Razorpay", color: "#3395FF",
@@ -959,10 +960,45 @@ const INTEGRATION_DEFS: Array<{
     icon: Calendar,
     fields: [],
   },
+  {
+    key: "lead_api", name: "Website Lead API", color: "#6366F1",
+    desc: "Capture leads from your website, landing pages, or any custom form via REST API",
+    icon: Globe,
+    fields: [
+      { key: "api_key", label: "API Key", placeholder: "Auto-generated", autoGenerate: true },
+    ],
+  },
+  {
+    key: "meta_ads", name: "Meta Lead Ads", color: "#0866FF",
+    desc: "Auto-import leads from Facebook & Instagram ad campaigns",
+    icon: Target,
+    fields: [
+      { key: "app_id",            label: "Meta App ID",       placeholder: "1234567890" },
+      { key: "page_id",           label: "Page ID",           placeholder: "987654321" },
+      { key: "app_secret",        label: "App Secret",        placeholder: "••••••••",  secret: true },
+      { key: "page_access_token", label: "Page Access Token", placeholder: "EAAx…",     secret: true },
+      { key: "verify_token",      label: "Verify Token",      placeholder: "Auto-generated", autoGenerate: true },
+    ],
+  },
+  {
+    key: "google_ads", name: "Google Lead Form", color: "#EA4335",
+    desc: "Receive leads from Google Ads lead form extensions automatically",
+    icon: Key,
+    fields: [
+      { key: "webhook_key", label: "Webhook Key", placeholder: "Auto-generated", autoGenerate: true },
+    ],
+  },
 ];
 
 // Sentinel: secret field already configured — don't overwrite unless user types a new value
 const SECRET_PLACEHOLDER = "__configured__";
+
+// Inbound endpoint URLs for lead integrations — shown as info panel inside the configure drawer
+const INTEGRATION_WEBHOOK_URLS: Record<string, string> = {
+  lead_api:   "/api/leads",
+  meta_ads:   "/api/webhooks/inbound/meta",
+  google_ads: "/api/webhooks/inbound/google",
+};
 
 function IntegrationsTab() {
   const { activeClinicId } = useClinic();
@@ -1070,7 +1106,20 @@ function IntegrationsTab() {
             <Card key={intg.key} style={{ padding: 0, overflow: "hidden" }}>
               <div
                 style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 20px", cursor: intg.fields.length ? "pointer" : "default" }}
-                onClick={() => intg.fields.length && setExpanded(e => !e)}
+                onClick={() => {
+                  if (!intg.fields.length) return;
+                  const nextExpanded = !expanded;
+                  setExpanded(nextExpanded);
+                  if (nextExpanded) {
+                    intg.fields.forEach(field => {
+                      if (field.autoGenerate && !fieldValues[intg.key]?.[field.key]) {
+                        const hex = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+                          .map(b => b.toString(16).padStart(2, "0")).join("");
+                        setField(intg.key, field.key, hex);
+                      }
+                    });
+                  }
+                }}
               >
                 <div style={{ width: 40, height: 40, borderRadius: 12, background: `${intg.color}18`, border: `1px solid ${intg.color}30`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                   <Icon size={18} style={{ color: intg.color }} />
@@ -1105,21 +1154,67 @@ function IntegrationsTab() {
                     {intg.fields.map(field => (
                       <div key={field.key}>
                         <label style={{ display: "block", fontSize: 11, fontWeight: 500, color: "#4b5563", marginBottom: 4 }}>{field.label}</label>
-                        <input
-                          type={field.secret ? "password" : "text"}
-                          value={vals[field.key] ?? ""}
-                          onFocus={() => {
-                            // Clear sentinel on focus so user can type a new value cleanly
-                            if (vals[field.key] === SECRET_PLACEHOLDER) {
-                              setField(intg.key, field.key, "");
-                            }
-                          }}
-                          onChange={e => setField(intg.key, field.key, e.target.value)}
-                          placeholder={vals[field.key] === SECRET_PLACEHOLDER ? "••••••••••••••••" : field.placeholder}
-                          style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", fontSize: 12, outline: "none", boxSizing: "border-box" }}
-                        />
+                        {field.autoGenerate ? (
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <input
+                              type="text"
+                              value={vals[field.key] ?? ""}
+                              onChange={e => setField(intg.key, field.key, e.target.value)}
+                              placeholder={field.placeholder}
+                              readOnly={field.readOnly}
+                              style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", fontSize: 12, outline: "none", boxSizing: "border-box", fontFamily: "monospace" }}
+                            />
+                            <button
+                              title="Copy to clipboard"
+                              onClick={() => {
+                                const v = vals[field.key] ?? "";
+                                if (v) navigator.clipboard.writeText(v).then(() => toast.success("Copied!"));
+                              }}
+                              style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", color: "var(--gold)", cursor: "pointer", display: "flex", alignItems: "center" }}
+                            >
+                              <Copy size={12} />
+                            </button>
+                          </div>
+                        ) : (
+                          <input
+                            type={field.secret ? "password" : "text"}
+                            value={vals[field.key] ?? ""}
+                            onFocus={() => {
+                              // Clear sentinel on focus so user can type a new value cleanly
+                              if (vals[field.key] === SECRET_PLACEHOLDER) {
+                                setField(intg.key, field.key, "");
+                              }
+                            }}
+                            onChange={e => setField(intg.key, field.key, e.target.value)}
+                            placeholder={vals[field.key] === SECRET_PLACEHOLDER ? "••••••••••••••••" : field.placeholder}
+                            style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", fontSize: 12, outline: "none", boxSizing: "border-box" }}
+                          />
+                        )}
                       </div>
                     ))}
+
+                    {/* Webhook / API URL info panel */}
+                    {INTEGRATION_WEBHOOK_URLS[intg.key] && (
+                      <div style={{ borderRadius: 8, padding: "10px 12px", background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.15)", marginTop: 2 }}>
+                        <p style={{ fontSize: 11, fontWeight: 600, color: "#6366F1", margin: "0 0 5px" }}>Webhook / API URL</p>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <code style={{ fontSize: 11, color: "#374151", flex: 1, wordBreak: "break-all" }}>
+                            {typeof window !== "undefined" ? window.location.origin : ""}{INTEGRATION_WEBHOOK_URLS[intg.key]}
+                          </code>
+                          <button
+                            title="Copy URL"
+                            onClick={() => {
+                              const url = `${window.location.origin}${INTEGRATION_WEBHOOK_URLS[intg.key]}`;
+                              navigator.clipboard.writeText(url).then(() => toast.success("URL copied!"));
+                            }}
+                            style={{ padding: "4px 6px", border: "none", background: "transparent", cursor: "pointer", color: "#6366F1", display: "flex", alignItems: "center", flexShrink: 0 }}
+                          >
+                            <Copy size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                       <button
                         onClick={() => testIntegration(intg.key)}

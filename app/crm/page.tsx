@@ -66,8 +66,14 @@ const CAMPAIGN_STATUS_CONFIG: Record<CampaignStatus, { bg: string; color: string
 };
 
 const SOURCE_LABELS: Record<string, string> = {
-  walk_in: "Walk In", instagram: "Instagram", referral: "Referral",
-  website: "Website", other: "Other",
+  walk_in:    "Walk In",
+  instagram:  "Instagram",
+  referral:   "Referral",
+  website:    "Website",
+  api:        "API",
+  meta_ads:   "Meta Ads",
+  google_ads: "Google Ads",
+  other:      "Other",
 };
 
 export default function CRMPage() {
