@@ -155,7 +155,8 @@ export default function OverviewPage() {
   const [devLoading,    setDevLoading]    = useState(false);
   const [demoName,      setDemoName]      = useState("");
   const [demoCreating,  setDemoCreating]  = useState(false);
-  const [demoResult,    setDemoResult]    = useState<{ email: string; password: string; loginUrl: string | null } | null>(null);
+  const [demoResult,    setDemoResult]    = useState<{ email: string; password: string; userId: string } | null>(null);
+  const [demoOpening,   setDemoOpening]   = useState(false);
   const [demoClearing,  setDemoClearing]  = useState<string | null>(null);
 
   // Monthly revenue target — fetched from clinics.monthly_revenue_target (GAP-C4 fix)
@@ -332,8 +333,24 @@ export default function OverviewPage() {
     setDemoCreating(false);
     if (!res.ok) { const { toast: t } = await import("sonner"); t.error(json.error ?? "Creation failed"); return; }
     setDemoName("");
-    setDemoResult({ email: json.email, password: json.password, loginUrl: json.loginUrl });
+    setDemoResult({ email: json.email, password: json.password, userId: json.userId });
     fetchSuperAdminData();
+  }
+
+  async function openDemoTab(userId: string) {
+    setDemoOpening(true);
+    const res = await fetch("/api/admin/magic-link", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    const json = await res.json();
+    setDemoOpening(false);
+    if (!res.ok || !json.url) {
+      const { toast: t } = await import("sonner");
+      t.error(json.error ?? "Could not generate login link");
+      return;
+    }
+    window.open(json.url, "_blank", "noreferrer");
   }
 
   async function clearDemoClinic(clinicId: string) {
@@ -470,13 +487,13 @@ export default function OverviewPage() {
                       <p><strong>Password:</strong> <code style={{ background: "rgba(99,102,241,0.15)", padding: "1px 5px", borderRadius: 3 }}>{demoResult.password}</code></p>
                     </div>
                     <div className="flex gap-2 mt-2">
-                      {demoResult.loginUrl && (
-                        <a href={demoResult.loginUrl} target="_blank" rel="noreferrer"
-                          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, padding: "4px 10px",
-                            borderRadius: 6, background: "#6366F1", color: "white", fontWeight: 600, textDecoration: "none" }}>
-                          <ExternalLink size={10} /> Open Demo
-                        </a>
-                      )}
+                      <button onClick={() => openDemoTab(demoResult.userId)} disabled={demoOpening}
+                        style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, padding: "4px 10px",
+                          borderRadius: 6, background: "#6366F1", color: "white", fontWeight: 600,
+                          border: "none", cursor: demoOpening ? "not-allowed" : "pointer", opacity: demoOpening ? 0.7 : 1 }}>
+                        {demoOpening ? <Loader2 size={10} style={{ animation: "spin 1s linear infinite" }} /> : <ExternalLink size={10} />}
+                        Open Demo
+                      </button>
                       <button onClick={() => navigator.clipboard.writeText(`Email: ${demoResult.email}\nPassword: ${demoResult.password}`)}
                         style={{ fontSize: 11, padding: "4px 10px", borderRadius: 6,
                           border: "1px solid rgba(99,102,241,0.3)", background: "transparent",

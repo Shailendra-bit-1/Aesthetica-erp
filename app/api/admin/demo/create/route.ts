@@ -54,9 +54,11 @@ export async function POST(req: NextRequest) {
     const slug  = name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
     const ts    = Date.now();
 
-    // Generate credentials
+    // Generate credentials — stronger password (16 chars: upper+lower+digit+special)
     const demoEmail    = `demo-${slug}-${ts}@aesthetica-demo.app`;
-    const demoPassword = `Demo@${Math.floor(1000 + Math.random() * 9000)}`;
+    const randStr      = Math.random().toString(36).slice(2, 8).toUpperCase()
+                       + Math.random().toString(36).slice(2, 5);
+    const demoPassword = `Demo@${randStr}${Math.floor(10 + Math.random() * 90)}`;
 
     // 1. Create auth user
     const { data: authUser, error: authErr } = await admin.auth.admin.createUser({
@@ -119,16 +121,20 @@ export async function POST(req: NextRequest) {
     }));
     await admin.from("patients").insert(patientRows);
 
-    // 6. Generate a magic link so they can open it immediately
+    // 6. Generate a magic link so they can open it immediately.
+    //    Use the request origin so the link redirects to the running server,
+    //    not a hardcoded localhost fallback.
+    const origin = req.headers.get("origin") ?? appEnv.baseUrl;
     const { data: linkData } = await admin.auth.admin.generateLink({
       type:    "magiclink",
       email:   demoEmail,
-      options: { redirectTo: `${appEnv.baseUrl}/` },
+      options: { redirectTo: `${origin}/` },
     });
     const loginUrl = linkData?.properties?.action_link ?? null;
 
     return NextResponse.json({
       clinicId,
+      userId:   authUserId,
       name:     name.trim(),
       email:    demoEmail,
       password: demoPassword,

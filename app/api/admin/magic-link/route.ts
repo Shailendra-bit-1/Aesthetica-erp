@@ -70,11 +70,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Generate a magic link for the target user
+    // Generate a magic link for the target user.
+    // Use the request origin so the link redirects to the running server.
+    const origin = req.headers.get("origin") ?? appEnv.baseUrl;
     const { data: linkData, error: linkErr } = await admin.auth.admin.generateLink({
       type:       "magiclink",
       email:      targetUser.user.email,
-      options:    { redirectTo: `${appEnv.baseUrl}/` },
+      options:    { redirectTo: `${origin}/` },
     });
 
     if (linkErr || !linkData?.properties?.action_link) {
