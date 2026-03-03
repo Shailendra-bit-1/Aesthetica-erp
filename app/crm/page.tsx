@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import {
   Megaphone, Plus, X, Search, Phone, Mail, UserPlus,
   Calendar, MessageSquare, Send, CheckCircle, Clock, ChevronRight,
-  LayoutGrid, List, Inbox, Zap,
+  LayoutGrid, List, Inbox, Zap, AlertTriangle, UserX,
 } from "lucide-react";
 
 type LeadStatus = "new" | "contacted" | "interested" | "converted" | "lost" | "junk";
@@ -80,12 +80,20 @@ const SOURCE_LABELS: Record<string, string> = {
 export default function CRMPage() {
   const { profile, activeClinicId } = useClinic();
 
-  const [tab, setTab] = useState<"leads" | "campaigns" | "log">("leads");
+  const [tab, setTab] = useState<"leads" | "campaigns" | "log" | "at_risk">("leads");
   const [leads, setLeads] = useState<Lead[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [staff, setStaff] = useState<Staff[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+
+  // E2: At-risk patients state
+  const [atRiskPatients, setAtRiskPatients] = useState<{
+    id: string; full_name: string; phone: string | null;
+    last_appointment: string | null; days_since: number | null;
+  }[]>([]);
+  const [atRiskLoading, setAtRiskLoading] = useState(false);
+  const [atRiskFilter, setAtRiskFilter] = useState<"all" | "warm" | "hot" | "critical">("all");
 
   const [leadDrawer, setLeadDrawer] = useState(false);
   const [campaignDrawer, setCampaignDrawer] = useState(false);
@@ -216,6 +224,47 @@ export default function CRMPage() {
     toast.success(`Campaign launched — ${sentCount} contacts reached`);
   };
 
+  // E2: fetch at-risk patients (patients with last appointment > 60 days or never visited)
+  const fetchAtRisk = useCallback(async () => {
+    if (!clinicId) return;
+    setAtRiskLoading(true);
+    const [ptsRes, apptsRes] = await Promise.all([
+      supabase.from("patients").select("id, full_name, phone").eq("clinic_id", clinicId).order("full_name"),
+      supabase.from("appointments")
+        .select("patient_id, start_time")
+        .eq("clinic_id", clinicId)
+        .in("status", ["completed", "confirmed", "arrived", "in_session"])
+        .order("start_time", { ascending: false }),
+    ]);
+    const apptMap = new Map<string, string>();
+    (apptsRes.data ?? []).forEach(a => {
+      if (a.patient_id && !apptMap.has(a.patient_id)) apptMap.set(a.patient_id, a.start_time);
+    });
+    const now = new Date();
+    const result = (ptsRes.data ?? []).map(p => {
+      const last = apptMap.get(p.id) ?? null;
+      const daysSince = last ? Math.floor((now.getTime() - new Date(last).getTime()) / 86400000) : null;
+      return { id: p.id, full_name: p.full_name, phone: p.phone ?? null, last_appointment: last, days_since: daysSince };
+    }).filter(p => p.days_since === null || p.days_since >= 60)
+      .sort((a, b) => (b.days_since ?? 99999) - (a.days_since ?? 99999));
+    setAtRiskPatients(result);
+    setAtRiskLoading(false);
+  }, [clinicId, supabase]);
+
+  // E2: create win-back lead from at-risk patient
+  const createWinbackLead = async (p: { id: string; full_name: string; phone: string | null; days_since: number | null }) => {
+    if (!clinicId) return;
+    const existing = leads.find(l => l.full_name === p.full_name && l.status !== "junk");
+    if (existing) { toast("Lead already exists for this patient"); return; }
+    await supabase.from("crm_leads").insert({
+      clinic_id: clinicId, full_name: p.full_name, phone: p.phone,
+      source: "other", status: "new",
+      notes: `Re-engagement: last visit ${p.days_since ? `${p.days_since} days ago` : "never recorded"}.`,
+    });
+    toast.success(`Win-back lead created for ${p.full_name}`);
+    fetchLeads();
+  };
+
   const filteredLeads = leads.filter(l =>
     !search || l.full_name.toLowerCase().includes(search.toLowerCase()) ||
     l.phone?.includes(search) || l.email?.toLowerCase().includes(search.toLowerCase())
@@ -241,11 +290,11 @@ export default function CRMPage() {
       <div className="flex-1 overflow-auto p-6">
         {/* Tabs */}
         <div className="flex gap-1 mb-6 p-1 rounded-xl w-fit" style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.15)" }}>
-          {(["leads", "campaigns", "log"] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)}
+          {(["leads", "campaigns", "log", "at_risk"] as const).map(t => (
+            <button key={t} onClick={() => { setTab(t); if (t === "at_risk") fetchAtRisk(); }}
               className="px-5 py-2 rounded-lg text-sm font-medium transition-all capitalize"
               style={tab === t ? { background: "var(--gold)", color: "#fff", fontFamily: "Georgia, serif" } : { color: "rgba(197,160,89,0.7)" }}>
-              {t === "leads" ? "Leads" : t === "campaigns" ? "Campaigns" : "Log"}
+              {t === "leads" ? "Leads" : t === "campaigns" ? "Campaigns" : t === "log" ? "Log" : "At-Risk"}
             </button>
           ))}
         </div>
@@ -484,6 +533,99 @@ export default function CRMPage() {
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {/* AT-RISK TAB */}
+        {tab === "at_risk" && (
+          <div>
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h2 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>At-Risk Patients</h2>
+                <p className="text-sm mt-1" style={{ color: "#6b7280" }}>Patients who haven't visited in 60+ days — prime win-back targets</p>
+              </div>
+              <div className="flex gap-2">
+                {([["all", "All"], ["warm", "Warm 60–89d"], ["hot", "Hot 90–179d"], ["critical", "Critical 180d+"]] as const).map(([f, label]) => (
+                  <button key={f} onClick={() => setAtRiskFilter(f)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                    style={atRiskFilter === f
+                      ? { background: f === "critical" ? "#dc2626" : f === "hot" ? "#ea580c" : f === "warm" ? "#f59e0b" : "#1a1714", color: "#fff" }
+                      : { background: "#fff", color: "#6b7280", border: "1px solid #e5e7eb" }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {atRiskLoading ? (
+              <div className="space-y-2">
+                {[1,2,3,4,5].map(n => <div key={n} className="h-14 rounded-xl animate-pulse" style={{ background: "rgba(197,160,89,0.06)" }} />)}
+              </div>
+            ) : (() => {
+              const filtered = atRiskPatients.filter(p => {
+                if (atRiskFilter === "all") return true;
+                if (atRiskFilter === "warm") return p.days_since !== null && p.days_since >= 60 && p.days_since < 90;
+                if (atRiskFilter === "hot") return p.days_since !== null && p.days_since >= 90 && p.days_since < 180;
+                return p.days_since === null || p.days_since >= 180;
+              });
+              if (filtered.length === 0) return (
+                <div className="rounded-xl p-12 text-center" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
+                  <UserX size={36} className="mx-auto mb-3 opacity-20" style={{ color: "var(--gold)" }} />
+                  <p className="text-sm" style={{ color: "#9ca3af" }}>No at-risk patients in this category</p>
+                </div>
+              );
+              return (
+                <div className="rounded-xl overflow-hidden" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
+                  <table className="w-full">
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid rgba(197,160,89,0.1)", background: "rgba(197,160,89,0.04)" }}>
+                        {["Patient", "Phone", "Last Visit", "Risk Level", "Action"].map(h => (
+                          <th key={h} className="px-4 py-3 text-left text-xs font-semibold" style={{ color: "rgba(197,160,89,0.7)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map(p => {
+                        const d = p.days_since;
+                        const tier = d === null || d >= 180
+                          ? { label: "Critical", color: "#dc2626", bg: "rgba(220,38,38,0.1)" }
+                          : d >= 90
+                          ? { label: "Hot",      color: "#ea580c", bg: "rgba(234,88,12,0.1)" }
+                          : { label: "Warm",     color: "#f59e0b", bg: "rgba(245,158,11,0.1)" };
+                        return (
+                          <tr key={p.id} style={{ borderBottom: "1px solid rgba(197,160,89,0.06)" }}>
+                            <td className="px-4 py-3 text-sm font-medium" style={{ color: "#1a1714" }}>{p.full_name}</td>
+                            <td className="px-4 py-3 text-sm" style={{ color: "#6b7280" }}>{p.phone ?? "—"}</td>
+                            <td className="px-4 py-3 text-sm" style={{ color: "#6b7280" }}>
+                              {p.last_appointment
+                                ? `${new Date(p.last_appointment).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })} (${d}d ago)`
+                                : "Never visited"}
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-1.5">
+                                <AlertTriangle size={11} style={{ color: tier.color }} />
+                                <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: tier.bg, color: tier.color }}>{tier.label}</span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <button onClick={() => createWinbackLead(p)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+                                style={{ background: "rgba(197,160,89,0.1)", color: "#92702A" }}
+                                title="Create a win-back CRM lead for this patient">
+                                <Plus size={11} /> Create Lead
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <div className="px-4 py-3" style={{ borderTop: "1px solid rgba(197,160,89,0.08)", background: "rgba(197,160,89,0.02)" }}>
+                    <p className="text-xs" style={{ color: "#9ca3af" }}>{filtered.length} patients shown · Click "Create Lead" to add to win-back pipeline</p>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 

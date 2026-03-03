@@ -6,7 +6,7 @@ import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
 import {
   UserCheck2, ChevronLeft, ChevronRight, Download,
-  Plus, X, Check, Clock, AlertCircle,
+  Plus, X, Check, Clock, AlertCircle, BarChart3, TrendingUp, IndianRupee,
 } from "lucide-react";
 
 type AttendanceStatus = "present" | "absent" | "half_day" | "late" | "on_leave";
@@ -76,7 +76,7 @@ function getInitials(name: string) {
 export default function StaffHRPage() {
   const { profile, activeClinicId } = useClinic();
 
-  const [tab, setTab] = useState<"directory" | "attendance" | "leaves">("directory");
+  const [tab, setTab] = useState<"directory" | "attendance" | "leaves" | "scorecards">("directory");
   const [staffList, setStaffList] = useState<StaffProfile[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [leaves, setLeaves] = useState<LeaveRecord[]>([]);
@@ -85,6 +85,13 @@ export default function StaffHRPage() {
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
   const [viewMonth, setViewMonth] = useState(now.getMonth()); // 0-indexed
+
+  // E3: Scorecards state
+  const [scorecards, setScorecards] = useState<{
+    providerId: string; providerName: string; role: string;
+    totalAppts: number; completed: number; noShow: number; cancelled: number; revenue: number;
+  }[]>([]);
+  const [scorecardsLoading, setScorecardsLoading] = useState(false);
 
   const [leaveDrawer, setLeaveDrawer] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -119,6 +126,42 @@ export default function StaffHRPage() {
       .select("*, profiles!staff_leaves_staff_id_fkey(full_name)")
       .eq("clinic_id", clinicId).order("created_at", { ascending: false });
     setLeaves((data as LeaveRecord[]) || []);
+  }, [clinicId, supabase]);
+
+  // E3: fetch scorecards for current month
+  const fetchScorecards = useCallback(async () => {
+    if (!clinicId) return;
+    setScorecardsLoading(true);
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+    const [apptsRes, invRes] = await Promise.all([
+      supabase.from("appointments")
+        .select("provider_id, status, profiles!appointments_provider_id_fkey(full_name, role)")
+        .eq("clinic_id", clinicId)
+        .gte("start_time", monthStart.toISOString()),
+      supabase.from("pending_invoices")
+        .select("provider_id, provider_name, total_amount")
+        .eq("clinic_id", clinicId)
+        .in("status", ["paid", "partial"])
+        .gte("paid_at", monthStart.toISOString()),
+    ]);
+    const map: Record<string, { providerId: string; providerName: string; role: string; totalAppts: number; completed: number; noShow: number; cancelled: number; revenue: number }> = {};
+    (apptsRes.data ?? []).forEach((a: { provider_id: string | null; status: string; profiles: { full_name: string; role: string } | { full_name: string; role: string }[] | null }) => {
+      if (!a.provider_id) return;
+      const prof = Array.isArray(a.profiles) ? a.profiles[0] : a.profiles;
+      const name = prof?.full_name ?? "Unassigned";
+      const role = prof?.role ?? "";
+      if (!map[a.provider_id]) map[a.provider_id] = { providerId: a.provider_id, providerName: name, role, totalAppts: 0, completed: 0, noShow: 0, cancelled: 0, revenue: 0 };
+      map[a.provider_id].totalAppts++;
+      if (a.status === "completed") map[a.provider_id].completed++;
+      if (a.status === "no_show")   map[a.provider_id].noShow++;
+      if (a.status === "cancelled") map[a.provider_id].cancelled++;
+    });
+    (invRes.data ?? []).forEach((inv: { provider_id: string | null; provider_name: string | null; total_amount: number }) => {
+      if (!inv.provider_id) return;
+      if (map[inv.provider_id]) map[inv.provider_id].revenue += inv.total_amount ?? 0;
+    });
+    setScorecards(Object.values(map).sort((a, b) => b.revenue - a.revenue));
+    setScorecardsLoading(false);
   }, [clinicId, supabase]);
 
   useEffect(() => {
@@ -222,11 +265,11 @@ export default function StaffHRPage() {
       <div className="flex-1 overflow-auto p-6">
         {/* Tabs */}
         <div className="flex gap-1 mb-6 p-1 rounded-xl w-fit" style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.15)" }}>
-          {(["directory", "attendance", "leaves"] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)}
+          {(["directory", "attendance", "leaves", "scorecards"] as const).map(t => (
+            <button key={t} onClick={() => { setTab(t); if (t === "scorecards") fetchScorecards(); }}
               className="px-5 py-2 rounded-lg text-sm font-medium transition-all capitalize"
               style={tab === t ? { background: "var(--gold)", color: "#fff", fontFamily: "Georgia, serif" } : { color: "rgba(197,160,89,0.7)" }}>
-              {t === "directory" ? "Directory" : t === "attendance" ? "Attendance" : "Leaves"}
+              {t === "directory" ? "Directory" : t === "attendance" ? "Attendance" : t === "leaves" ? "Leaves" : "Scorecards"}
             </button>
           ))}
         </div>
@@ -422,6 +465,100 @@ export default function StaffHRPage() {
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {/* SCORECARDS TAB */}
+        {tab === "scorecards" && (
+          <div>
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h2 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Provider Scorecards</h2>
+                <p className="text-sm mt-1" style={{ color: "#6b7280" }}>This month's performance — appointments, revenue, and rates</p>
+              </div>
+            </div>
+
+            {scorecardsLoading ? (
+              <div className="grid grid-cols-3 gap-4">
+                {[1,2,3].map(n => <div key={n} className="h-52 rounded-xl animate-pulse" style={{ background: "rgba(197,160,89,0.06)" }} />)}
+              </div>
+            ) : scorecards.length === 0 ? (
+              <div className="rounded-xl p-12 text-center" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
+                <BarChart3 size={36} className="mx-auto mb-3 opacity-20" style={{ color: "var(--gold)" }} />
+                <p className="text-sm" style={{ color: "#9ca3af" }}>No appointment data this month yet</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-4">
+                {scorecards.map((s) => {
+                  const completionPct = s.totalAppts > 0 ? Math.round((s.completed / s.totalAppts) * 100) : 0;
+                  const noShowPct = s.totalAppts > 0 ? Math.round((s.noShow / s.totalAppts) * 100) : 0;
+                  const rc = ROLE_COLORS[s.role] ?? { bg: "rgba(197,160,89,0.1)", color: "var(--gold)" };
+                  return (
+                    <div key={s.providerId} className="rounded-xl p-5"
+                      style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+                      {/* Header */}
+                      <div className="flex items-center gap-3 mb-4">
+                        <div className="w-11 h-11 rounded-full flex items-center justify-center font-bold text-base"
+                          style={{ background: "rgba(197,160,89,0.12)", color: "var(--gold)", fontFamily: "Georgia, serif" }}>
+                          {getInitials(s.providerName)}
+                        </div>
+                        <div>
+                          <p className="font-semibold text-sm" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>{s.providerName}</p>
+                          <span className="text-xs px-2 py-0.5 rounded-full capitalize font-medium" style={{ background: rc.bg, color: rc.color }}>
+                            {s.role.replace("_", " ")}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Revenue */}
+                      <div className="rounded-lg p-3 mb-3" style={{ background: "rgba(197,160,89,0.06)", border: "1px solid rgba(197,160,89,0.12)" }}>
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <IndianRupee size={11} style={{ color: "var(--gold)" }} />
+                          <span className="text-xs font-medium" style={{ color: "#9ca3af" }}>Revenue this month</span>
+                        </div>
+                        <p className="text-xl font-bold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>
+                          {s.revenue >= 100000 ? `₹${(s.revenue / 100000).toFixed(1)}L` : s.revenue >= 1000 ? `₹${(s.revenue / 1000).toFixed(1)}K` : `₹${s.revenue.toFixed(0)}`}
+                        </p>
+                      </div>
+
+                      {/* Appointment counts */}
+                      <div className="grid grid-cols-3 gap-2 mb-3">
+                        {[
+                          { label: "Total",   value: s.totalAppts, color: "#1a1714" },
+                          { label: "Done",    value: s.completed,  color: "#16a34a" },
+                          { label: "No-Show", value: s.noShow,     color: "#f59e0b" },
+                        ].map(stat => (
+                          <div key={stat.label} className="text-center rounded-lg p-2" style={{ background: "#f9f7f2" }}>
+                            <p className="font-bold text-base" style={{ color: stat.color }}>{stat.value}</p>
+                            <p className="text-xs" style={{ color: "#9ca3af" }}>{stat.label}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Completion rate bar */}
+                      <div className="mb-1.5">
+                        <div className="flex justify-between mb-1">
+                          <span className="text-xs" style={{ color: "#6b7280" }}>Completion rate</span>
+                          <span className="text-xs font-bold" style={{ color: completionPct >= 70 ? "#16a34a" : completionPct >= 40 ? "#f59e0b" : "#dc2626" }}>{completionPct}%</span>
+                        </div>
+                        <div className="h-1.5 rounded-full" style={{ background: "#f3f4f6" }}>
+                          <div className="h-full rounded-full transition-all" style={{
+                            width: `${completionPct}%`,
+                            background: completionPct >= 70 ? "#16a34a" : completionPct >= 40 ? "#f59e0b" : "#dc2626",
+                          }} />
+                        </div>
+                      </div>
+                      {noShowPct > 0 && (
+                        <p className="text-xs mt-2" style={{ color: "#f59e0b" }}>
+                          <TrendingUp size={10} style={{ display: "inline", marginRight: 3 }} />
+                          {noShowPct}% no-show rate
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </div>

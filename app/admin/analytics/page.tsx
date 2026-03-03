@@ -5,7 +5,7 @@ import {
   IndianRupee, TrendingUp, Users, Calendar, Building2, Globe,
   RefreshCw, CheckCircle2, XCircle, Loader2, Award,
   Target, BarChart3, Clock, ArrowUpRight, ArrowDownRight,
-  Stethoscope, Crown, Network, PhoneOff, AlertCircle,
+  Stethoscope, Crown, Network, PhoneOff, AlertCircle, AlertTriangle, Package,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -349,6 +349,7 @@ export default function AnalyticsPage() {
   const [appts,     setAppts]     = useState<Appt[]>([]);
   const [clinicList,setClinicList]= useState<ClinicRow[]>([]);
   const [chainName, setChainName] = useState<string>("");
+  const [lowStock,  setLowStock]  = useState<{ id: string; name: string; category: string | null; current_stock: number; threshold: number }[]>([]);
 
   const fetchData = useCallback(async () => {
     if (profileLoading) return;
@@ -402,6 +403,26 @@ export default function AnalyticsPage() {
     setPatients((patRes.data  ?? []) as Patient[]);
     setAppts((apptRes.data    ?? []) as Appt[]);
     setClinicList((clinicsRes.data ?? []) as ClinicRow[]);
+
+    // E4: low stock (clinic-scoped only)
+    if (activeClinicId) {
+      const { data: prods } = await supabase.from("inventory_products")
+        .select("id, name, category, low_stock_threshold, inventory_batches(quantity_remaining)")
+        .eq("clinic_id", activeClinicId)
+        .eq("is_active", true);
+      const lowItems = (prods ?? []).filter(p => {
+        const qty = ((p.inventory_batches ?? []) as { quantity_remaining: number }[])
+          .reduce((s, b) => s + (b.quantity_remaining ?? 0), 0);
+        return qty <= (p.low_stock_threshold ?? 0);
+      }).map(p => ({
+        id: p.id, name: p.name, category: p.category as string | null,
+        current_stock: ((p.inventory_batches ?? []) as { quantity_remaining: number }[])
+          .reduce((s, b) => s + (b.quantity_remaining ?? 0), 0),
+        threshold: p.low_stock_threshold ?? 0,
+      }));
+      setLowStock(lowItems.slice(0, 8));
+    }
+
     setLoading(false);
   }, [profileLoading, range, activeClinicId, isSuperAdmin, isChainAdmin, isMultiClinic]);
 
@@ -669,6 +690,45 @@ export default function AnalyticsPage() {
             </div>
           ))}
         </div>
+
+        {/* ── Low Stock Alerts ── */}
+        {!isSuperAdmin && lowStock.length > 0 && (
+          <div style={{ marginTop: 20, background: "white", borderRadius: 16, padding: "20px 22px", border: "1px solid rgba(239,68,68,0.2)", boxShadow: "0 1px 8px rgba(28,25,23,0.04)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <AlertTriangle size={15} color="#ef4444" />
+                <p style={{ fontSize: 13, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Inventory — Low Stock Alert</p>
+                <span style={{ padding: "2px 8px", borderRadius: 8, background: "rgba(239,68,68,0.1)", fontSize: 11, fontWeight: 700, color: "#dc2626" }}>
+                  {lowStock.length} item{lowStock.length > 1 ? "s" : ""} need restocking
+                </span>
+              </div>
+              <a href="/inventory" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600, color: "#C5A059", textDecoration: "none" }}>
+                Go to Inventory <ArrowUpRight size={12} />
+              </a>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+              {lowStock.map(item => (
+                <div key={item.id} style={{ padding: "12px 14px", borderRadius: 12,
+                  background: item.current_stock === 0 ? "rgba(239,68,68,0.06)" : "rgba(245,158,11,0.06)",
+                  border: `1px solid ${item.current_stock === 0 ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)"}` }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 6 }}>
+                    <Package size={13} color={item.current_stock === 0 ? "#dc2626" : "#f59e0b"} />
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 5,
+                      background: item.current_stock === 0 ? "rgba(239,68,68,0.12)" : "rgba(245,158,11,0.12)",
+                      color: item.current_stock === 0 ? "#dc2626" : "#d97706" }}>
+                      {item.current_stock === 0 ? "OUT" : "LOW"}
+                    </span>
+                  </div>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: "#1C1917", marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</p>
+                  {item.category && <p style={{ fontSize: 10, color: "#9C9584" }}>{item.category}</p>}
+                  <p style={{ fontSize: 11, marginTop: 6, color: item.current_stock === 0 ? "#dc2626" : "#d97706", fontWeight: 700 }}>
+                    {item.current_stock} <span style={{ fontWeight: 400, color: "#9C9584" }}>/ min {item.threshold}</span>
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
       </div>
     </div>
