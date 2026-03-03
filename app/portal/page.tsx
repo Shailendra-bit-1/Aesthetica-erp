@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Sparkles, Phone, Lock, ArrowRight, Loader2 } from "lucide-react";
 
-export default function PortalLoginPage() {
+function PortalLoginForm() {
   const router       = useRouter();
   const searchParams = useSearchParams();
   const clinicId     = searchParams.get("clinic") ?? "";
@@ -157,5 +157,17 @@ export default function PortalLoginPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function PortalLoginPage() {
+  return (
+    <Suspense fallback={
+      <div style={{ minHeight: "100vh", background: "#F9F7F2", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Loader2 size={24} color="#C5A059" className="animate-spin" />
+      </div>
+    }>
+      <PortalLoginForm />
+    </Suspense>
   );
 }
