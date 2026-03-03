@@ -10,13 +10,16 @@ import {
   Circle, Zap, BarChart3, CalendarCheck, Package, RefreshCw,
   CheckCircle2, XCircle, PhoneOff, UserCheck,
   TerminalSquare, Skull, Plus, Trash2, X, Eye, ExternalLink,
-  Pencil, LayoutGrid as LayoutGridIcon,
+  Pencil,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
 import NewPatientModal from "@/components/NewPatientModal";
 import { logAction } from "@/lib/audit";
+import { KpiSkeleton, Skeleton } from "@/components/ui";
+import { Drawer } from "@/components/ui";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -365,6 +368,9 @@ export default function OverviewPage() {
 
   const targetPct = kpi ? Math.min(100, Math.round((kpi.monthlyCollection / kpi.monthlyTarget) * 100)) : 0;
 
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
+  useKeyboardShortcuts({ onNewPatient: () => setShowNewPat(true) });
+
   return (
     <div className="min-h-full flex flex-col" style={{ background: "var(--background)" }}>
       <TopBar />
@@ -398,7 +404,7 @@ export default function OverviewPage() {
           <div className="grid grid-cols-2 gap-5">
 
             {/* Dev Panel — Module Kill Switches */}
-            <section className="luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
+            <section className="card overflow-hidden" style={{ background: "var(--surface)" }}>
               <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
                 <div className="flex items-center gap-2">
                   <TerminalSquare size={15} style={{ color: "var(--gold)" }} />
@@ -446,7 +452,7 @@ export default function OverviewPage() {
             </section>
 
             {/* Demo Manager */}
-            <section className="luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
+            <section className="card overflow-hidden" style={{ background: "var(--surface)" }}>
               <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
                 <div className="flex items-center gap-2">
                   <FlaskConical size={15} style={{ color: "#6366F1" }} />
@@ -546,9 +552,7 @@ export default function OverviewPage() {
         <section>
           <div className="grid grid-cols-6 gap-4">
             {loading ? Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="luxury-card rounded-2xl p-4 flex items-center justify-center" style={{ background: "var(--surface)", minHeight: 100 }}>
-                <Loader2 size={18} style={{ color: "rgba(197,160,89,0.4)", animation: "spin 1s linear infinite" }} />
-              </div>
+              <KpiSkeleton key={i} />
             )) : ([
               {
                 key:   "revenue_today",
@@ -608,7 +612,7 @@ export default function OverviewPage() {
               const Icon = card.icon;
               return (
                 <Link key={card.key} href={card.href}
-                  className="luxury-card rounded-2xl p-4 transition-all duration-200 hover:scale-[1.02] hover:shadow-lg group block"
+                  className="card p-4 transition-all duration-200 hover:scale-[1.02] hover:shadow-lg group block"
                   style={{ background: "var(--surface)" }}
                 >
                   <div className="flex items-center justify-between mb-3">
@@ -636,7 +640,7 @@ export default function OverviewPage() {
         {dashConfig.sections.revenue_progress && (
         <section className="grid grid-cols-3 gap-5">
           {/* Monthly progress */}
-          <div className="luxury-card rounded-2xl p-5 col-span-1" style={{ background: "var(--surface)" }}>
+          <div className="card p-5 col-span-1" style={{ background: "var(--surface)" }}>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <BarChart3 size={16} style={{ color: "var(--gold)" }} />
@@ -650,8 +654,8 @@ export default function OverviewPage() {
             </div>
 
             {loading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 size={20} style={{ color: "rgba(197,160,89,0.4)", animation: "spin 1s linear infinite" }} />
+              <div className="space-y-3 py-2">
+                {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} height={14} width={`${50 + i * 15}%`} />)}
               </div>
             ) : (
               <div className="space-y-4">
@@ -703,7 +707,7 @@ export default function OverviewPage() {
           </div>
 
           {/* Branch comparison (chain/superadmin) or Today's summary (single clinic) */}
-          <div className="luxury-card rounded-2xl p-5 col-span-2" style={{ background: "var(--surface)" }}>
+          <div className="card p-5 col-span-2" style={{ background: "var(--surface)" }}>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Building2 size={16} style={{ color: "var(--gold)" }} />
@@ -719,8 +723,16 @@ export default function OverviewPage() {
             </div>
 
             {loading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 size={20} style={{ color: "rgba(197,160,89,0.4)", animation: "spin 1s linear infinite" }} />
+              <div className="space-y-3 py-2">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                      <Skeleton height={11} width="40%" />
+                      <Skeleton height={11} width="15%" />
+                    </div>
+                    <Skeleton height={8} width={`${40 + i * 10}%`} style={{ borderRadius: 4 }} />
+                  </div>
+                ))}
               </div>
             ) : isChainAdmin && branchRevs.length > 1 ? (
               // Branch comparison bars
@@ -787,7 +799,7 @@ export default function OverviewPage() {
 
           {/* ── Today's Appointments (Live) ── */}
           {dashConfig.sections.appointments && (
-          <section className="col-span-2 luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
+          <section className="col-span-2 card overflow-hidden" style={{ background: "var(--surface)" }}>
             <div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
               <div className="flex items-center gap-3">
                 <Clock size={16} style={{ color: "var(--gold)" }} />
@@ -807,8 +819,18 @@ export default function OverviewPage() {
             </div>
 
             {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 size={22} style={{ color: "rgba(197,160,89,0.4)", animation: "spin 1s linear infinite" }} />
+              <div className="divide-y" style={{ borderColor: "var(--border)" }}>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} style={{ padding: "14px 24px", display: "flex", alignItems: "center", gap: 16 }}>
+                    <Skeleton width={52} height={11} />
+                    <Skeleton width={32} height={32} circle />
+                    <div style={{ flex: 1 }}>
+                      <Skeleton height={13} width="55%" style={{ marginBottom: 6 }} />
+                      <Skeleton height={10} width="40%" />
+                    </div>
+                    <Skeleton height={24} width={80} style={{ borderRadius: 20 }} />
+                  </div>
+                ))}
               </div>
             ) : appts.length === 0 ? (
               <div className="text-center py-14">
@@ -881,7 +903,7 @@ export default function OverviewPage() {
 
             {/* Quick Links */}
             {dashConfig.sections.quick_actions && (
-            <section className="luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
+            <section className="card overflow-hidden" style={{ background: "var(--surface)" }}>
               <div className="px-5 py-4 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border)" }}>
                 <Zap size={15} style={{ color: "var(--gold)" }} />
                 <h3 className="text-sm font-semibold" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>Quick Links</h3>
@@ -925,7 +947,7 @@ export default function OverviewPage() {
 
             {/* Inventory Alerts */}
             {dashConfig.sections.inventory_alerts && (
-            <section className="luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
+            <section className="card overflow-hidden" style={{ background: "var(--surface)" }}>
               <div className="px-5 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: "#E8935A" }} />
@@ -935,8 +957,13 @@ export default function OverviewPage() {
               </div>
               <div className="px-5 py-3 space-y-3">
                 {loading ? (
-                  <div className="flex justify-center py-4">
-                    <Loader2 size={16} style={{ color: "rgba(197,160,89,0.4)", animation: "spin 1s linear infinite" }} />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <Skeleton height={11} width="60%" />
+                        <Skeleton height={20} width={48} style={{ borderRadius: 20 }} />
+                      </div>
+                    ))}
                   </div>
                 ) : invAlerts.length === 0 ? (
                   <div className="text-center py-4">
@@ -976,7 +1003,7 @@ export default function OverviewPage() {
 
         {/* ── Recent Patients ── */}
         {dashConfig.sections.recent_patients && (
-        <section className="luxury-card rounded-2xl overflow-hidden" style={{ background: "var(--surface)" }}>
+        <section className="card overflow-hidden" style={{ background: "var(--surface)" }}>
           <div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
             <div className="flex items-center gap-3">
               <Users size={16} style={{ color: "var(--gold)" }} />
@@ -991,8 +1018,16 @@ export default function OverviewPage() {
           </div>
 
           {loading ? (
-            <div className="flex items-center justify-center py-10">
-              <Loader2 size={20} style={{ color: "rgba(197,160,89,0.4)", animation: "spin 1s linear infinite" }} />
+            <div className="grid grid-cols-3 divide-x" style={{ borderColor: "var(--border)" }}>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: 12 }}>
+                  <Skeleton width={36} height={36} circle />
+                  <div style={{ flex: 1 }}>
+                    <Skeleton height={13} width="70%" style={{ marginBottom: 6 }} />
+                    <Skeleton height={18} width="45%" style={{ borderRadius: 20 }} />
+                  </div>
+                </div>
+              ))}
             </div>
           ) : recentPats.length === 0 ? (
             <div className="text-center py-12">
@@ -1053,91 +1088,72 @@ export default function OverviewPage() {
       <NewPatientModal isOpen={showNewPat} onClose={() => setShowNewPat(false)} />
 
       {/* Dashboard Customize Drawer */}
-      {customizeOpen && (
-        <div className="fixed inset-0 z-50 flex">
-          <div className="flex-1" style={{ background: "rgba(0,0,0,0.4)" }} onClick={() => setCustomizeOpen(false)} />
-          <div className="w-80 h-full overflow-y-auto flex flex-col" style={{ background: "#fff" }}>
-            {/* Header */}
-            <div className="flex justify-between items-center px-5 py-4 flex-shrink-0" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
-              <h3 className="font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Customize Dashboard</h3>
-              <button onClick={() => setCustomizeOpen(false)} className="p-1.5 rounded-lg hover:bg-gray-100">
-                <X size={16} />
+      <Drawer
+        open={customizeOpen}
+        onClose={() => setCustomizeOpen(false)}
+        title="Customize Dashboard"
+        subtitle="Changes save automatically"
+        size="sm"
+        footer={
+          <button onClick={resetToDefaults}
+            style={{ fontSize: 12, fontWeight: 500, padding: "6px 14px", borderRadius: "var(--radius-md)", border: "1px solid rgba(197,160,89,0.25)", color: "var(--text-muted)", cursor: "pointer", background: "transparent" }}>
+            Reset to defaults
+          </button>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <p style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--text-muted)", marginBottom: 8 }}>Sections</p>
+
+          {/* KPI Cards toggle + sub-toggles */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0" }}>
+              <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>KPI Cards</span>
+              <button onClick={() => toggleSection("kpi_cards")}
+                style={{ position: "relative", display: "inline-flex", height: 20, width: 36, alignItems: "center", borderRadius: 9999, border: "none", cursor: "pointer", transition: "background 0.2s", background: dashConfig.sections.kpi_cards ? "var(--gold)" : "rgba(197,160,89,0.2)" }}>
+                <span style={{ display: "inline-block", height: 16, width: 16, borderRadius: "50%", background: "white", boxShadow: "0 1px 3px rgba(0,0,0,0.2)", transition: "transform 0.2s", transform: dashConfig.sections.kpi_cards ? "translateX(18px)" : "translateX(2px)" }} />
               </button>
             </div>
-
-            {/* Sections */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-1">
-              <p className="text-xs font-semibold uppercase tracking-widest mb-4" style={{ color: "#9ca3af" }}>Sections</p>
-
-              {/* KPI Cards toggle + sub-toggles */}
-              <div>
-                <div className="flex items-center justify-between py-2">
-                  <span className="text-sm font-medium" style={{ color: "#1a1714" }}>KPI Cards</span>
-                  <button onClick={() => toggleSection("kpi_cards")}
-                    className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
-                    style={{ background: dashConfig.sections.kpi_cards ? "var(--gold)" : "rgba(197,160,89,0.2)" }}>
-                    <span className="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform"
-                      style={{ transform: dashConfig.sections.kpi_cards ? "translateX(18px)" : "translateX(2px)" }} />
-                  </button>
-                </div>
-                {dashConfig.sections.kpi_cards && (
-                  <div className="ml-3 mt-1 mb-2 space-y-1.5 pl-3" style={{ borderLeft: "2px solid rgba(197,160,89,0.15)" }}>
-                    {[
-                      { key: "revenue_today",      label: "Today's Revenue"       },
-                      { key: "monthly_collection", label: "Monthly Collection"    },
-                      { key: "monthly_target",     label: "Monthly Target"        },
-                      { key: "total_patients",     label: "Total Patients"        },
-                      { key: "appointments_today", label: "Today's Appointments"  },
-                      { key: "pending_dues",       label: "Pending Dues"          },
-                    ].map(card => {
-                      const hidden = dashConfig.hidden_kpis.includes(card.key);
-                      return (
-                        <label key={card.key} className="flex items-center gap-2 cursor-pointer">
-                          <input type="checkbox" checked={!hidden} onChange={() => toggleKpi(card.key)}
-                            className="rounded" style={{ accentColor: "var(--gold)" }} />
-                          <span className="text-xs" style={{ color: hidden ? "#9ca3af" : "#4b5563" }}>{card.label}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
+            {dashConfig.sections.kpi_cards && (
+              <div style={{ marginLeft: 12, paddingLeft: 12, borderLeft: "2px solid rgba(197,160,89,0.15)", marginBottom: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                {[
+                  { key: "revenue_today",      label: "Today's Revenue"       },
+                  { key: "monthly_collection", label: "Monthly Collection"    },
+                  { key: "monthly_target",     label: "Monthly Target"        },
+                  { key: "total_patients",     label: "Total Patients"        },
+                  { key: "appointments_today", label: "Today's Appointments"  },
+                  { key: "pending_dues",       label: "Pending Dues"          },
+                ].map(card => {
+                  const hidden = dashConfig.hidden_kpis.includes(card.key);
+                  return (
+                    <label key={card.key} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                      <input type="checkbox" checked={!hidden} onChange={() => toggleKpi(card.key)}
+                        style={{ accentColor: "var(--gold)", width: 14, height: 14 }} />
+                      <span style={{ fontSize: 12, color: hidden ? "var(--text-muted)" : "var(--text-secondary)" }}>{card.label}</span>
+                    </label>
+                  );
+                })}
               </div>
+            )}
+          </div>
 
-              {[
-                { key: "revenue_progress" as const, label: "Revenue Progress"       },
-                { key: "appointments"     as const, label: "Today's Appointments"   },
-                { key: "quick_actions"    as const, label: "Quick Actions"          },
-                { key: "inventory_alerts" as const, label: "Inventory Alerts"       },
-                { key: "recent_patients"  as const, label: "Recent Patients"        },
-              ].map(s => (
-                <div key={s.key} className="flex items-center justify-between py-2">
-                  <span className="text-sm font-medium" style={{ color: "#1a1714" }}>{s.label}</span>
-                  <button onClick={() => toggleSection(s.key)}
-                    className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
-                    style={{ background: dashConfig.sections[s.key] ? "var(--gold)" : "rgba(197,160,89,0.2)" }}>
-                    <span className="inline-block h-4 w-4 rounded-full bg-white shadow transition-transform"
-                      style={{ transform: dashConfig.sections[s.key] ? "translateX(18px)" : "translateX(2px)" }} />
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            {/* Footer */}
-            <div className="px-5 py-4 flex-shrink-0" style={{ borderTop: "1px solid rgba(197,160,89,0.15)", background: "rgba(249,247,242,0.7)" }}>
-              <p className="text-xs mb-2" style={{ color: "#9ca3af" }}>Changes save automatically</p>
-              <button onClick={resetToDefaults}
-                className="text-xs font-medium px-3 py-1.5 rounded-lg"
-                style={{ border: "1px solid rgba(197,160,89,0.25)", color: "#9C9584" }}>
-                Reset to defaults
+          {[
+            { key: "revenue_progress" as const, label: "Revenue Progress"       },
+            { key: "appointments"     as const, label: "Today's Appointments"   },
+            { key: "quick_actions"    as const, label: "Quick Actions"          },
+            { key: "inventory_alerts" as const, label: "Inventory Alerts"       },
+            { key: "recent_patients"  as const, label: "Recent Patients"        },
+          ].map(s => (
+            <div key={s.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0" }}>
+              <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)" }}>{s.label}</span>
+              <button onClick={() => toggleSection(s.key)}
+                style={{ position: "relative", display: "inline-flex", height: 20, width: 36, alignItems: "center", borderRadius: 9999, border: "none", cursor: "pointer", transition: "background 0.2s", background: dashConfig.sections[s.key] ? "var(--gold)" : "rgba(197,160,89,0.2)" }}>
+                <span style={{ display: "inline-block", height: 16, width: 16, borderRadius: "50%", background: "white", boxShadow: "0 1px 3px rgba(0,0,0,0.2)", transition: "transform 0.2s", transform: dashConfig.sections[s.key] ? "translateX(18px)" : "translateX(2px)" }} />
               </button>
             </div>
-          </div>
+          ))}
         </div>
-      )}
+      </Drawer>
 
-      <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      `}</style>
     </div>
   );
 }

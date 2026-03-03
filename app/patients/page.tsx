@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import TopBar from "@/components/TopBar";
 import NewPatientModal from "@/components/NewPatientModal";
+import { TableRowSkeleton } from "@/components/ui";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 
 interface Patient {
   id: string;
@@ -117,6 +119,9 @@ export default function PatientsPage() {
     allergies: patients.filter(p => (p.allergies?.filter(Boolean).length ?? 0) > 0).length,
   }), [patients, firstOfMonth]);
 
+  // Keyboard shortcut: N → New Patient
+  useKeyboardShortcuts({ onNewPatient: () => setModalOpen(true) });
+
   // Filter + search
   const filtered = useMemo(() => patients.filter(p => {
     if (filterTab === "allergy" && !(p.allergies?.filter(Boolean).length)) return false;
@@ -195,12 +200,9 @@ export default function PatientsPage() {
 
         {/* No-clinic empty state */}
         {!profileLoading && !activeClinicId && (
-          <div
-            className="rounded-2xl p-16 text-center"
-            style={{ background: "white", border: "1px dashed rgba(197,160,89,0.3)" }}
-          >
+          <div className="card" style={{ padding: "64px 24px", textAlign: "center", border: "1px dashed rgba(197,160,89,0.3)" }}>
             <Building2 size={36} className="mx-auto mb-3" style={{ color: "rgba(197,160,89,0.4)" }} />
-            <p className="text-sm font-medium" style={{ color: "#9C9584" }}>
+            <p className="text-sm font-medium" style={{ color: "var(--text-muted)" }}>
               Select a clinic from the top bar to view patients
             </p>
           </div>
@@ -215,17 +217,17 @@ export default function PatientsPage() {
                 { label: "New This Month", value: stats.newMonth,  Icon: UserPlus,       color: "#4A8A4A", bg: "rgba(74,138,74,0.08)"  },
                 { label: "Allergy Flags",  value: stats.allergies, Icon: AlertTriangle,  color: "#D97706", bg: "#FFFBEB"               },
               ].map(c => (
-                <div key={c.label} className="rounded-2xl p-5" style={{ background: "white", border: "1px solid rgba(197,160,89,0.15)" }}>
+                <div key={c.label} className="kpi-card">
                   <div className="flex items-start justify-between mb-3">
-                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "#9C9584" }}>{c.label}</p>
+                    <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--text-muted)" }}>{c.label}</p>
                     <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: c.bg }}>
                       <c.Icon size={16} style={{ color: c.color }} />
                     </div>
                   </div>
                   {loading ? (
-                    <div className="h-7 w-12 rounded animate-pulse" style={{ background: "rgba(197,160,89,0.08)" }} />
+                    <div className="skeleton" style={{ height: 28, width: 48, borderRadius: "var(--radius-md)" }} />
                   ) : (
-                    <p className="text-2xl font-bold" style={{ color: "#1C1917", fontFamily: "Georgia, serif" }}>{c.value}</p>
+                    <p className="text-2xl font-bold" style={{ color: "var(--text-primary)", fontFamily: "var(--font-serif)" }}>{c.value}</p>
                   )}
                 </div>
               ))}
@@ -253,35 +255,18 @@ export default function PatientsPage() {
             </div>
 
             {/* Table */}
-            <div
-              className="rounded-2xl overflow-hidden"
-              style={{ background: "white", border: "1px solid rgba(197,160,89,0.15)", boxShadow: "0 1px 4px rgba(28,25,23,0.05)" }}
-            >
-              <table className="w-full">
+            <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+              <table className="ae-table">
                 <thead>
-                  <tr style={{ background: "rgba(249,247,242,0.8)" }}>
+                  <tr>
                     {["Patient", "Contact", "Primary Concern", "Provider", "Registered", ""].map(h => (
-                      <th
-                        key={h}
-                        className="px-5 py-3 text-left text-xs uppercase tracking-widest font-medium"
-                        style={{ color: "#9C9584" }}
-                      >
-                        {h}
-                      </th>
+                      <th key={h}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {loading ? (
-                    Array.from({ length: 6 }).map((_, i) => (
-                      <tr key={i} style={{ borderTop: "1px solid rgba(197,160,89,0.07)" }}>
-                        {[140, 110, 80, 90, 80, 20].map((w, j) => (
-                          <td key={j} className="px-5 py-4">
-                            <div className="h-4 rounded animate-pulse" style={{ background: "rgba(197,160,89,0.07)", width: w }} />
-                          </td>
-                        ))}
-                      </tr>
-                    ))
+                    Array.from({ length: 6 }).map((_, i) => <TableRowSkeleton key={i} cols={6} />)
                   ) : filtered.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="px-6 py-16 text-center">
@@ -378,14 +363,9 @@ export default function PatientsPage() {
                           {/* Concern */}
                           <td className="px-5 py-3.5">
                             {p.primary_concern?.[0] ? (
-                              <span
-                                className="text-xs px-2.5 py-1 rounded-full"
-                                style={{ background: "rgba(197,160,89,0.08)", color: "#7A5C14", border: "1px solid rgba(197,160,89,0.2)" }}
-                              >
-                                {p.primary_concern[0]}
-                              </span>
+                              <span className="badge badge-gold">{p.primary_concern[0]}</span>
                             ) : (
-                              <span className="text-xs" style={{ color: "#B8AE9C" }}>—</span>
+                              <span className="text-xs" style={{ color: "var(--text-muted)" }}>—</span>
                             )}
                           </td>
 
