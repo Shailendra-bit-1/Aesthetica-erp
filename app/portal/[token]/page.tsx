@@ -6,6 +6,7 @@ import {
   Sparkles, Calendar, FileText, Wallet, Trophy, LogOut,
   Clock, CheckCircle, XCircle, AlertCircle, ChevronRight,
   CreditCard, ArrowDownCircle, ArrowUpCircle, Star,
+  ClipboardList, ChevronDown, Loader2,
 } from "lucide-react";
 
 /* ─── Types ─────────────────────────────────────────────── */
@@ -61,6 +62,29 @@ interface PortalData {
   loyalty: LoyaltyData;
 }
 
+interface FormField {
+  id: string;
+  type: "text" | "textarea" | "radio" | "checkbox" | "select" | "date" | "email" | "phone";
+  label: string;
+  required?: boolean;
+  options?: string[];
+}
+
+interface PortalForm {
+  id: string;
+  name: string;
+  form_type: string;
+  fields: FormField[];
+  branding: Record<string, unknown> | null;
+}
+
+interface FormResponse {
+  id: string;
+  form_id: string;
+  responses: Record<string, unknown>;
+  submitted_at: string;
+}
+
 /* ─── Helpers ────────────────────────────────────────────── */
 const TIER_STYLES: Record<string, { bg: string; text: string; border: string }> = {
   Bronze:   { bg: "rgba(205,127,50,0.12)",  text: "#8B5E3C", border: "rgba(205,127,50,0.3)" },
@@ -102,8 +126,53 @@ export default function PortalDashboard() {
 
   const [data,    setData]    = useState<PortalData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab,     setTab]     = useState<"appointments" | "billing" | "wallet">("appointments");
+  const [tab,     setTab]     = useState<"appointments" | "billing" | "wallet" | "forms">("appointments");
   const [apptFilter, setApptFilter] = useState<"upcoming" | "past">("upcoming");
+
+  // F3: Forms state
+  const [forms,          setForms]          = useState<PortalForm[]>([]);
+  const [formResponses,  setFormResponses]  = useState<FormResponse[]>([]);
+  const [formsLoading,   setFormsLoading]   = useState(false);
+  const [activeForm,     setActiveForm]     = useState<string | null>(null);
+  const [formValues,     setFormValues]     = useState<Record<string, string | string[]>>({});
+  const [submitting,     setSubmitting]     = useState(false);
+  const [submitSuccess,  setSubmitSuccess]  = useState<string | null>(null);
+
+  const fetchForms = async () => {
+    if (!token) return;
+    setFormsLoading(true);
+    try {
+      const res  = await fetch(`/api/portal/forms?token=${token}`);
+      const json = await res.json();
+      if (!json.error) {
+        setForms(json.forms ?? []);
+        setFormResponses(json.responses ?? []);
+      }
+    } finally {
+      setFormsLoading(false);
+    }
+  };
+
+  const submitForm = async (formId: string) => {
+    setSubmitting(true);
+    try {
+      const res  = await fetch("/api/portal/forms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, form_id: formId, responses: formValues }),
+      });
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      setSubmitSuccess(formId);
+      setActiveForm(null);
+      setFormValues({});
+      fetchForms(); // refresh responses
+    } catch (e) {
+      alert((e as Error).message || "Submission failed. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     if (!token) return;
@@ -200,16 +269,16 @@ export default function PortalDashboard() {
 
         {/* ── Tabs ── */}
         <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          {(["appointments", "billing", "wallet"] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)}
+          {(["appointments", "billing", "wallet", "forms"] as const).map(t => (
+            <button key={t} onClick={() => { setTab(t); if (t === "forms") fetchForms(); }}
               style={{
-                flex: 1, padding: "9px 4px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600,
+                flex: 1, padding: "9px 4px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600,
                 background: tab === t ? "#1a1714" : "#fff",
                 color:      tab === t ? "#fff"    : "#6b7280",
                 boxShadow:  tab === t ? "none"    : "0 1px 4px rgba(0,0,0,0.06)",
                 transition: "all 0.15s",
               }}>
-              {t === "appointments" ? "Appointments" : t === "billing" ? "Billing" : "Wallet & Loyalty"}
+              {t === "appointments" ? "Appointments" : t === "billing" ? "Billing" : t === "wallet" ? "Wallet & Points" : "Forms"}
             </button>
           ))}
         </div>
@@ -396,6 +465,186 @@ export default function PortalDashboard() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ─── Forms Tab ─── */}
+        {tab === "forms" && (
+          <div>
+            {formsLoading ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: "48px 0" }}>
+                <Loader2 size={20} color="#C5A059" style={{ animation: "spin 1s linear infinite" }} />
+                <span style={{ fontSize: 13, color: "#9ca3af" }}>Loading forms…</span>
+              </div>
+            ) : forms.length === 0 ? (
+              <div style={{ background: "#fff", borderRadius: 14, padding: 40, textAlign: "center", border: "1px solid #f3f4f6" }}>
+                <ClipboardList size={28} color="#d1d5db" style={{ margin: "0 auto 10px" }} />
+                <p style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 4 }}>No forms available</p>
+                <p style={{ fontSize: 12, color: "#9ca3af" }}>The clinic hasn't shared any forms with you yet.</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {forms.map(form => {
+                  const alreadySubmitted = formResponses.some(r => r.form_id === form.id);
+                  const isOpen = activeForm === form.id;
+                  const TYPE_COLORS: Record<string, { color: string; bg: string; label: string }> = {
+                    consent:  { color: "#7c3aed", bg: "rgba(124,58,237,0.1)",  label: "Consent" },
+                    survey:   { color: "#2563eb", bg: "rgba(37,99,235,0.1)",   label: "Survey" },
+                    feedback: { color: "#16a34a", bg: "rgba(22,163,74,0.1)",   label: "Feedback" },
+                  };
+                  const tc = TYPE_COLORS[form.form_type] ?? { color: "#6b7280", bg: "rgba(107,114,128,0.1)", label: form.form_type };
+
+                  return (
+                    <div key={form.id} style={{ background: "#fff", borderRadius: 14, border: "1px solid #f3f4f6", boxShadow: "0 1px 6px rgba(0,0,0,0.04)", overflow: "hidden" }}>
+                      {/* Form header row */}
+                      <button
+                        onClick={() => {
+                          if (alreadySubmitted) return;
+                          setActiveForm(isOpen ? null : form.id);
+                          setFormValues({});
+                          setSubmitSuccess(null);
+                        }}
+                        style={{
+                          width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "14px 16px",
+                          border: "none", background: "none", cursor: alreadySubmitted ? "default" : "pointer", textAlign: "left",
+                        }}
+                      >
+                        <div style={{ width: 36, height: 36, borderRadius: 10, background: tc.bg, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <ClipboardList size={16} color={tc.color} />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <p style={{ fontSize: 13, fontWeight: 700, color: "#1a1714", margin: "0 0 2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{form.name}</p>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: tc.color, background: tc.bg, padding: "2px 8px", borderRadius: 10 }}>{tc.label}</span>
+                        </div>
+                        {alreadySubmitted ? (
+                          <span style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", borderRadius: 20, background: "rgba(22,163,74,0.1)", fontSize: 11, fontWeight: 700, color: "#16a34a", flexShrink: 0 }}>
+                            <CheckCircle size={11} /> Submitted
+                          </span>
+                        ) : submitSuccess === form.id ? (
+                          <span style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", borderRadius: 20, background: "rgba(22,163,74,0.1)", fontSize: 11, fontWeight: 700, color: "#16a34a", flexShrink: 0 }}>
+                            <CheckCircle size={11} /> Done!
+                          </span>
+                        ) : (
+                          <ChevronDown size={14} color="#9ca3af" style={{ flexShrink: 0, transform: isOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }} />
+                        )}
+                      </button>
+
+                      {/* Expanded form body */}
+                      {isOpen && !alreadySubmitted && (
+                        <div style={{ padding: "0 16px 16px", borderTop: "1px solid #f9fafb" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 14 }}>
+                            {(form.fields ?? []).map(field => {
+                              const val = formValues[field.id];
+                              const strVal = typeof val === "string" ? val : "";
+                              const arrVal = Array.isArray(val) ? val : [];
+
+                              return (
+                                <div key={field.id}>
+                                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
+                                    {field.label}
+                                    {field.required && <span style={{ color: "#dc2626", marginLeft: 2 }}>*</span>}
+                                  </label>
+
+                                  {/* text / email / phone / date */}
+                                  {["text", "email", "phone", "date"].includes(field.type) && (
+                                    <input
+                                      type={field.type === "phone" ? "tel" : field.type}
+                                      value={strVal}
+                                      onChange={e => setFormValues(prev => ({ ...prev, [field.id]: e.target.value }))}
+                                      style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 13, color: "#1a1714", background: "#faf9f7", outline: "none", boxSizing: "border-box" }}
+                                    />
+                                  )}
+
+                                  {/* textarea */}
+                                  {field.type === "textarea" && (
+                                    <textarea
+                                      value={strVal}
+                                      rows={3}
+                                      onChange={e => setFormValues(prev => ({ ...prev, [field.id]: e.target.value }))}
+                                      style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 13, color: "#1a1714", background: "#faf9f7", outline: "none", resize: "vertical", boxSizing: "border-box", fontFamily: "inherit" }}
+                                    />
+                                  )}
+
+                                  {/* select */}
+                                  {field.type === "select" && (
+                                    <select
+                                      value={strVal}
+                                      onChange={e => setFormValues(prev => ({ ...prev, [field.id]: e.target.value }))}
+                                      style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 13, color: "#1a1714", background: "#faf9f7", outline: "none", boxSizing: "border-box" }}
+                                    >
+                                      <option value="">Select an option</option>
+                                      {(field.options ?? []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                                    </select>
+                                  )}
+
+                                  {/* radio */}
+                                  {field.type === "radio" && (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                      {(field.options ?? []).map(opt => (
+                                        <label key={opt} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: "#374151" }}>
+                                          <input
+                                            type="radio"
+                                            name={field.id}
+                                            value={opt}
+                                            checked={strVal === opt}
+                                            onChange={() => setFormValues(prev => ({ ...prev, [field.id]: opt }))}
+                                            style={{ accentColor: "#C5A059" }}
+                                          />
+                                          {opt}
+                                        </label>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {/* checkbox */}
+                                  {field.type === "checkbox" && (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                      {(field.options ?? []).map(opt => (
+                                        <label key={opt} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: "#374151" }}>
+                                          <input
+                                            type="checkbox"
+                                            value={opt}
+                                            checked={arrVal.includes(opt)}
+                                            onChange={e => {
+                                              const next = e.target.checked
+                                                ? [...arrVal, opt]
+                                                : arrVal.filter(v => v !== opt);
+                                              setFormValues(prev => ({ ...prev, [field.id]: next }));
+                                            }}
+                                            style={{ accentColor: "#C5A059" }}
+                                          />
+                                          {opt}
+                                        </label>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <button
+                            onClick={() => submitForm(form.id)}
+                            disabled={submitting}
+                            style={{
+                              marginTop: 18, width: "100%", padding: "12px 0", borderRadius: 10,
+                              background: submitting ? "rgba(197,160,89,0.5)" : "#C5A059",
+                              border: "none", color: "#fff", fontSize: 13, fontWeight: 700,
+                              cursor: submitting ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                            }}
+                          >
+                            {submitting
+                              ? <><Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> Submitting…</>
+                              : "Submit Form"
+                            }
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 

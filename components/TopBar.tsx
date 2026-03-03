@@ -9,6 +9,8 @@ import {
 import { useClinic } from "@/contexts/ClinicContext";
 import { useImpersonation } from "@/contexts/ImpersonationContext";
 import { supabase } from "@/lib/supabase";
+import NotificationCenter from "@/components/NotificationCenter";
+import GlobalSearchPalette from "@/components/GlobalSearchPalette";
 
 // ── Page title map from pathname ───────────────────────────────────────────
 
@@ -65,6 +67,7 @@ export default function TopBar() {
   const [clinicOpen,   setClinicOpen]   = useState(false);
   const [profileOpen,  setProfileOpen]  = useState(false);
   const [today,        setToday]        = useState("");
+  const [searchOpen,   setSearchOpen]   = useState(false);
   const clinicRef  = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
 
@@ -85,6 +88,15 @@ export default function TopBar() {
     }
     document.addEventListener("mousedown", onOutside);
     return () => document.removeEventListener("mousedown", onOutside);
+  }, []);
+
+  // Global Cmd+K / Ctrl+K shortcut
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); setSearchOpen(true); }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, []);
 
   async function handleSignOut() {
@@ -167,31 +179,24 @@ export default function TopBar() {
         {/* ── Right Controls ── */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
 
-          {/* Search bar */}
-          <div style={{
-            display: "flex", alignItems: "center", gap: 8,
-            padding: "7px 14px",
-            background: "var(--bg-surface)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-pill)",
-            minWidth: 220,
-            transition: "var(--transition-base)",
-          }}>
+          {/* Search bar — opens Cmd+K palette */}
+          <div
+            onClick={() => setSearchOpen(true)}
+            style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "7px 14px",
+              background: "var(--bg-surface)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-pill)",
+              minWidth: 220, cursor: "pointer",
+              transition: "var(--transition-base)",
+            }}
+            onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(197,160,89,0.4)")}
+            onMouseLeave={e => (e.currentTarget.style.borderColor = "var(--border)")}
+          >
             <Search size={13} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
-            <input
-              type="text"
-              placeholder="Search patients, records… (/)"
-              style={{
-                background: "transparent",
-                border: "none",
-                outline: "none",
-                fontSize: 12,
-                color: "var(--text-primary)",
-                fontFamily: "var(--font-sans)",
-                flex: 1,
-                minWidth: 0,
-              }}
-            />
+            <span style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-sans)", flex: 1 }}>Search patients, records…</span>
+            <kbd style={{ padding: "1px 5px", borderRadius: 4, border: "1px solid var(--border)", fontSize: 10, color: "var(--text-muted)", background: "rgba(197,160,89,0.04)", flexShrink: 0 }}>⌘K</kbd>
           </div>
 
           {/* Clinic Switcher (superadmin only) */}
@@ -255,6 +260,9 @@ export default function TopBar() {
           {/* Divider */}
           <div style={{ width: 1, height: 20, background: "var(--border)" }} />
 
+          {/* Notification Center */}
+          <NotificationCenter />
+
           {/* Settings quick link */}
           <button onClick={() => router.push("/settings")}
             style={{ width: 34, height: 34, borderRadius: "var(--radius-md)", border: "1px solid var(--border)", background: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "var(--transition-base)" }}
@@ -317,6 +325,7 @@ export default function TopBar() {
           </div>
         </div>
       </header>
+    <GlobalSearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
   );
 }
