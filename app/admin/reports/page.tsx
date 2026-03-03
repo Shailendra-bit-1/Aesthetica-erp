@@ -86,7 +86,7 @@ export default function ReportsPage() {
 
   const TABLE_MAP: Record<BaseEntity, string> = {
     patients: "patients", appointments: "appointments",
-    invoices: "pending_invoices", staff: "profiles", inventory: "inventory_items",
+    invoices: "pending_invoices", staff: "profiles", inventory: "inventory_products",
   };
 
   const runPreview = useCallback(async () => {

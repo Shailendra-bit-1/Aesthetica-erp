@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useEffect, useState, useCallback, Suspense } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   Sparkles,
   User,
@@ -54,12 +54,32 @@ const ROLE_LABEL: Record<string, string> = {
   counsellor:  "Counsellor",
 };
 
+// ── Dynamic form types ──────────────────────────────────────────────────────────
+type FieldType = "text" | "number" | "date" | "dropdown" | "checkbox" | "textarea" | "section_header";
+interface FormField {
+  id: string; type: FieldType; label: string;
+  required?: boolean; placeholder?: string; options?: string[];
+}
+interface FormDefinition {
+  id: string; clinic_id: string; name: string; form_type: string; fields: FormField[];
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export default function IntakePage() {
-  const params   = useParams();
-  const router   = useRouter();
-  const clinicId = params.clinicId as string;
+  return (
+    <Suspense fallback={<LoadingScreen />}>
+      <IntakePageInner />
+    </Suspense>
+  );
+}
+
+function IntakePageInner() {
+  const params       = useParams();
+  const router       = useRouter();
+  const searchParams = useSearchParams();
+  const clinicId     = params.clinicId as string;
+  const formId       = searchParams.get("form");
 
   // Remote data
   const [clinic,     setClinic]     = useState<ClinicInfo | null>(null);
@@ -79,6 +99,10 @@ export default function IntakePage() {
   const [hadBotoxBefore,         setHadBotoxBefore]         = useState<boolean | null>(null);
   const [lastInjectionDate,      setLastInjectionDate]      = useState("");
   const [injectionComplications, setInjectionComplications] = useState("");
+
+  // Dynamic form state (B2/B3 fix)
+  const [formDef,       setFormDef]       = useState<FormDefinition | null>(null);
+  const [dynamicValues, setDynamicValues] = useState<Record<string, string | string[] | boolean>>({});
 
   // Submit state
   const [submitting, setSubmitting] = useState(false);
@@ -104,6 +128,15 @@ export default function IntakePage() {
   }, [clinicId]);
 
   useEffect(() => { fetchClinic(); }, [fetchClinic]);
+
+  // Fetch dynamic form definition if ?form= param present (B2/B3 fix)
+  useEffect(() => {
+    if (!formId) return;
+    fetch(`/api/intake/form/${formId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.fields) setFormDef(data); })
+      .catch(() => {});
+  }, [formId]);
 
   // Reset injection history fields when the trigger concerns are removed
   useEffect(() => {
@@ -133,29 +166,50 @@ export default function IntakePage() {
   // ── Submit ─────────────────────────────────────────────────────────────────
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!fullName.trim() || !phone.trim() || concerns.length === 0) return;
 
     setSubmitting(true);
     setSubmitError(null);
 
     try {
-      const res = await fetch("/api/intake/submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      let endpoint: string;
+      let payload: Record<string, unknown>;
+
+      if (formDef) {
+        // Dynamic form submission (B2/B3 fix)
+        const requiredMissing = formDef.fields
+          .filter(f => f.required && f.type !== "section_header")
+          .some(f => !dynamicValues[f.id]);
+        if (requiredMissing) {
+          setSubmitError("Please fill in all required fields.");
+          setSubmitting(false);
+          return;
+        }
+        endpoint = "/api/intake/form-submit";
+        payload  = { formId: formDef.id, clinicId, responses: dynamicValues };
+      } else {
+        // Default hardcoded form submission
+        if (!fullName.trim() || !phone.trim() || concerns.length === 0) {
+          setSubmitting(false); return;
+        }
+        endpoint = "/api/intake/submit";
+        payload  = {
           clinicId,
           fullName: fullName.trim(),
-          phone: phone.trim(),
-          email: email.trim() || undefined,
+          phone:    phone.trim(),
+          email:    email.trim() || undefined,
           preferredSpecialist: specialist || undefined,
           concerns,
-          hadPriorInjections: showInjectionHistory ? hadBotoxBefore : null,
+          hadPriorInjections:     showInjectionHistory ? hadBotoxBefore : null,
           lastInjectionDate:      showInjectionHistory && hadBotoxBefore ? lastInjectionDate      : undefined,
           injectionComplications: showInjectionHistory && hadBotoxBefore ? injectionComplications : undefined,
           notes: notes.trim() || undefined,
-        }),
-      });
+        };
+      }
 
+      const res  = await fetch(endpoint, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
       const data = await res.json();
       if (!res.ok || data.error) {
         setSubmitError(data.error || "Something went wrong. Please try again.");
@@ -163,15 +217,19 @@ export default function IntakePage() {
         return;
       }
 
-      // Success — navigate to welcome screen
-      router.push(`/intake/${clinicId}/welcome?name=${encodeURIComponent(fullName.trim())}`);
+      const displayName = formDef
+        ? String(dynamicValues["full_name"] ?? dynamicValues["name"] ?? "")
+        : fullName.trim();
+      router.push(`/intake/${clinicId}/welcome?name=${encodeURIComponent(displayName)}`);
     } catch {
       setSubmitError("Network error. Please check your connection and try again.");
       setSubmitting(false);
     }
   }
 
-  const isValid = !!fullName.trim() && !!phone.trim() && concerns.length > 0;
+  const isValid = formDef
+    ? formDef.fields.filter(f => f.required && f.type !== "section_header").every(f => !!dynamicValues[f.id])
+    : !!fullName.trim() && !!phone.trim() && concerns.length > 0;
 
   // ── Loading / 404 states ───────────────────────────────────────────────────
   if (loadingPage) return <LoadingScreen />;
@@ -274,6 +332,49 @@ export default function IntakePage() {
           <form onSubmit={handleSubmit} noValidate>
             <div className="px-8 py-7 space-y-7">
 
+              {/* ─── DYNAMIC FORM (B2/B3 fix: renders when ?form= param is present) ─── */}
+              {formDef ? (
+                <>
+                  {formDef.fields.map(field => {
+                    if (field.type === "section_header") {
+                      return <SectionHeader key={field.id} label={field.label} />;
+                    }
+                    const val = dynamicValues[field.id];
+                    const setVal = (v: string | string[] | boolean) =>
+                      setDynamicValues(prev => ({ ...prev, [field.id]: v }));
+                    return (
+                      <div key={field.id}>
+                        <label style={{ ...labelStyle, display: "flex", gap: 4, marginBottom: 7 }}>
+                          {field.label}
+                          {field.required && <span style={{ color: "#C5A059" }}>*</span>}
+                        </label>
+                        {field.type === "textarea" ? (
+                          <textarea rows={3} placeholder={field.placeholder} value={String(val ?? "")}
+                            onChange={e => setVal(e.target.value)} className="intake-input"
+                            style={{ ...inputStyle, resize: "none", display: "block", padding: "10px 14px", lineHeight: 1.6, boxSizing: "border-box" }} />
+                        ) : field.type === "dropdown" ? (
+                          <select value={String(val ?? "")} onChange={e => setVal(e.target.value)}
+                            className="intake-input" style={{ ...inputStyle, appearance: "none", cursor: "pointer" }}>
+                            <option value="">Select…</option>
+                            {(field.options ?? []).map(o => <option key={o} value={o}>{o}</option>)}
+                          </select>
+                        ) : field.type === "checkbox" ? (
+                          <label className="flex items-center gap-3 cursor-pointer">
+                            <input type="checkbox" checked={!!val} onChange={e => setVal(e.target.checked)}
+                              style={{ width: 18, height: 18, accentColor: "#C5A059", cursor: "pointer" }} />
+                            <span style={{ fontSize: 13, color: "#1C1917" }}>{field.placeholder || field.label}</span>
+                          </label>
+                        ) : (
+                          <input type={field.type} placeholder={field.placeholder}
+                            value={String(val ?? "")} onChange={e => setVal(e.target.value)}
+                            className="intake-input" style={inputStyle} />
+                        )}
+                      </div>
+                    );
+                  })}
+                </>
+              ) : (
+              <>
               {/* ─── SECTION 1: Identity ─── */}
               <SectionHeader label="Your Details" />
 
@@ -539,6 +640,9 @@ export default function IntakePage() {
                   }}
                 />
               </FieldGroup>
+
+              </> /* end default form else */
+              )} {/* end formDef ternary */}
 
             </div>
 

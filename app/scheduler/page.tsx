@@ -1043,10 +1043,22 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
           p_clinic_id:      activeClinicId,
         });
         if (nsErr) throw nsErr;
+        // B5 fix: void any pending commission linked to this appointment
+        await supabase.from("staff_commissions")
+          .update({ status: "voided" })
+          .eq("appointment_id", a.id)
+          .eq("status", "pending");
       } else {
         const patch: Record<string, unknown> = { status, updated_at: new Date().toISOString(), ...extra };
         const { error } = await supabase.from("appointments").update(patch).eq("id", a.id);
         if (error) throw error;
+        // B5 fix: void any pending commission when cancelling
+        if (status === "cancelled") {
+          await supabase.from("staff_commissions")
+            .update({ status: "voided" })
+            .eq("appointment_id", a.id)
+            .eq("status", "pending");
+        }
       }
       toast.success(`Marked as ${STATUS_CFG[status].label}`);
       onUpdated();

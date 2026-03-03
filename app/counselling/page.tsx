@@ -165,30 +165,30 @@ function ProformaModal({ session, clinicName, clinicId, onClose }: ProformaProps
   const handleSaveProforma = async () => {
     setSaving(true);
     try {
-      // GAP-H7 fix: use active clinic from context, not arbitrary first row
       if (!clinicId) { setSaving(false); return; }
-
-      const { data: inv } = await supabase.from("pending_invoices").insert({
-        clinic_id:    clinicId,
-        patient_name: session.patients.full_name,
-        total_amount: total,
-        invoice_type: "proforma",
-        payment_mode: "cash",
-      }).select("id").single();
-
-      if (inv) {
-        const lines = treatments.map(t => ({
-          invoice_id:   inv.id,
-          clinic_id:    clinicId,
+      // Atomic: create invoice + line items in single RPC (B9 fix)
+      const { error } = await supabase.rpc("create_invoice_with_items", {
+        p_clinic_id:     clinicId,
+        p_patient_id:    session.patient_id,
+        p_patient_name:  session.patients.full_name,
+        p_provider_id:   session.counsellor_id ?? null,
+        p_provider_name: "",
+        p_due_date:      null,
+        p_gst_pct:       0,
+        p_invoice_type:  "proforma",
+        p_notes:         treatments.map(t => t.service_name).join(", "),
+        p_items: JSON.stringify(treatments.map(t => ({
+          service_id:   t.service_id ?? null,
           description:  `${t.service_name} × ${t.sessions ?? 1} sessions`,
           quantity:     t.sessions ?? 1,
           unit_price:   t.mrp || 0,
           discount_pct: t.discount_pct || 0,
           gst_pct:      0,
-          line_total:   t.quoted_price || t.price || 0,
-        }));
-        await supabase.from("invoice_line_items").insert(lines);
-      }
+        }))),
+      });
+      if (error) throw error;
+    } catch (e) {
+      console.error("Proforma save failed:", e);
     } finally {
       setSaving(false);
       onClose();
