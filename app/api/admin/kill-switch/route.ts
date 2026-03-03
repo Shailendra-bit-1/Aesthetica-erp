@@ -55,7 +55,8 @@ export async function PATCH(req: NextRequest) {
       .update(update).eq("module_key", moduleKey);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[kill-switch] update error:", error.message);
+      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
 
     return NextResponse.json({ success: true, moduleKey, killed: kill });

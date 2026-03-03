@@ -1222,7 +1222,7 @@ function MembersDrawer({ credit, clinicId, onClose, onDone }: {
       const { data: pts } = await supabase.from("patients")
         .select("id, full_name")
         .neq("id", credit.patient_id)
-        .order("full_name");
+        .order("full_name").limit(300);
       setPatients(pts ?? []);
     }
     load();

@@ -608,7 +608,63 @@ export async function POST(req: NextRequest) {
       }
     } catch (e) { console.error("[demo/create] encounters error:", e); }
 
-    // ── 20. Magic link ──────────────────────────────────────────────────────
+    // ── 20. Notifications (demo bell data) ──────────────────────────────────
+    try {
+      const notifTs = (daysAgo: number, hhmm: string) => {
+        const d = new Date(); d.setDate(d.getDate() - daysAgo);
+        const [h, m] = hhmm.split(":").map(Number);
+        d.setHours(h, m, 0, 0);
+        return d.toISOString();
+      };
+      await admin.from("notifications").insert([
+        { clinic_id: clinicId, type: "appointment", title: "Appointment booked",      body: "Botox Treatment on " + daysFromNow(3) + ", 11:00 AM",                                 entity_type: "appointment", action_url: "/scheduler",  is_read: false, created_at: notifTs(0, "09:15") },
+        { clinic_id: clinicId, type: "payment",     title: "Payment received",        body: "₹12000 via UPI — Priya Sharma",                                                        entity_type: "invoice",     action_url: "/billing",    is_read: false, created_at: notifTs(0, "10:42") },
+        { clinic_id: clinicId, type: "new_lead",    title: "New lead received",       body: "Rahul Verma via Meta Ads — interested in Botox",                                       entity_type: "lead",        action_url: "/crm",        is_read: false, created_at: notifTs(1, "14:05") },
+        { clinic_id: clinicId, type: "low_stock",   title: "Low stock alert",         body: "Hyaluronic Acid Filler 1ml is running low (3 remaining)",                              entity_type: "product",     action_url: "/inventory",  is_read: true,  created_at: notifTs(2, "08:30") },
+        { clinic_id: clinicId, type: "leave_request", title: "Leave request submitted", body: "Ananya Krishnan requested sick leave (2 days)",                                      entity_type: "leave",       action_url: "/staff",      is_read: true,  created_at: notifTs(2, "17:20") },
+        { clinic_id: clinicId, type: "payment",     title: "Payment received",        body: "₹18000 via card — Lakshmi Iyer",                                                       entity_type: "invoice",     action_url: "/billing",    is_read: true,  created_at: notifTs(3, "11:55") },
+        { clinic_id: clinicId, type: "appointment", title: "Appointment booked",      body: "PRP Hair Treatment on " + daysFromNow(7) + ", 10:00 AM",                               entity_type: "appointment", action_url: "/scheduler",  is_read: true,  created_at: notifTs(4, "16:00") },
+        { clinic_id: clinicId, type: "new_lead",    title: "New lead received",       body: "Sneha Patel via website — interested in Laser Hair Removal",                           entity_type: "lead",        action_url: "/crm",        is_read: true,  created_at: notifTs(5, "09:45") },
+      ]);
+    } catch (e) { console.error("[demo/create] notifications error:", e); }
+
+    // ── 21. Form definitions (portal forms) ─────────────────────────────────
+    try {
+      await admin.from("form_definitions").insert([
+        {
+          clinic_id: clinicId,
+          name: "Patient Consent Form",
+          form_type: "consent",
+          is_active: true,
+          fields: [
+            { id: "consent_treatment",  type: "radio",    label: "I consent to the proposed aesthetic treatment(s) as discussed with my provider", required: true,  options: ["Yes, I consent", "No, I do not consent"] },
+            { id: "consent_photos",     type: "radio",    label: "I consent to before/after photos being taken for medical records",                required: true,  options: ["Yes, I consent", "No, I do not consent"] },
+            { id: "allergies_confirm",  type: "radio",    label: "I have disclosed all known allergies and current medications to the clinic",      required: true,  options: ["Confirmed", "I need to update my records"] },
+            { id: "consent_signature",  type: "text",     label: "Full name (acts as digital signature)",                                           required: true },
+            { id: "consent_date",       type: "date",     label: "Date",                                                                            required: true },
+          ],
+          branding: { accent: "#C5A059" },
+          submit_action: { type: "save" },
+        },
+        {
+          clinic_id: clinicId,
+          name: "Post-Treatment Feedback",
+          form_type: "feedback",
+          is_active: true,
+          fields: [
+            { id: "overall_satisfaction", type: "radio",    label: "Overall satisfaction with your visit",             required: true,  options: ["Excellent", "Good", "Average", "Poor"] },
+            { id: "treatment_result",     type: "radio",    label: "How satisfied are you with your treatment results?", required: true,  options: ["Very satisfied", "Satisfied", "Neutral", "Dissatisfied"] },
+            { id: "staff_rating",         type: "radio",    label: "How would you rate our staff's professionalism?",  required: true,  options: ["Excellent", "Good", "Average", "Needs improvement"] },
+            { id: "recommend",            type: "radio",    label: "Would you recommend us to friends or family?",     required: true,  options: ["Definitely", "Probably", "Not sure", "No"] },
+            { id: "comments",             type: "textarea", label: "Any additional comments or suggestions?",          required: false },
+          ],
+          branding: { accent: "#C5A059" },
+          submit_action: { type: "save" },
+        },
+      ]);
+    } catch (e) { console.error("[demo/create] form_definitions error:", e); }
+
+    // ── 22. Magic link ──────────────────────────────────────────────────────
     const origin = req.headers.get("origin") ?? appEnv.baseUrl;
     const { data: linkData } = await admin.auth.admin.generateLink({
       type: "magiclink", email: demoEmail,
@@ -620,7 +676,7 @@ export async function POST(req: NextRequest) {
       clinicId, userId: authUserId,
       name: name.trim(), email: demoEmail, password: demoPassword, loginUrl,
       staffCount: staffIds.length,
-      message: `Demo clinic created with ${staffIds.length} staff, 10 patients, 8 services, appointments, invoices, CRM leads, memberships, inventory & payroll.`,
+      message: `Demo clinic created with ${staffIds.length} staff, 10 patients, 8 services, appointments, invoices, CRM leads, memberships, inventory, payroll, notifications & forms.`,
     });
   } catch (err) {
     console.error("[demo/create] Error:", err);

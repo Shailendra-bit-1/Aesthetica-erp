@@ -158,7 +158,7 @@ export async function POST(
       .select("id")
       .single();
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) { console.error("[patients/id]", error.message); return NextResponse.json({ error: "An error occurred" }, { status: 500 }); }
     logAction({
       clinicId:   caller?.clinic_id ?? undefined,
       action:     "encounter.create",
@@ -182,7 +182,7 @@ export async function POST(
       content:     content.trim(),
       author_name: author_name?.trim() || "Staff",
     });
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) { console.error("[patients/id]", error.message); return NextResponse.json({ error: "An error occurred" }, { status: 500 }); }
     logAction({
       clinicId:   caller?.clinic_id ?? undefined,
       action:     "note.create",
@@ -212,7 +212,7 @@ export async function POST(
       notes:                   notes         || null,
       recommended_sessions:    recommended_sessions ? parseInt(recommended_sessions) : null,
     });
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) { console.error("[patients/id]", error.message); return NextResponse.json({ error: "An error occurred" }, { status: 500 }); }
     logAction({
       clinicId:   caller?.clinic_id ?? undefined,
       action:     "treatment.propose",
@@ -233,7 +233,7 @@ export async function POST(
       color:      color ?? "gold",
       created_by: caller?.id ?? null,
     }).select("id").single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) { console.error("[patients/id]", error.message); return NextResponse.json({ error: "An error occurred" }, { status: 500 }); }
     logAction({ clinicId: caller?.clinic_id ?? undefined, action: "note.create", targetId: id, targetName: "Sticky note" });
     return NextResponse.json({ success: true, id: data?.id });
   }
@@ -243,7 +243,7 @@ export async function POST(
     const { noteId } = body as { noteId: string };
     if (!noteId) return NextResponse.json({ error: "noteId required" }, { status: 400 });
     const { error } = await supabase.from("patient_sticky_notes").update({ is_active: false }).eq("id", noteId);
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) { console.error("[patients/id]", error.message); return NextResponse.json({ error: "An error occurred" }, { status: 500 }); }
     return NextResponse.json({ success: true });
   }
 
@@ -262,7 +262,7 @@ export async function POST(
       annotations:     annotations ?? [],
       created_by_name: created_by_name ?? caller?.full_name ?? "Provider",
     }).select("id").single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) { console.error("[patients/id]", error.message); return NextResponse.json({ error: "An error occurred" }, { status: 500 }); }
     logAction({ clinicId: caller?.clinic_id ?? undefined, action: "note.create", targetId: id, targetName: `Face chart — ${diagram_type}` });
     return NextResponse.json({ success: true, id: data?.id });
   }
@@ -272,7 +272,7 @@ export async function POST(
     const { chartId, annotations } = body as { chartId: string; annotations: unknown[] };
     if (!chartId) return NextResponse.json({ error: "chartId required" }, { status: 400 });
     const { error } = await supabase.from("patient_face_charts").update({ annotations }).eq("id", chartId);
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) { console.error("[patients/id]", error.message); return NextResponse.json({ error: "An error occurred" }, { status: 500 }); }
     return NextResponse.json({ success: true });
   }
 
@@ -293,7 +293,7 @@ export async function POST(
       sent_by:      caller?.id ?? null,
       sent_by_name: caller?.full_name ?? null,
     });
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) { console.error("[patients/id]", error.message); return NextResponse.json({ error: "An error occurred" }, { status: 500 }); }
     return NextResponse.json({ success: true });
   }
 

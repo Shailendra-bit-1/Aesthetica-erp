@@ -118,7 +118,7 @@ export default function BeforeAfterGalleryPage() {
     if (!activeClinicId) return;
     const { data } = await supabase
       .from("patients").select("id, full_name")
-      .eq("clinic_id", activeClinicId).order("full_name");
+      .eq("clinic_id", activeClinicId).order("full_name").limit(300);
     setPatients(data ?? []);
   }, [activeClinicId]);
 
