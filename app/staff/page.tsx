@@ -93,6 +93,7 @@ export default function StaffHRPage() {
   }[]>([]);
   const [scorecardsLoading, setScorecardsLoading] = useState(false);
 
+  const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
   const [leaveDrawer, setLeaveDrawer] = useState(false);
   const [saving, setSaving] = useState(false);
   const [leaveForm, setLeaveForm] = useState({
@@ -408,7 +409,20 @@ export default function StaffHRPage() {
         )}
 
         {/* LEAVES TAB */}
-        {tab === "leaves" && (
+        {tab === "leaves" && (() => {
+          // Leave balance calculations
+          const LEAVE_ALLOCATIONS: Record<LeaveType, number | null> = { casual: 12, sick: 10, earned: 15, unpaid: null, other: null };
+          const currentYear = new Date().getFullYear();
+          const selectedStaff = selectedStaffId ? staffList.find(s => s.id === selectedStaffId) : null;
+          const staffLeaves = selectedStaffId
+            ? leaves.filter(l => l.staff_id === selectedStaffId && l.status === "approved" && new Date(l.from_date).getFullYear() === currentYear)
+            : [];
+          const usedDays = (["casual", "sick", "earned"] as LeaveType[]).reduce((acc, lt) => {
+            acc[lt] = staffLeaves.filter(l => l.leave_type === lt).reduce((s, l) => s + (l.days || 0), 0);
+            return acc;
+          }, {} as Record<string, number>);
+
+          return (
           <div>
             <div className="flex justify-between items-center mb-5">
               <h2 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Leave Management</h2>
@@ -418,6 +432,54 @@ export default function StaffHRPage() {
                 <Plus size={15} /> Request Leave
               </button>
             </div>
+
+            {/* Leave Balance Section */}
+            <div className="mb-6 rounded-xl p-5" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
+              <div className="flex items-center gap-4 mb-4">
+                <p className="text-sm font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Leave Balance {currentYear}</p>
+                <select value={selectedStaffId || ""} onChange={e => setSelectedStaffId(e.target.value || null)}
+                  className="text-sm px-3 py-1.5 rounded-lg border bg-white outline-none"
+                  style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                  <option value="">Select staff member…</option>
+                  {staffList.map(s => <option key={s.id} value={s.id}>{s.full_name}</option>)}
+                </select>
+              </div>
+              {!selectedStaff ? (
+                <p className="text-sm" style={{ color: "#9ca3af" }}>Select a staff member to view leave balance.</p>
+              ) : (
+                <div className="grid grid-cols-4 gap-4">
+                  {(["casual", "sick", "earned", "unpaid"] as LeaveType[]).map(lt => {
+                    const alloc = LEAVE_ALLOCATIONS[lt];
+                    const used = usedDays[lt] || 0;
+                    const remaining = alloc !== null ? alloc - used : null;
+                    const pct = alloc ? Math.min(100, Math.round((used / alloc) * 100)) : 0;
+                    return (
+                      <div key={lt} className="rounded-xl p-4" style={{ background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.1)" }}>
+                        <p className="text-xs font-medium capitalize mb-3" style={{ color: "#6b7280" }}>{lt} Leave</p>
+                        {alloc !== null ? (
+                          <>
+                            <div className="flex items-baseline gap-1 mb-2">
+                              <span className="text-2xl font-bold" style={{ fontFamily: "Georgia, serif", color: remaining! > 0 ? "var(--gold)" : "#dc2626" }}>{remaining}</span>
+                              <span className="text-xs" style={{ color: "#9ca3af" }}>/ {alloc} days left</span>
+                            </div>
+                            <div className="h-1.5 rounded-full" style={{ background: "#f3f4f6" }}>
+                              <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: pct >= 90 ? "#dc2626" : pct >= 70 ? "#f59e0b" : "var(--gold)" }} />
+                            </div>
+                            <p className="text-xs mt-1" style={{ color: "#9ca3af" }}>{used} used</p>
+                          </>
+                        ) : (
+                          <div>
+                            <p className="text-2xl font-bold" style={{ fontFamily: "Georgia, serif", color: "#6b7280" }}>∞</p>
+                            <p className="text-xs" style={{ color: "#9ca3af" }}>Unlimited · {used} used</p>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             <div className="rounded-xl overflow-hidden" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
               <table className="w-full">
                 <thead>
@@ -466,7 +528,8 @@ export default function StaffHRPage() {
               </table>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* SCORECARDS TAB */}
         {tab === "scorecards" && (

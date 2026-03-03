@@ -72,7 +72,7 @@ export async function DELETE(req: NextRequest) {
     // Finally delete the clinic itself
     const { error } = await admin.from("clinics").delete().eq("id", clinicId);
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ error: "Failed to delete clinic data" }, { status: 500 });
     }
 
     return NextResponse.json({ success: true, clinicId });

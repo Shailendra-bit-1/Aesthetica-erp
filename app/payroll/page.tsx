@@ -257,6 +257,44 @@ export default function PayrollPage() {
     fetchRuns();
   };
 
+  const downloadCommissionReport = async (run: PayrollRun) => {
+    if (!clinicId) return;
+    const { data } = await supabase
+      .from("staff_commissions")
+      .select("provider_id, service_name, commission_amount, status, created_at, patient_id, profiles!staff_commissions_provider_id_fkey(full_name), patients!staff_commissions_patient_id_fkey(full_name)")
+      .eq("clinic_id", clinicId)
+      .gte("created_at", run.period_start)
+      .lte("created_at", run.period_end + "T23:59:59")
+      .order("created_at", { ascending: false });
+
+    const headers = "Staff Name,Patient,Service,Amount,Date,Status";
+    const rows = (data || []).map((r: {
+      service_name: string; commission_amount: number; status: string; created_at: string;
+      profiles: { full_name: string } | { full_name: string }[] | null;
+      patients: { full_name: string } | { full_name: string }[] | null;
+    }) => {
+      const prof = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles;
+      const pat = Array.isArray(r.patients) ? r.patients[0] : r.patients;
+      return [
+        prof?.full_name ?? "—",
+        pat?.full_name ?? "—",
+        r.service_name ?? "—",
+        r.commission_amount ?? 0,
+        r.created_at.slice(0, 10),
+        r.status,
+      ].map(v => JSON.stringify(v)).join(",");
+    }).join("\n");
+
+    const blob = new Blob([headers + "\n" + rows], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const month = MONTH_NAMES[new Date(run.period_start).getMonth()];
+    const year = new Date(run.period_start).getFullYear();
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `commissions_${month}_${year}.csv`;
+    a.click();
+  };
+
   const exportCSV = (slips: Payslip[]) => {
     const headers = "Staff,Role,Attendance Days,Basic,Commission,Allowances,Deductions,TDS,Net Pay";
     const rows = slips.map(s =>
@@ -385,7 +423,12 @@ export default function PayrollPage() {
                           <button onClick={e => { e.stopPropagation(); exportCSV(runPayslips); }}
                             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
                             style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)" }}>
-                            <Download size={12} /> Export CSV
+                            <Download size={12} /> Payslips CSV
+                          </button>
+                          <button onClick={e => { e.stopPropagation(); downloadCommissionReport(run); }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
+                            style={{ background: "rgba(168,85,247,0.1)", color: "#7c3aed" }}>
+                            <Download size={12} /> Commission Report
                           </button>
                         </div>
                       )}
