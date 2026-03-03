@@ -222,5 +222,80 @@ export async function POST(
     return NextResponse.json({ success: true });
   }
 
+  // ── Add sticky note ─────────────────────────────────────────────────────
+  if (body.action === "add_sticky_note") {
+    const { content, color } = body as { content: string; color?: string };
+    if (!content?.trim()) return NextResponse.json({ error: "content required" }, { status: 400 });
+    const { data, error } = await supabase.from("patient_sticky_notes").insert({
+      patient_id: id,
+      clinic_id:  caller?.clinic_id ?? null,
+      content:    content.trim(),
+      color:      color ?? "gold",
+      created_by: caller?.id ?? null,
+    }).select("id").single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    logAction({ clinicId: caller?.clinic_id ?? undefined, action: "note.create", targetId: id, targetName: "Sticky note" });
+    return NextResponse.json({ success: true, id: data?.id });
+  }
+
+  // ── Dismiss sticky note ──────────────────────────────────────────────────
+  if (body.action === "dismiss_sticky_note") {
+    const { noteId } = body as { noteId: string };
+    if (!noteId) return NextResponse.json({ error: "noteId required" }, { status: 400 });
+    const { error } = await supabase.from("patient_sticky_notes").update({ is_active: false }).eq("id", noteId);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true });
+  }
+
+  // ── Save face / body chart ───────────────────────────────────────────────
+  if (body.action === "save_face_chart") {
+    const { visit_date, diagram_type, annotations, encounter_id, created_by_name } = body as {
+      visit_date: string; diagram_type: string;
+      annotations: unknown[]; encounter_id?: string; created_by_name?: string;
+    };
+    const { data, error } = await supabase.from("patient_face_charts").insert({
+      patient_id:      id,
+      clinic_id:       caller?.clinic_id ?? null,
+      encounter_id:    encounter_id ?? null,
+      visit_date:      visit_date ?? new Date().toISOString().split("T")[0],
+      diagram_type:    diagram_type ?? "face",
+      annotations:     annotations ?? [],
+      created_by_name: created_by_name ?? caller?.full_name ?? "Provider",
+    }).select("id").single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    logAction({ clinicId: caller?.clinic_id ?? undefined, action: "note.create", targetId: id, targetName: `Face chart — ${diagram_type}` });
+    return NextResponse.json({ success: true, id: data?.id });
+  }
+
+  // ── Update face chart annotations ────────────────────────────────────────
+  if (body.action === "update_face_chart") {
+    const { chartId, annotations } = body as { chartId: string; annotations: unknown[] };
+    if (!chartId) return NextResponse.json({ error: "chartId required" }, { status: 400 });
+    const { error } = await supabase.from("patient_face_charts").update({ annotations }).eq("id", chartId);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true });
+  }
+
+  // ── Log a patient communication ──────────────────────────────────────────
+  if (body.action === "log_communication") {
+    const { channel, direction, subject, content, status } = body as {
+      channel: string; direction?: string; subject?: string; content: string; status?: string;
+    };
+    if (!channel || !content?.trim()) return NextResponse.json({ error: "channel and content required" }, { status: 400 });
+    const { error } = await supabase.from("patient_communications").insert({
+      patient_id:   id,
+      clinic_id:    caller?.clinic_id ?? null,
+      channel,
+      direction:    direction ?? "outbound",
+      subject:      subject ?? null,
+      content:      content.trim(),
+      status:       status ?? "sent",
+      sent_by:      caller?.id ?? null,
+      sent_by_name: caller?.full_name ?? null,
+    });
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true });
+  }
+
   return NextResponse.json({ error: "Unknown action" }, { status: 400 });
 }

@@ -1,2049 +1,252 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { createPortal } from "react-dom";
 import {
-  ArrowLeft, AlertTriangle, Phone, Mail, Pill, Calendar,
-  FileText, DollarSign, Package, Plus, X, Clock, Sparkles,
-  Clipboard, Camera, Stethoscope, Syringe, Star, ChevronDown,
-  ChevronUp, Upload, Image, Loader2, User, ShieldCheck,
-  CheckCircle2, TrendingUp, Activity, Zap, MapPin, ArrowUpCircle,
-  Printer, MessageCircle, Save, Send,
+  LayoutDashboard, Stethoscope, Layers, Image, FileText,
+  Clipboard, CreditCard, Wallet, Pill, Calendar, MessageCircle, TrendingUp,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { useClinic } from "@/contexts/ClinicContext";
 import { logAction } from "@/lib/audit";
-import { toast } from "sonner";
-import BeforeAfterProgress from "@/components/BeforeAfterProgress";
-import ReferenceGalleryModal from "@/components/ReferenceGalleryModal";
+import PatientHeader from "@/components/patient/PatientHeader";
+import OverviewTab from "@/components/patient/tabs/OverviewTab";
+import EMRTab from "@/components/patient/tabs/EMRTab";
+import ChartingTab from "@/components/patient/tabs/ChartingTab";
+import GalleryTab from "@/components/patient/tabs/GalleryTab";
+import DocumentsTab from "@/components/patient/tabs/DocumentsTab";
+import TreatmentsTab from "@/components/patient/tabs/TreatmentsTab";
+import BillingTab from "@/components/patient/tabs/BillingTab";
+import WalletTab from "@/components/patient/tabs/WalletTab";
+import PrescriptionsTab from "@/components/patient/tabs/PrescriptionsTab";
+import AppointmentsTab from "@/components/patient/tabs/AppointmentsTab";
+import CommunicationsTab from "@/components/patient/tabs/CommunicationsTab";
+import MarketingTab from "@/components/patient/tabs/MarketingTab";
+import { Patient, MedicalHistory, Encounter, PatientNote, Treatment } from "@/components/patient/types";
 
-// ─────────────────────────────────────── Types ───────────────────────────────
+// ─────────────────────── Tab config ──────────────────────────────────────────
 
-interface Patient {
-  id: string; full_name: string; email: string | null; phone: string;
-  preferred_provider: string | null; primary_concern: string[] | null;
-  previous_injections: string | null; notes: string | null;
-  clinic_id: string | null; created_at: string;
-  date_of_birth: string | null; fitzpatrick_type: number | null;
-  allergies: string[] | null;
-}
-interface MedicalHistory {
-  id: string; primary_concerns: string[]; preferred_specialist: string | null;
-  had_prior_injections: boolean | null; last_injection_date: string | null;
-  injection_complications: string | null; patient_notes: string | null;
-  recorded_at: string;
-  allergies: string[] | null;
-  current_medications: string | null;
-  past_procedures: string | null;
-  skin_type: string | null;
-}
-interface PatientNote {
-  id: string; note_type: string; content: string;
-  author_name: string | null; created_at: string;
-}
-interface Encounter {
-  id: string; subjective: string | null; objective: string | null;
-  assessment: string | null; plan: string | null;
-  photos: { url: string; type: string; caption?: string }[];
-  created_by_name: string | null; created_at: string;
-}
-interface Treatment {
-  id: string; treatment_name: string; status: string;
-  price: number | null; quoted_price: number | null;
-  mrp: number | null; discount_pct: number | null;
-  package_type: string | null;
-  counselled_by: string | null; counselling_session_id: string | null;
-  notes: string | null; created_at: string;
-  recommended_sessions: number | null;
-}
-interface PatientPackage {
-  id: string; package_name: string; total_sessions: number;
-  used_sessions: number; price_per_session: number | null; created_at: string;
-}
-interface Service { id: string; name: string; selling_price: number; mrp: number; }
-interface Staff   { id: string; full_name: string; role: string; }
-type CounsTreatmentRow = {
-  service_id: string; service_name: string;
-  mrp: number; quoted_price: string; discount_pct: string; sessions: string; recommended: boolean;
-};
-interface ServiceCredit {
-  id: string; service_name: string; total_sessions: number; used_sessions: number;
-  purchase_price: number; per_session_value: number;
-  status: string; family_shared: boolean;
-  purchase_clinic_id: string; current_clinic_id: string;
-  purchase_clinic_name: string; current_clinic_name: string;
-}
-interface MedicalCode {
-  code: string; description: string; category: string | null;
-}
-interface EMRData {
-  patient: Patient; medicalHistory: MedicalHistory | null;
-  notes: PatientNote[]; encounters: Encounter[];
-  treatments: Treatment[]; packages: PatientPackage[];
-}
-
-// ─────────────────────────────────────── Constants ───────────────────────────
-
-const FITZPATRICK = [
-  null,
-  { label: "I",   desc: "Very fair",  bg: "#FFF5EC", text: "#8B6914", border: "#E8C87A" },
-  { label: "II",  desc: "Fair",       bg: "#FFE4C4", text: "#7A5518", border: "#D4A870" },
-  { label: "III", desc: "Medium",     bg: "#C8956A", text: "#3D1C02", border: "#A87048" },
-  { label: "IV",  desc: "Olive",      bg: "#9E6840", text: "#FFF0E0", border: "#7A4E28" },
-  { label: "V",   desc: "Brown",      bg: "#6B3E20", text: "#FAECD8", border: "#4A2810" },
-  { label: "VI",  desc: "Dark",       bg: "#2D1505", text: "#E8D4C0", border: "#1A0800" },
-];
-
-const SOAP_TABS = [
-  { key: "subjective",  label: "S",  title: "Subjective",  desc: "Patient's chief complaint, history of present illness, and review of symptoms in their own words." },
-  { key: "objective",   label: "O",  title: "Objective",   desc: "Provider's clinical observations, measurements, and physical examination findings." },
-  { key: "assessment",  label: "A",  title: "Assessment",  desc: "Clinical diagnosis, differential diagnoses, and overall evaluation of the patient's condition." },
-  { key: "plan",        label: "P",  title: "Plan",        desc: "Prescribed treatments, procedures performed, medications, follow-up instructions, and next steps." },
+const TABS = [
+  { key: "overview",        label: "Overview",        icon: LayoutDashboard  },
+  { key: "emr",             label: "EMR",             icon: Stethoscope      },
+  { key: "charting",        label: "Charting",        icon: Layers           },
+  { key: "gallery",         label: "Gallery",         icon: Image            },
+  { key: "documents",       label: "Documents",       icon: FileText         },
+  { key: "treatments",      label: "Treatments",      icon: Clipboard        },
+  { key: "billing",         label: "Billing",         icon: CreditCard       },
+  { key: "wallet",          label: "Wallet",          icon: Wallet           },
+  { key: "prescriptions",   label: "Prescriptions",   icon: Pill             },
+  { key: "appointments",    label: "Appointments",    icon: Calendar         },
+  { key: "communications",  label: "Communications",  icon: MessageCircle    },
+  { key: "marketing",       label: "Marketing",       icon: TrendingUp       },
 ] as const;
-type SOAPKey = typeof SOAP_TABS[number]["key"];
 
-// ─────────────────────────────────────── Helpers ─────────────────────────────
+type TabKey = typeof TABS[number]["key"];
 
-function calcAge(dob: string | null): string {
-  if (!dob) return "—";
-  const d = new Date(dob); const now = new Date();
-  let age = now.getFullYear() - d.getFullYear();
-  if (now.getMonth() - d.getMonth() < 0 || (now.getMonth() === d.getMonth() && now.getDate() < d.getDate())) age--;
-  return `${age} yrs`;
-}
-function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-}
-function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-}
-function relDate(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const d = Math.floor(diff / 86400000);
-  if (d === 0) return "Today";
-  if (d === 1) return "Yesterday";
-  if (d < 30)  return `${d} days ago`;
-  return fmtDate(iso);
+// ─────────────────────── API types ───────────────────────────────────────────
+
+interface EMRBundle {
+  patient:        Patient;
+  medicalHistory: MedicalHistory | null;
+  notes:          PatientNote[];
+  encounters:     Encounter[];
+  treatments:     Treatment[];
+  packages:       { id: string; package_name: string; total_sessions: number; used_sessions: number; price_per_session: number | null; created_at: string }[];
 }
 
-// ─────────────────────────────────────── Main Page ───────────────────────────
+// ─────────────────────── Main Page ───────────────────────────────────────────
 
-export default function PatientEMRPage() {
-  const { id } = useParams() as { id: string };
+export default function PatientProfilePage() {
+  const { id }  = useParams() as { id: string };
   const router  = useRouter();
 
-  const [data,       setData]       = useState<EMRData | null>(null);
-  const [loading,    setLoading]    = useState(true);
-  const [notFound,   setNotFound]   = useState(false);
-  const [mounted,    setMounted]    = useState(false);
-  const [fabOpen,    setFabOpen]    = useState(false);
-  const [drawer,     setDrawer]     = useState<"soap" | "note" | "treatment" | null>(null);
+  const [bundle,      setBundle]      = useState<EMRBundle | null>(null);
+  const [loading,     setLoading]     = useState(true);
+  const [notFound,    setNotFound]    = useState(false);
+  const [activeTab,   setActiveTab]   = useState<TabKey>("overview");
+  const [privacyMode, setPrivacyMode] = useState(false);
+  const [visitedTabs, setVisitedTabs] = useState<Set<TabKey>>(new Set(["overview"]));
 
-  useEffect(() => { setMounted(true); }, []);
-
-  const fetchData = useCallback(async () => {
+  const fetchBundle = useCallback(async () => {
     const res = await fetch(`/api/patients/${id}`);
     if (!res.ok) { setNotFound(true); setLoading(false); return; }
-    const json = await res.json();
-    setData(json);
+    const json = await res.json() as EMRBundle;
+    setBundle(json);
     setLoading(false);
-    // HIPAA Audit: record every profile view in audit_logs (non-blocking)
+
+    // HIPAA audit: record profile view (non-blocking)
     logAction({
       action:     "view_patient_profile",
       targetId:   id,
       targetName: json.patient?.full_name ?? id,
-      metadata:   { page: "emr" },
+      metadata:   { page: "patient-profile-v2" },
     });
   }, [id]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchBundle(); }, [fetchBundle]);
 
-  if (loading) return <EMRSkeleton />;
-  if (notFound || !data) return <NotFound onBack={() => router.push("/patients")} />;
+  function handleTabChange(key: string) {
+    setActiveTab(key as TabKey);
+    setVisitedTabs(prev => new Set([...prev, key as TabKey]));
+  }
 
-  const { patient, medicalHistory, notes, encounters, treatments, packages } = data;
+  if (loading) return <LoadingSkeleton />;
+  if (notFound || !bundle) return <NotFound onBack={() => router.push("/patients")} />;
 
-  const closeDrawer = () => { setDrawer(null); fetchData(); };
+  const { patient, medicalHistory, notes, encounters, treatments } = bundle;
+  const clinicId = patient.clinic_id ?? "";
 
   return (
     <>
       <style>{`
-        @keyframes pulseRing {
-          0%   { transform: scale(1); opacity: 0.8; }
-          50%  { transform: scale(1.4); opacity: 0.2; }
-          100% { transform: scale(1); opacity: 0.8; }
-        }
-        @keyframes slideInRight {
-          from { transform: translateX(100%); opacity: 0; }
-          to   { transform: translateX(0); opacity: 1; }
-        }
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(6px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        .emr-col::-webkit-scrollbar { width: 4px; }
-        .emr-col::-webkit-scrollbar-track { background: transparent; }
-        .emr-col::-webkit-scrollbar-thumb { background: rgba(197,160,89,0.3); border-radius: 2px; }
-        .soap-tab { transition: all 0.18s; cursor: pointer; }
-        .soap-tab:hover { opacity: 0.85; }
-        .fab-action { transition: all 0.22s cubic-bezier(0.34,1.56,0.64,1); }
+        @keyframes patientFadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+        .patient-tab-content { animation: patientFadeIn 0.2s ease; }
+        .patient-tab-scroll::-webkit-scrollbar { width: 5px; }
+        .patient-tab-scroll::-webkit-scrollbar-thumb { background: rgba(197,160,89,0.25); border-radius: 3px; }
       `}</style>
 
-      {/* ── Full-height flex column ── */}
-      <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#F9F7F2" }}>
+      <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#F9F7F2", overflow: "hidden" }}>
+        {/* Sticky Header with tab bar */}
+        <PatientHeader
+          patient={patient}
+          activeTab={activeTab}
+          tabs={TABS.map(t => ({ key: t.key, label: t.label, icon: t.icon }))}
+          onTabChange={handleTabChange}
+          privacyMode={privacyMode}
+          onTogglePrivacy={() => setPrivacyMode(v => !v)}
+        />
 
-        {/* ── Pinned Header ── */}
-        <PatientHeader patient={patient} onBack={() => router.push("/patients")} />
+        {/* Scrollable tab content */}
+        <div className="patient-tab-scroll" style={{ flex: 1, overflowY: "auto" }}>
+          <div className="patient-tab-content" key={activeTab}>
 
-        {/* ── Three-column grid ── */}
-        <div style={{
-          flex: 1, minHeight: 0, display: "grid",
-          gridTemplateColumns: "292px 1fr 308px", overflow: "hidden",
-        }}>
-          {/* Left */}
-          <div className="emr-col" style={{ overflowY: "auto", borderRight: "1px solid rgba(197,160,89,0.13)", padding: "20px 16px 32px" }}>
-            <MedicalColumn patient={patient} medicalHistory={medicalHistory} />
-          </div>
+            {activeTab === "overview" && (
+              <OverviewTab
+                patient={patient}
+                medicalHistory={medicalHistory}
+                clinicId={clinicId}
+                privacyMode={privacyMode}
+              />
+            )}
 
-          {/* Centre */}
-          <div className="emr-col" style={{ overflowY: "auto", padding: "20px 20px 32px" }}>
-            <TimelineColumn
-              patient={patient}
-              medicalHistory={medicalHistory}
-              notes={notes}
-              encounters={encounters}
-            />
-          </div>
+            {activeTab === "emr" && (
+              <EMRTab
+                patient={patient}
+                medicalHistory={medicalHistory}
+                notes={notes}
+                encounters={encounters}
+                clinicId={clinicId}
+                onRefresh={fetchBundle}
+              />
+            )}
 
-          {/* Right */}
-          <div className="emr-col" style={{ overflowY: "auto", borderLeft: "1px solid rgba(197,160,89,0.13)", padding: "20px 16px 32px" }}>
-            <BusinessColumn treatments={treatments} packages={packages} patient={patient} onAddTreatment={() => { setFabOpen(false); setDrawer("treatment"); }} onRefresh={fetchData} />
+            {activeTab === "charting" && (
+              <ChartingTab
+                patientId={patient.id}
+                clinicId={clinicId}
+              />
+            )}
+
+            {activeTab === "gallery" && (
+              <GalleryTab
+                patient={patient}
+                clinicId={clinicId}
+                privacyMode={privacyMode}
+              />
+            )}
+
+            {activeTab === "documents" && (
+              <DocumentsTab
+                patient={patient}
+                clinicId={clinicId}
+              />
+            )}
+
+            {activeTab === "treatments" && (
+              <TreatmentsTab
+                patient={patient}
+                clinicId={clinicId}
+                treatments={treatments}
+              />
+            )}
+
+            {activeTab === "billing" && (
+              <BillingTab
+                patient={patient}
+                clinicId={clinicId}
+                privacyMode={privacyMode}
+              />
+            )}
+
+            {activeTab === "wallet" && (
+              <WalletTab
+                patient={patient}
+                clinicId={clinicId}
+                privacyMode={privacyMode}
+                onRefresh={fetchBundle}
+              />
+            )}
+
+            {activeTab === "prescriptions" && (
+              <PrescriptionsTab
+                patient={patient}
+                clinicId={clinicId}
+                privacyMode={privacyMode}
+              />
+            )}
+
+            {activeTab === "appointments" && (
+              <AppointmentsTab
+                patient={patient}
+                clinicId={clinicId}
+              />
+            )}
+
+            {activeTab === "communications" && (
+              <CommunicationsTab
+                patient={patient}
+                clinicId={clinicId}
+              />
+            )}
+
+            {activeTab === "marketing" && (
+              <MarketingTab
+                patient={patient}
+                clinicId={clinicId}
+              />
+            )}
+
           </div>
         </div>
       </div>
-
-      {/* ── Floating Action Button ── */}
-      {mounted && createPortal(
-        <FAB
-          open={fabOpen}
-          onToggle={() => setFabOpen(o => !o)}
-          onAction={(a) => { setFabOpen(false); setDrawer(a); }}
-        />,
-        document.body
-      )}
-
-      {/* ── SOAP Drawer ── */}
-      {mounted && drawer === "soap" && createPortal(
-        <SOAPDrawer patient={patient} onClose={closeDrawer} />,
-        document.body
-      )}
-
-      {/* ── Quick Note Drawer ── */}
-      {mounted && drawer === "note" && createPortal(
-        <NoteDrawer patientId={id} onClose={closeDrawer} />,
-        document.body
-      )}
-
-      {/* ── Add Treatment Drawer ── */}
-      {mounted && drawer === "treatment" && createPortal(
-        <TreatmentDrawer patient={patient} onClose={closeDrawer} />,
-        document.body
-      )}
     </>
   );
 }
 
-// ─────────────────────────────────────── Patient Header ──────────────────────
+// ─────────────────────── Loading & 404 ───────────────────────────────────────
 
-function PatientHeader({ patient, onBack }: { patient: Patient; onBack: () => void }) {
-  const fitz = patient.fitzpatrick_type ? FITZPATRICK[patient.fitzpatrick_type] : null;
-  const allergies = patient.allergies?.filter(Boolean) ?? [];
-  const hasAllergies = allergies.length > 0;
-
+function LoadingSkeleton() {
   return (
-    <div style={{
-      background: "white",
-      borderBottom: "1px solid rgba(197,160,89,0.18)",
-      padding: "0 24px",
-      height: 72,
-      display: "flex",
-      alignItems: "center",
-      gap: 20,
-      flexShrink: 0,
-      position: "sticky",
-      top: 0,
-      zIndex: 20,
-      boxShadow: "0 1px 12px rgba(28,25,23,0.06)",
-    }}>
-      {/* Back */}
-      <button onClick={onBack} style={{ width: 34, height: 34, borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "rgba(197,160,89,0.06)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
-        <ArrowLeft size={15} style={{ color: "#9C9584" }} />
-      </button>
-
-      {/* Avatar */}
-      <div style={{ width: 44, height: 44, borderRadius: "50%", background: "linear-gradient(135deg, #C5A059, #A8853A)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 2px 8px rgba(197,160,89,0.35)" }}>
-        <span style={{ color: "white", fontWeight: 700, fontSize: 16, fontFamily: "Georgia, serif" }}>
-          {patient.full_name.split(" ").map(n => n[0]).slice(0, 2).join("")}
-        </span>
-      </div>
-
-      {/* Name + Meta */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <h1 style={{ fontSize: 18, fontWeight: 600, fontFamily: "Georgia, serif", color: "#1C1917", margin: 0, lineHeight: 1 }}>
-            {patient.full_name}
-          </h1>
-
-          {/* Age */}
-          <span style={{ fontSize: 12, color: "#9C9584", background: "rgba(249,247,242,0.9)", border: "1px solid rgba(197,160,89,0.2)", borderRadius: 8, padding: "2px 8px" }}>
-            {calcAge(patient.date_of_birth)}
-          </span>
-
-          {/* Fitzpatrick */}
-          {fitz && (
-            <span style={{
-              fontSize: 11, fontWeight: 600, padding: "2px 9px", borderRadius: 8,
-              background: fitz.bg, color: fitz.text, border: `1px solid ${fitz.border}`,
-              letterSpacing: "0.05em",
-            }}>
-              FST {fitz.label} · {fitz.desc}
-            </span>
-          )}
-
-          {/* Allergy Badge */}
-          {hasAllergies && (
-            <div style={{ display: "flex", alignItems: "center", gap: 5, position: "relative" }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#E85555", display: "inline-block", position: "relative" }}>
-                <span style={{
-                  position: "absolute", inset: 0, borderRadius: "50%", background: "#E85555",
-                  animation: "pulseRing 1.8s ease-in-out infinite",
-                }} />
-              </span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: "#B43C3C", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                ALLERGIES
-              </span>
-              <span style={{ fontSize: 11, color: "#B43C3C" }}>
-                — {allergies.slice(0, 2).join(", ")}{allergies.length > 2 ? ` +${allergies.length - 2}` : ""}
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* Contacts */}
-        <div style={{ display: "flex", gap: 16, marginTop: 4 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#9C9584" }}>
-            <Phone size={11} /> {patient.phone}
-          </span>
-          {patient.email && (
-            <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#9C9584" }}>
-              <Mail size={11} /> {patient.email}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Status chip */}
-      <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", borderRadius: 10, background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.25)" }}>
-          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4A8A4A" }} />
-          <span style={{ fontSize: 12, color: "#1C1917", fontWeight: 500 }}>Active Patient</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────── Left: Medical Column ────────────────
-
-function MedicalColumn({ patient, medicalHistory }: { patient: Patient; medicalHistory: MedicalHistory | null }) {
-  const allergies = patient.allergies?.filter(Boolean) ?? [];
-  const concerns  = medicalHistory?.primary_concerns ?? patient.primary_concern ?? [];
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <SectionLabel icon={<Activity size={11} />} label="Medical Summary" />
-
-      {/* Quick Stats */}
-      <Card>
-        <CardRow icon={<User size={12} />} label="Intake Date"    value={fmtDate(patient.created_at)} />
-        {patient.date_of_birth && <CardRow icon={<Calendar size={12} />} label="Date of Birth" value={fmtDate(patient.date_of_birth)} />}
-        {patient.preferred_provider && <CardRow icon={<Stethoscope size={12} />} label="Provider"    value={patient.preferred_provider} />}
-      </Card>
-
-      {/* Primary Concerns */}
-      <Card title="Primary Concerns">
-        {concerns.length > 0 ? (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {concerns.map((c) => (
-              <span key={c} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 999, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.08)", color: "#5C5447", fontFamily: "Georgia, serif" }}>
-                {c}
-              </span>
-            ))}
-          </div>
-        ) : (
-          <EmptyMini label="No concerns recorded" />
-        )}
-      </Card>
-
-      {/* Allergies */}
-      <Card title="Medical Alerts">
-        {allergies.length > 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-            {allergies.map((a) => (
-              <div key={a} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <AlertTriangle size={11} style={{ color: "#B43C3C", flexShrink: 0 }} />
-                <span style={{ fontSize: 12, color: "#B43C3C", fontFamily: "Georgia, serif" }}>{a}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <ShieldCheck size={12} style={{ color: "#4A8A4A" }} />
-            <span style={{ fontSize: 12, color: "#4A8A4A" }}>No known allergies</span>
-          </div>
-        )}
-      </Card>
-
-      {/* Injection History */}
-      {(medicalHistory?.had_prior_injections != null || patient.previous_injections) && (
-        <Card title="Injection History">
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-            <Syringe size={12} style={{ color: medicalHistory?.had_prior_injections ? "#C5A059" : "#9C9584", flexShrink: 0 }} />
-            <span style={{ fontSize: 12, color: "#5C5447", fontFamily: "Georgia, serif" }}>
-              {medicalHistory?.had_prior_injections ? "Prior injections — Yes" : "No prior injections"}
-            </span>
-          </div>
-          {medicalHistory?.last_injection_date && (
-            <p style={{ fontSize: 11, color: "#9C9584", marginLeft: 18 }}>
-              Last: {medicalHistory.last_injection_date}
-            </p>
-          )}
-          {medicalHistory?.injection_complications && (
-            <p style={{ fontSize: 11, color: "#B43C3C", marginLeft: 18, marginTop: 3 }}>
-              ⚠ {medicalHistory.injection_complications}
-            </p>
-          )}
-          {patient.previous_injections && !medicalHistory && (
-            <p style={{ fontSize: 12, color: "#6B6358", fontFamily: "Georgia, serif" }}>{patient.previous_injections}</p>
-          )}
-        </Card>
-      )}
-
-      {/* Consent */}
-      <Card title="Consent Status">
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ width: 28, height: 28, borderRadius: 8, background: "rgba(74,138,74,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <CheckCircle2 size={14} style={{ color: "#4A8A4A" }} />
-          </div>
-          <div>
-            <p style={{ fontSize: 12, fontWeight: 600, color: "#1C1917" }}>Intake Form Complete</p>
-            <p style={{ fontSize: 10, color: "#9C9584" }}>{fmtDate(patient.created_at)}</p>
+    <div style={{ height: "100vh", background: "#F9F7F2", display: "flex", flexDirection: "column" }}>
+      {/* Header skeleton */}
+      <div style={{ background: "white", borderBottom: "1px solid rgba(197,160,89,0.15)", padding: "14px 24px 0" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 10 }}>
+          <div style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(197,160,89,0.12)" }} />
+          <div style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(197,160,89,0.12)" }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ width: 180, height: 18, borderRadius: 6, background: "rgba(197,160,89,0.12)", marginBottom: 6 }} />
+            <div style={{ width: 240, height: 12, borderRadius: 4, background: "rgba(197,160,89,0.08)" }} />
           </div>
         </div>
-        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ width: 28, height: 28, borderRadius: 8, background: "rgba(197,160,89,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <FileText size={14} style={{ color: "#C5A059" }} />
-          </div>
-          <div>
-            <p style={{ fontSize: 12, fontWeight: 500, color: "#9C9584" }}>Treatment Consent</p>
-            <p style={{ fontSize: 10, color: "#B8AE9C" }}>Pending — collect before first procedure</p>
-          </div>
-        </div>
-      </Card>
-
-      {/* Current Medications */}
-      {medicalHistory?.current_medications && (
-        <Card title="Current Medications">
-          <p style={{ fontSize: 12, color: "#3D3530", fontFamily: "Georgia, serif", lineHeight: 1.7, margin: 0, whiteSpace: "pre-wrap" }}>
-            {medicalHistory.current_medications}
-          </p>
-        </Card>
-      )}
-
-      {/* Past Procedures */}
-      {medicalHistory?.past_procedures && (
-        <Card title="Past Procedures">
-          <p style={{ fontSize: 12, color: "#3D3530", fontFamily: "Georgia, serif", lineHeight: 1.7, margin: 0, whiteSpace: "pre-wrap" }}>
-            {medicalHistory.past_procedures}
-          </p>
-        </Card>
-      )}
-
-      {/* Skin Type */}
-      {medicalHistory?.skin_type && (
-        <Card title="Skin Type">
-          <p style={{ fontSize: 12, color: "#5C5447", fontFamily: "Georgia, serif", lineHeight: 1.65, margin: 0 }}>
-            {medicalHistory.skin_type}
-          </p>
-        </Card>
-      )}
-
-      {/* Patient notes from intake */}
-      {(medicalHistory?.patient_notes || patient.notes) && (
-        <Card title="Patient Notes">
-          <p style={{ fontSize: 12, color: "#5C5447", fontFamily: "Georgia, serif", lineHeight: 1.65 }}>
-            {medicalHistory?.patient_notes ?? patient.notes}
-          </p>
-        </Card>
-      )}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────── Centre: Timeline ────────────────────
-
-function TimelineColumn({ patient, medicalHistory, notes, encounters }: {
-  patient: Patient; medicalHistory: MedicalHistory | null;
-  notes: PatientNote[]; encounters: Encounter[];
-}) {
-  // Merge all entries into a single timeline, newest first
-  type TEntry = { id: string; kind: "intake" | "soap" | "note"; date: string; data: unknown };
-  const entries: TEntry[] = [];
-
-  // Synthesised intake entry (always first in history)
-  entries.push({
-    id: "intake",
-    kind: "intake",
-    date: patient.created_at,
-    data: { patient, medicalHistory },
-  });
-
-  // SOAP encounters
-  encounters.forEach(e => entries.push({ id: e.id, kind: "soap", date: e.created_at, data: e }));
-
-  // Plain notes
-  notes.forEach(n => entries.push({ id: n.id, kind: "note", date: n.created_at, data: n }));
-
-  entries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-  return (
-    <div>
-      <SectionLabel icon={<Clipboard size={11} />} label="Clinical Timeline" />
-
-      {entries.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "60px 20px" }}>
-          <Clipboard size={32} style={{ color: "rgba(197,160,89,0.3)", margin: "0 auto 12px" }} />
-          <p style={{ fontSize: 14, color: "#9C9584", fontFamily: "Georgia, serif" }}>No clinical entries yet</p>
-          <p style={{ fontSize: 12, color: "#B8AE9C", marginTop: 4 }}>Start a session to build the patient's timeline</p>
-        </div>
-      ) : (
-        <div style={{ position: "relative", paddingLeft: 28 }}>
-          {/* Vertical spine */}
-          <div style={{ position: "absolute", left: 9, top: 8, bottom: 8, width: 1, background: "rgba(197,160,89,0.2)" }} />
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-            {entries.map(e => (
-              <TimelineEntry key={e.id} entry={e} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ── Before & After Progress ── */}
-      <div style={{ marginTop: 28, paddingTop: 20, borderTop: "1px solid rgba(197,160,89,0.12)" }}>
-        <BeforeAfterProgress patientId={patient.id} clinicId={patient.clinic_id} />
-      </div>
-    </div>
-  );
-}
-
-function TimelineEntry({ entry }: { entry: { id: string; kind: string; date: string; data: unknown } }) {
-  const [expanded, setExpanded] = useState(true);
-
-  const DOT_COLOR: Record<string, string> = {
-    intake: "#C5A059",
-    soap:   "#6366F1",
-    note:   "#6B7280",
-  };
-  const BADGE_STYLE: Record<string, React.CSSProperties> = {
-    intake: { background: "rgba(197,160,89,0.12)", color: "#8B6914", border: "1px solid rgba(197,160,89,0.3)" },
-    soap:   { background: "rgba(99,102,241,0.1)",  color: "#4338CA", border: "1px solid rgba(99,102,241,0.25)" },
-    note:   { background: "rgba(107,114,128,0.08)", color: "#4B5563", border: "1px solid rgba(107,114,128,0.2)" },
-  };
-
-  return (
-    <div style={{ position: "relative", animation: "fadeIn 0.3s ease" }}>
-      {/* Dot */}
-      <div style={{
-        position: "absolute", left: -22, top: 14,
-        width: 10, height: 10, borderRadius: "50%",
-        background: DOT_COLOR[entry.kind] ?? "#9C9584",
-        border: "2px solid white",
-        boxShadow: `0 0 0 2px ${DOT_COLOR[entry.kind] ?? "#9C9584"}40`,
-      }} />
-
-      {/* Card */}
-      <div style={{
-        background: "white",
-        border: `1px solid rgba(197,160,89,0.14)`,
-        borderRadius: 14,
-        overflow: "hidden",
-        boxShadow: "0 1px 4px rgba(28,25,23,0.05)",
-      }}>
-        {/* Header */}
-        <div
-          style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", cursor: "pointer", borderBottom: expanded ? "1px solid rgba(197,160,89,0.08)" : "none" }}
-          onClick={() => setExpanded(e => !e)}
-        >
-          <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6, letterSpacing: "0.06em", textTransform: "uppercase", ...BADGE_STYLE[entry.kind] }}>
-            {entry.kind === "intake" ? "Intake" : entry.kind === "soap" ? "SOAP" : "Note"}
-          </span>
-          <span style={{ fontSize: 11, color: "#9C9584", flex: 1 }}>
-            {relDate(entry.date)}{entry.kind === "soap" ? ` at ${fmtTime(entry.date)}` : ""}
-          </span>
-          {entry.kind === "soap" && (
-            <span style={{ fontSize: 11, color: "#9C9584" }}>
-              {(entry.data as Encounter).created_by_name ?? "Provider"}
-            </span>
-          )}
-          {expanded ? <ChevronUp size={12} style={{ color: "#B8AE9C" }} /> : <ChevronDown size={12} style={{ color: "#B8AE9C" }} />}
-        </div>
-
-        {/* Body */}
-        {expanded && (
-          <div style={{ padding: "12px 14px" }}>
-            {entry.kind === "intake" && <IntakeEntryBody data={entry.data as { patient: Patient; medicalHistory: MedicalHistory | null }} />}
-            {entry.kind === "soap"   && <SOAPEntryBody   enc={entry.data as Encounter} />}
-            {entry.kind === "note"   && <NoteEntryBody   note={entry.data as PatientNote} />}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function IntakeEntryBody({ data }: { data: { patient: Patient; medicalHistory: MedicalHistory | null } }) {
-  const { patient, medicalHistory } = data;
-  const concerns = medicalHistory?.primary_concerns ?? patient.primary_concern ?? [];
-  return (
-    <div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-        {concerns.map(c => (
-          <span key={c} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: "rgba(197,160,89,0.1)", color: "#7A5C14", border: "1px solid rgba(197,160,89,0.25)" }}>
-            {c}
-          </span>
-        ))}
-      </div>
-      {(medicalHistory?.patient_notes || patient.notes) && (
-        <p style={{ fontSize: 12, color: "#6B6358", fontFamily: "Georgia, serif", lineHeight: 1.6, margin: 0 }}>
-          {medicalHistory?.patient_notes ?? patient.notes}
-        </p>
-      )}
-      <p style={{ fontSize: 10, color: "#B8AE9C", marginTop: 8 }}>
-        Submitted via Digital Intake Form · {fmtDate(patient.created_at)}
-      </p>
-    </div>
-  );
-}
-
-function SOAPEntryBody({ enc }: { enc: Encounter }) {
-  const sections = [
-    { label: "Subjective",  value: enc.subjective,  color: "#6366F1" },
-    { label: "Objective",   value: enc.objective,   color: "#0891B2" },
-    { label: "Assessment",  value: enc.assessment,  color: "#059669" },
-    { label: "Plan",        value: enc.plan,        color: "#D97706" },
-  ].filter(s => s.value);
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {sections.map(s => (
-        <div key={s.label} style={{ borderLeft: `2px solid ${s.color}30`, paddingLeft: 10 }}>
-          <p style={{ fontSize: 10, fontWeight: 700, color: s.color, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}>{s.label}</p>
-          <p style={{ fontSize: 12, color: "#3D3530", fontFamily: "Georgia, serif", lineHeight: 1.65, whiteSpace: "pre-wrap", margin: 0 }}>{s.value}</p>
-        </div>
-      ))}
-      {sections.length === 0 && <p style={{ fontSize: 12, color: "#9C9584", fontStyle: "italic" }}>No SOAP details recorded.</p>}
-
-      {/* Photos */}
-      {enc.photos?.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <p style={{ fontSize: 10, fontWeight: 600, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Before / After</p>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {enc.photos.map((ph, i) => (
-              <div key={i} style={{ position: "relative" }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={ph.url} alt={ph.caption ?? `Photo ${i + 1}`} style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)" }} />
-                {ph.type && (
-                  <span style={{ position: "absolute", bottom: 3, left: 3, fontSize: 8, fontWeight: 700, padding: "1px 4px", borderRadius: 4, background: ph.type === "before" ? "#1C1917CC" : "#4A8A4ACC", color: "white", textTransform: "uppercase" }}>
-                    {ph.type}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function NoteEntryBody({ note }: { note: PatientNote }) {
-  return (
-    <div>
-      <p style={{ fontSize: 12, color: "#3D3530", fontFamily: "Georgia, serif", lineHeight: 1.65, margin: 0, whiteSpace: "pre-wrap" }}>{note.content}</p>
-      {note.author_name && (
-        <p style={{ fontSize: 10, color: "#B8AE9C", marginTop: 8 }}>— {note.author_name}</p>
-      )}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────── Right: Business ─────────────────────
-
-const fmtINR = (n: number) =>
-  new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
-
-// ─────────────────────────────────────── Proforma Invoice Modal ───────────────
-
-function EMRProformaModal({ patient, treatments, clinicName, onClose }: {
-  patient: Patient; treatments: Treatment[]; clinicName: string; onClose: () => void;
-}) {
-  const [sharePhone, setSharePhone] = useState(patient.phone ?? "");
-  const [shareEmail, setShareEmail] = useState(patient.email ?? "");
-  const [saving,     setSaving]     = useState(false);
-
-  const dateStr  = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
-  const total    = treatments.reduce((s, t) => s + (t.quoted_price ?? t.price ?? 0), 0);
-  const totalMrp = treatments.reduce((s, t) => s + (t.mrp ?? t.quoted_price ?? t.price ?? 0), 0);
-
-  const whatsappMsg = [
-    `*${clinicName || "Clinic"} — Treatment Estimate*`,
-    `Patient: ${patient.full_name}  |  Date: ${dateStr}`,
-    "",
-    ...treatments.map(t => {
-      const mrp    = t.mrp ?? (t.quoted_price ?? t.price ?? 0);
-      const quoted = t.quoted_price ?? t.price ?? 0;
-      const disc   = t.discount_pct ?? 0;
-      const sess   = t.recommended_sessions && t.recommended_sessions > 1 ? ` × ${t.recommended_sessions} sessions` : "";
-      return `${t.treatment_name}${sess}  MRP ₹${mrp.toLocaleString("en-IN")} → ₹${quoted.toLocaleString("en-IN")}${disc > 0 ? ` (${disc.toFixed(1)}% off)` : ""}`;
-    }),
-    "──────────────────",
-    `*Total Quoted: ₹${total.toLocaleString("en-IN")}*`,
-    "Valid 7 days. Reply YES to confirm.",
-  ].join("\n");
-
-  const handleWhatsApp = () => {
-    const phone = sharePhone.replace(/\D/g, "");
-    window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(whatsappMsg)}`, "_blank");
-  };
-
-  const handleEmail = () => {
-    const subject = encodeURIComponent(`${clinicName || "Clinic"} — Treatment Estimate for ${patient.full_name}`);
-    const body    = encodeURIComponent(whatsappMsg.replace(/\*/g, ""));
-    window.location.href = `mailto:${shareEmail}?subject=${subject}&body=${body}`;
-  };
-
-  const handlePrint = () => {
-    const html = `<!DOCTYPE html><html><head><title>Proforma Estimate</title>
-    <style>
-      body{font-family:Georgia,serif;padding:40px;color:#1a1714;max-width:640px;margin:0 auto}
-      h1{font-size:22px;color:#C5A059;margin-bottom:4px}
-      .sub{font-size:13px;color:#9C9584;margin-bottom:24px}
-      table{width:100%;border-collapse:collapse;margin-top:16px}
-      th{text-align:left;padding:9px 8px;background:#f9f7f2;border-bottom:2px solid #C5A059;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:#6B6358}
-      td{padding:9px 8px;border-bottom:1px solid #e5e0d8;font-size:13px}
-      .strike{text-decoration:line-through;color:#9C9584}
-      .disc{color:#16a34a;font-size:11px;font-weight:600}
-      .total-row{font-size:15px;font-weight:bold;color:#C5A059;text-align:right;margin-top:16px;padding-top:12px;border-top:2px solid #C5A059}
-      .footer{margin-top:28px;font-size:11px;color:#9ca3af;border-top:1px solid #e5e0d8;padding-top:12px}
-    </style></head><body>
-    <h1>${clinicName || "Clinic"}</h1>
-    <div class="sub">Proforma Estimate · ${dateStr}</div>
-    <p><strong>Patient:</strong> ${patient.full_name}</p>
-    <table>
-      <thead><tr><th>Treatment</th><th>Sessions</th><th>MRP</th><th>Quoted</th><th>Disc%</th></tr></thead>
-      <tbody>
-        ${treatments.map(t => {
-          const mrp    = t.mrp ?? (t.quoted_price ?? t.price ?? 0);
-          const quoted = t.quoted_price ?? t.price ?? 0;
-          const disc   = t.discount_pct ?? 0;
-          return `<tr>
-            <td>${t.treatment_name}</td>
-            <td>${t.recommended_sessions ?? 1}</td>
-            <td><span class="strike">₹${mrp.toLocaleString("en-IN")}</span></td>
-            <td><strong>₹${quoted.toLocaleString("en-IN")}</strong></td>
-            <td>${disc > 0 ? `<span class="disc">${disc.toFixed(1)}%</span>` : "—"}</td>
-          </tr>`;
-        }).join("")}
-      </tbody>
-    </table>
-    <div class="total-row">Total Quoted: ₹${total.toLocaleString("en-IN")}</div>
-    ${totalMrp > total ? `<div style="text-align:right;font-size:11px;color:#16a34a;margin-top:4px">You save ₹${(totalMrp - total).toLocaleString("en-IN")}</div>` : ""}
-    <div class="footer">
-      Valid 7 days from ${dateStr}. This is an estimate and not a final invoice.<br/>
-      ${clinicName || "Clinic"} · ${patient.phone ?? ""}${patient.email ? " · " + patient.email : ""}
-    </div>
-    </body></html>`;
-    const w = window.open("", "_blank");
-    if (w) { w.document.write(html); w.document.close(); w.print(); }
-  };
-
-  const handleSaveProforma = async () => {
-    setSaving(true);
-    try {
-      const { data: inv } = await supabase.from("pending_invoices").insert({
-        clinic_id:    patient.clinic_id,
-        patient_name: patient.full_name,
-        total_amount: total,
-        invoice_type: "proforma",
-        payment_mode: "cash",
-      }).select("id").single();
-      if (inv) {
-        await supabase.from("invoice_line_items").insert(
-          treatments.map(t => ({
-            invoice_id:   inv.id,
-            clinic_id:    patient.clinic_id,
-            description:  `${t.treatment_name}${t.recommended_sessions && t.recommended_sessions > 1 ? ` × ${t.recommended_sessions} sessions` : ""}`,
-            quantity:     t.recommended_sessions ?? 1,
-            unit_price:   t.mrp ?? (t.quoted_price ?? t.price ?? 0),
-            discount_pct: t.discount_pct ?? 0,
-            gst_pct:      0,
-            line_total:   t.quoted_price ?? t.price ?? 0,
-          }))
-        );
-        toast.success("Proforma saved to Billing.");
-      }
-    } finally {
-      setSaving(false);
-      onClose();
-    }
-  };
-
-  const inputSt: React.CSSProperties = {
-    width: "100%", padding: "8px 12px", borderRadius: 8,
-    border: "1px solid rgba(197,160,89,0.25)", background: "white",
-    fontSize: 13, color: "#1C1917", outline: "none", boxSizing: "border-box",
-  };
-
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 70, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)" }}>
-      <div style={{ background: "#F9F7F2", borderRadius: 18, overflow: "hidden", display: "flex", flexDirection: "column", width: 620, maxWidth: "95vw", maxHeight: "90vh", boxShadow: "0 24px 64px rgba(0,0,0,0.25)" }}>
-
-        {/* Header */}
-        <div style={{ padding: "18px 22px", background: "white", borderBottom: "1px solid rgba(197,160,89,0.15)", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(197,160,89,0.1)", border: "1px solid rgba(197,160,89,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <FileText size={15} style={{ color: "var(--gold)" }} />
-            </div>
-            <div>
-              <p style={{ fontSize: 13, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Proforma Estimate</p>
-              <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>{patient.full_name} · {treatments.length} treatment{treatments.length !== 1 ? "s" : ""}</p>
-            </div>
-          </div>
-          <button onClick={onClose} style={{ width: 28, height: 28, borderRadius: 7, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <X size={13} style={{ color: "#9C9584" }} />
-          </button>
-        </div>
-
-        {/* Treatment preview table */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "16px 22px" }}>
-          <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid rgba(197,160,89,0.15)" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 55px 85px 80px 55px", gap: 0, background: "rgba(197,160,89,0.06)", padding: "7px 12px", borderBottom: "1px solid rgba(197,160,89,0.12)" }}>
-              {["Treatment", "Sess.", "MRP", "Quoted", "Disc%"].map(h => (
-                <span key={h} style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#9C9584" }}>{h}</span>
-              ))}
-            </div>
-            {treatments.map((t, i) => {
-              const mrp    = t.mrp ?? (t.quoted_price ?? t.price ?? 0);
-              const quoted = t.quoted_price ?? t.price ?? 0;
-              const disc   = t.discount_pct ?? 0;
-              return (
-                <div key={t.id} style={{ display: "grid", gridTemplateColumns: "1fr 55px 85px 80px 55px", gap: 0, padding: "8px 12px", borderBottom: i < treatments.length - 1 ? "1px solid rgba(197,160,89,0.08)" : "none", background: "white" }}>
-                  <span style={{ fontSize: 12, color: "#1C1917", fontFamily: "Georgia, serif" }}>{t.treatment_name}</span>
-                  <span style={{ fontSize: 12, color: "#6B6358", textAlign: "center" }}>{t.recommended_sessions ?? 1}</span>
-                  <span style={{ fontSize: 11, color: "#9C9584", textDecoration: "line-through" }}>₹{mrp.toLocaleString("en-IN")}</span>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--gold)", fontFamily: "Georgia, serif" }}>₹{quoted.toLocaleString("en-IN")}</span>
-                  <span style={{ fontSize: 11, color: disc > 0 ? "#16a34a" : "#9C9584", fontWeight: disc > 0 ? 600 : 400 }}>{disc > 0 ? `${disc.toFixed(1)}%` : "—"}</span>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Total row */}
-          <div style={{ marginTop: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.2)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              {totalMrp > total && (
-                <p style={{ fontSize: 11, color: "#16a34a", fontWeight: 600, margin: 0 }}>
-                  You save ₹{(totalMrp - total).toLocaleString("en-IN")}
-                </p>
-              )}
-              <p style={{ fontSize: 10, color: "#9C9584", margin: 0 }}>Valid 7 days from {dateStr}</p>
-            </div>
-            <span style={{ fontSize: 18, fontWeight: 700, color: "var(--gold)", fontFamily: "Georgia, serif" }}>
-              ₹{total.toLocaleString("en-IN")}
-            </span>
-          </div>
-
-          {/* Contact fields */}
-          <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div>
-              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>WhatsApp Number</label>
-              <input value={sharePhone} onChange={e => setSharePhone(e.target.value)} placeholder="Patient phone" style={inputSt} />
-            </div>
-            <div>
-              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Email Address</label>
-              <input value={shareEmail} onChange={e => setShareEmail(e.target.value)} placeholder="Patient email" style={inputSt} />
-            </div>
-          </div>
-        </div>
-
-        {/* Action buttons */}
-        <div style={{ padding: "14px 22px", borderTop: "1px solid rgba(197,160,89,0.15)", background: "white", display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
-          <button onClick={handlePrint}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(107,114,128,0.25)", background: "rgba(107,114,128,0.06)", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#374151" }}>
-            <Printer size={13} /> Print
-          </button>
-          <button onClick={handleWhatsApp} disabled={!sharePhone.trim()}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(37,211,102,0.3)", background: "rgba(37,211,102,0.08)", cursor: !sharePhone.trim() ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 600, color: "#16a34a", opacity: !sharePhone.trim() ? 0.5 : 1 }}>
-            <MessageCircle size={13} /> WhatsApp
-          </button>
-          <button onClick={handleEmail} disabled={!shareEmail.trim()}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(59,130,246,0.25)", background: "rgba(59,130,246,0.06)", cursor: !shareEmail.trim() ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 600, color: "#2563eb", opacity: !shareEmail.trim() ? 0.5 : 1 }}>
-            <Mail size={13} /> Email
-          </button>
-          <button onClick={handleSaveProforma} disabled={saving}
-            style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", borderRadius: 9, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.1)", cursor: saving ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 600, color: "var(--gold)" }}>
-            <Save size={13} /> {saving ? "Saving…" : "Save to Billing"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BusinessColumn({ treatments, packages, patient, onAddTreatment, onRefresh }: { treatments: Treatment[]; packages: PatientPackage[]; patient: Patient; onAddTreatment: () => void; onRefresh: () => void }) {
-
-  const updateTreatmentStatus = async (treatmentId: string, newStatus: string) => {
-    await supabase.from("patient_treatments").update({ status: newStatus }).eq("id", treatmentId);
-    onRefresh();
-  };
-  const { activeClinicId } = useClinic();
-  const proposed   = treatments.filter(t => t.status === "proposed" || t.status === "in_progress");
-  const totalValue = proposed.filter(t => t.status === "proposed").reduce((s, t) => s + (t.quoted_price ?? t.price ?? 0), 0);
-  const [credits, setCredits] = useState<ServiceCredit[]>([]);
-  const [refGalleryTreatment, setRefGalleryTreatment] = useState<string | null>(null);
-  const [proformaOpen,        setProformaOpen]        = useState(false);
-  const [clinicName,          setClinicName]          = useState("");
-  useEffect(() => {
-    if (!activeClinicId) return;
-    supabase.from("clinics").select("name").eq("id", activeClinicId).single()
-      .then(({ data }) => { if (data?.name) setClinicName(data.name); });
-  }, [activeClinicId]);
-
-  useEffect(() => {
-    supabase
-      .from("patient_service_credits")
-      .select(`
-        id, service_name, total_sessions, used_sessions, purchase_price, per_session_value,
-        status, family_shared, purchase_clinic_id, current_clinic_id,
-        purchase_clinic:clinics!purchase_clinic_id(name),
-        current_clinic:clinics!current_clinic_id(name)
-      `)
-      .eq("patient_id", patient.id)
-      .in("status", ["active", "transferred"])
-      .order("created_at", { ascending: false })
-      .then(({ data }) => {
-        setCredits((data ?? []).map((c: Record<string, unknown>) => ({
-          ...c,
-          purchase_clinic_name: (c.purchase_clinic as { name: string } | null)?.name ?? "—",
-          current_clinic_name:  (c.current_clinic  as { name: string } | null)?.name ?? "—",
-        })) as ServiceCredit[]);
-      });
-  }, [patient.id]);
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <SectionLabel icon={<TrendingUp size={11} />} label="Business & Plans" />
-
-      {/* Service Credits (new table) */}
-      <Card title="Service Credits">
-        {credits.length === 0 ? (
-          <EmptyMini label="No active credits" />
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {credits.map(c => {
-              const remaining = c.total_sessions - c.used_sessions;
-              const pct = (c.used_sessions / c.total_sessions) * 100;
-              const isCross = c.purchase_clinic_id !== c.current_clinic_id;
-              return (
-                <div key={c.id} style={{ padding: "10px 12px", borderRadius: 12, border: isCross ? "1px solid rgba(197,160,89,0.4)" : "1px solid rgba(197,160,89,0.15)", background: isCross ? "rgba(197,160,89,0.04)" : "transparent" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 5 }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 2 }}>
-                        <p style={{ fontSize: 12, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>{c.service_name}</p>
-                        {isCross && (
-                          <span title={`Purchased at ${c.purchase_clinic_name}`} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 999, background: "rgba(197,160,89,0.15)", color: "#A8853A", border: "1px solid rgba(197,160,89,0.3)" }}>
-                            <MapPin size={8} /> {c.purchase_clinic_name}
-                          </span>
-                        )}
-                        {c.family_shared && (
-                          <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 999, background: "rgba(107,99,133,0.1)", color: "#6B6385" }}>Shared</span>
-                        )}
-                      </div>
-                      <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>
-                        {remaining} of {c.total_sessions} sessions · {fmtINR(c.per_session_value)}/session
-                      </p>
-                    </div>
-                    <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 8, background: remaining > 0 ? "rgba(197,160,89,0.12)" : "rgba(107,114,128,0.08)", color: remaining > 0 ? "#8B6914" : "#6B7280", border: `1px solid ${remaining > 0 ? "rgba(197,160,89,0.3)" : "rgba(107,114,128,0.2)"}`, marginLeft: 8, flexShrink: 0 }}>
-                      {remaining > 0 ? `${remaining} left` : "Done"}
-                    </span>
-                  </div>
-                  <div style={{ height: 5, borderRadius: 999, background: "rgba(197,160,89,0.1)", overflow: "hidden" }}>
-                    <div style={{ height: "100%", borderRadius: 999, background: c.status === "transferred" ? "linear-gradient(90deg, #C5A059, #E8CC8A)" : "linear-gradient(90deg, #C5A059, #A8853A)", width: `${Math.min(pct, 100)}%` }} />
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2 }}>
-                    <span style={{ fontSize: 10, color: "#B8AE9C" }}>{c.used_sessions} used</span>
-                    <span style={{ fontSize: 10, fontWeight: 600, color: "#C5A059" }}>{fmtINR(c.purchase_price)}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
-
-      {/* Legacy Packages (patient_packages table) */}
-      {packages.length > 0 && (
-        <Card title="Legacy Packages">
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {packages.map(pkg => {
-              const remaining = pkg.total_sessions - pkg.used_sessions;
-              const pct = (pkg.used_sessions / pkg.total_sessions) * 100;
-              return (
-                <div key={pkg.id}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <p style={{ fontSize: 12, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>{pkg.package_name}</p>
-                      <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>{remaining} of {pkg.total_sessions} sessions remaining</p>
-                    </div>
-                    <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 8, background: remaining > 0 ? "rgba(197,160,89,0.12)" : "rgba(107,114,128,0.08)", color: remaining > 0 ? "#8B6914" : "#6B7280", border: `1px solid ${remaining > 0 ? "rgba(197,160,89,0.3)" : "rgba(107,114,128,0.2)"}`, marginLeft: 8, flexShrink: 0 }}>
-                      {remaining > 0 ? `${remaining} left` : "Complete"}
-                    </span>
-                  </div>
-                  <div style={{ height: 6, borderRadius: 999, background: "rgba(197,160,89,0.12)", overflow: "hidden" }}>
-                    <div style={{ height: "100%", borderRadius: 999, background: "linear-gradient(90deg, #C5A059, #A8853A)", width: `${pct}%`, transition: "width 0.6s ease" }} />
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3 }}>
-                    <span style={{ fontSize: 10, color: "#B8AE9C" }}>{pkg.used_sessions} used</span>
-                    <span style={{ fontSize: 10, color: "#B8AE9C" }}>{pkg.total_sessions} total</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      )}
-
-      {/* Proposed Treatments */}
-      <Card title="Proposed Treatments">
-        {proposed.length === 0 ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center" }}>
-            <EmptyMini label="No treatments proposed" />
-            <button
-              onClick={onAddTreatment}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px dashed rgba(5,150,105,0.4)", background: "rgba(5,150,105,0.05)", cursor: "pointer", fontSize: 12, color: "#059669", fontFamily: "Georgia, serif" }}
-            >
-              <Plus size={12} /> Add First Treatment
-            </button>
-          </div>
-        ) : (
-          <>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {proposed.map(t => {
-                const displayPrice = t.quoted_price ?? t.price;
-                const isHighValue  = (displayPrice ?? 0) > 500;
-                const pkgLabel: Record<string, string> = { single_service: "Single", custom_package: "Custom Pkg" };
-                const viaCouns = !!t.counselling_session_id;
-                return (
-                  <div key={t.id} style={{
-                    padding: "10px 12px", borderRadius: 10,
-                    background: isHighValue ? "rgba(197,160,89,0.08)" : "rgba(249,247,242,0.7)",
-                    border: isHighValue ? "1px solid rgba(197,160,89,0.4)" : "1px solid rgba(197,160,89,0.12)",
-                    position: "relative",
-                  }}>
-                    {/* Top-right badges */}
-                    <div style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4, alignItems: "center" }}>
-                      {t.package_type && (
-                        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 6, background: "rgba(197,160,89,0.2)", color: "#8B6914", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                          {pkgLabel[t.package_type] ?? t.package_type}
-                        </span>
-                      )}
-                      {isHighValue && (
-                        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 6, background: "rgba(197,160,89,0.2)", color: "#8B6914", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                          <Star size={8} style={{ display: "inline", verticalAlign: "middle", marginRight: 2 }} />High Value
-                        </span>
-                      )}
-                      {/* Reference B/A button */}
-                      <button
-                        onClick={e => { e.stopPropagation(); setRefGalleryTreatment(t.treatment_name); }}
-                        title="View brand reference photos"
-                        style={{ width: 20, height: 20, borderRadius: 5, border: "1px solid rgba(124,58,237,0.25)", background: "rgba(124,58,237,0.07)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
-                        <Image size={10} style={{ color: "#7c3aed" }} />
-                      </button>
-                    </div>
-                    <p style={{ fontSize: 12, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0, paddingRight: 90 }}>
-                      {t.treatment_name}
-                    </p>
-                    {/* Origin tag */}
-                    <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 3, flexWrap: "wrap" }}>
-                      {viaCouns ? (
-                        <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 4, background: "rgba(5,150,105,0.1)", color: "#059669", textTransform: "uppercase", letterSpacing: "0.05em" }}>Via Counselling</span>
-                      ) : (
-                        <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 5px", borderRadius: 4, background: "rgba(59,130,246,0.1)", color: "#2563eb", textTransform: "uppercase", letterSpacing: "0.05em" }}>Added by Doctor</span>
-                      )}
-                      {t.counselled_by && (
-                        <span style={{ fontSize: 10, color: "#9C9584" }}>by {t.counselled_by}</span>
-                      )}
-                      {t.recommended_sessions != null && t.recommended_sessions > 0 && (
-                        <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 6px", borderRadius: 4, background: "rgba(124,58,237,0.1)", color: "#7c3aed", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                          {t.recommended_sessions} {t.recommended_sessions === 1 ? "session" : "sessions"}
-                        </span>
-                      )}
-                    </div>
-                    {/* Pricing breakdown */}
-                    {t.mrp != null && t.quoted_price != null ? (
-                      <p style={{ fontSize: 12, color: "#6B6358", marginTop: 5 }}>
-                        <span style={{ textDecoration: "line-through", color: "#9C9584" }}>₹{t.mrp.toLocaleString("en-IN")}</span>
-                        {" → "}
-                        <span style={{ fontWeight: 700, color: isHighValue ? "#C5A059" : "#1C1917", fontFamily: "Georgia, serif" }}>₹{t.quoted_price.toLocaleString("en-IN")}</span>
-                        {t.discount_pct != null && t.discount_pct > 0 && (
-                          <span style={{ marginLeft: 4, fontSize: 10, color: "#16a34a", fontWeight: 600 }}>({t.discount_pct.toFixed(1)}% off)</span>
-                        )}
-                      </p>
-                    ) : displayPrice != null ? (
-                      <p style={{ fontSize: 14, fontWeight: 700, color: isHighValue ? "#C5A059" : "#1C1917", marginTop: 5, fontFamily: "Georgia, serif" }}>
-                        ₹{displayPrice.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
-                      </p>
-                    ) : null}
-                    {/* Status lifecycle actions */}
-                    <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                      {t.status === "proposed" && (
-                        <>
-                          <button onClick={() => updateTreatmentStatus(t.id, "in_progress")}
-                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(37,99,235,0.3)", background: "rgba(37,99,235,0.07)", color: "#2563eb", cursor: "pointer" }}>
-                            → In Progress
-                          </button>
-                          <button onClick={() => updateTreatmentStatus(t.id, "completed")}
-                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(5,150,105,0.3)", background: "rgba(5,150,105,0.07)", color: "#059669", cursor: "pointer" }}>
-                            ✓ Complete
-                          </button>
-                          <button onClick={() => updateTreatmentStatus(t.id, "cancelled")}
-                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(156,149,132,0.3)", background: "rgba(156,149,132,0.07)", color: "#9C9584", cursor: "pointer" }}>
-                            × Cancel
-                          </button>
-                        </>
-                      )}
-                      {t.status === "in_progress" && (
-                        <>
-                          <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 8px", borderRadius: 6, background: "rgba(37,99,235,0.1)", color: "#2563eb", border: "1px solid rgba(37,99,235,0.2)" }}>In Progress</span>
-                          <button onClick={() => updateTreatmentStatus(t.id, "completed")}
-                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(5,150,105,0.3)", background: "rgba(5,150,105,0.07)", color: "#059669", cursor: "pointer" }}>
-                            ✓ Complete
-                          </button>
-                          <button onClick={() => updateTreatmentStatus(t.id, "cancelled")}
-                            style={{ fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(156,149,132,0.3)", background: "rgba(156,149,132,0.07)", color: "#9C9584", cursor: "pointer" }}>
-                            × Cancel
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Total + Add + Proforma */}
-            {totalValue > 0 && (
-              <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: "linear-gradient(135deg, rgba(197,160,89,0.1), rgba(168,133,58,0.06))", border: "1px solid rgba(197,160,89,0.25)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 11, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em" }}>Proposed Total</span>
-                    <button
-                      onClick={onAddTreatment}
-                      style={{ display: "flex", alignItems: "center", gap: 3, padding: "2px 8px", borderRadius: 6, border: "1px solid rgba(5,150,105,0.3)", background: "rgba(5,150,105,0.08)", cursor: "pointer", fontSize: 10, color: "#059669", fontWeight: 600 }}
-                    >
-                      <Plus size={9} /> Add
-                    </button>
-                  </div>
-                  <span style={{ fontSize: 16, fontWeight: 700, color: "#C5A059", fontFamily: "Georgia, serif" }}>
-                    ₹{totalValue.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
-                  </span>
-                </div>
-                {/* Share Proforma button */}
-                <button
-                  onClick={() => setProformaOpen(true)}
-                  style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 0", borderRadius: 8, border: "1px solid rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.12)", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "var(--gold)", fontFamily: "Georgia, serif" }}
-                >
-                  <Send size={12} /> Share Proforma Invoice
-                </button>
-              </div>
-            )}
-          </>
-        )}
-      </Card>
-
-      {/* Revenue summary */}
-      <Card title="Treatment Summary">
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {[
-            { label: "Proposed",  count: treatments.filter(t => t.status === "proposed").length,  color: "#C5A059" },
-            { label: "Completed", count: treatments.filter(t => t.status === "completed").length, color: "#4A8A4A" },
-            { label: "Cancelled", count: treatments.filter(t => t.status === "cancelled").length, color: "#9C9584" },
-          ].map(r => (
-            <div key={r.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 12, color: "#6B6358" }}>{r.label}</span>
-              <span style={{ fontSize: 13, fontWeight: 600, color: r.color }}>{r.count}</span>
-            </div>
+        <div style={{ display: "flex", gap: 4 }}>
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} style={{ width: 80, height: 32, borderRadius: "8px 8px 0 0", background: "rgba(197,160,89,0.08)" }} />
           ))}
         </div>
-      </Card>
-
-      {/* Reference Gallery Modal */}
-      {refGalleryTreatment && activeClinicId && (
-        <ReferenceGalleryModal
-          treatmentName={refGalleryTreatment}
-          clinicId={activeClinicId}
-          onClose={() => setRefGalleryTreatment(null)}
-        />
-      )}
-
-      {/* Proforma Invoice Modal */}
-      {proformaOpen && (
-        <EMRProformaModal
-          patient={patient}
-          treatments={proposed}
-          clinicName={clinicName}
-          onClose={() => setProformaOpen(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────── FAB ─────────────────────────────────
-
-function FAB({ open, onToggle, onAction }: { open: boolean; onToggle: () => void; onAction: (a: "soap" | "note" | "treatment") => void }) {
-  const actions = [
-    { key: "note"      as const, label: "Quick Note",      icon: <FileText size={15} />,  bg: "#4B5563"                                     },
-    { key: "treatment" as const, label: "Add Treatment",   icon: <DollarSign size={15} />, bg: "#059669"                                     },
-    { key: "soap"      as const, label: "New Session",     icon: <Clipboard size={15} />, bg: "linear-gradient(135deg, #C5A059, #A8853A)"    },
-  ];
-
-  return (
-    <div style={{ position: "fixed", bottom: 28, right: 28, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10, zIndex: 100 }}>
-      {/* Actions */}
-      {open && actions.map((a, i) => (
-        <div key={a.key} className="fab-action" style={{ display: "flex", alignItems: "center", gap: 10, opacity: open ? 1 : 0, transform: open ? "none" : "translateY(10px)", transitionDelay: `${i * 0.05}s` }}>
-          <span style={{ fontSize: 12, fontWeight: 500, color: "#1C1917", background: "white", padding: "4px 10px", borderRadius: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.12)", border: "1px solid rgba(197,160,89,0.2)", fontFamily: "Georgia, serif", whiteSpace: "nowrap" }}>
-            {a.label}
-          </span>
-          <button onClick={() => onAction(a.key)} style={{ width: 42, height: 42, borderRadius: "50%", background: a.bg, border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "white", boxShadow: "0 4px 14px rgba(0,0,0,0.2)", flexShrink: 0 }}>
-            {a.icon}
-          </button>
-        </div>
-      ))}
-
-      {/* Main FAB */}
-      <button
-        onClick={onToggle}
-        style={{
-          width: 56, height: 56, borderRadius: "50%",
-          background: open ? "#1C1917" : "linear-gradient(135deg, #C5A059, #A8853A)",
-          border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-          color: "white", boxShadow: "0 6px 24px rgba(197,160,89,0.45)",
-          transition: "all 0.25s cubic-bezier(0.34,1.56,0.64,1)",
-          transform: open ? "rotate(45deg)" : "none",
-        }}
-      >
-        <Plus size={22} />
-      </button>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────── SOAP Drawer ─────────────────────────
-
-function SOAPDrawer({ patient, onClose }: { patient: Patient; onClose: () => void }) {
-  const [activeTab,     setActiveTab]     = useState<SOAPKey>("subjective");
-  const [soap,          setSoap]          = useState({ subjective: "", objective: "", assessment: "", plan: "" });
-  const [photos,        setPhotos]        = useState<{ file: File; preview: string; type: "before" | "after" }[]>([]);
-  const [saving,        setSaving]        = useState(false);
-  const [cptQuery,      setCptQuery]      = useState("");
-  const [cptResults,    setCptResults]    = useState<MedicalCode[]>([]);
-  const [cptSearching,  setCptSearching]  = useState(false);
-  const [attachedCodes, setAttachedCodes] = useState<MedicalCode[]>([]);
-  const fileRef  = useRef<HTMLInputElement>(null);
-  const cptTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Debounced CPT search against medical_codes table
-  function onCptInput(val: string) {
-    setCptQuery(val);
-    if (cptTimer.current) clearTimeout(cptTimer.current);
-    if (!val.trim()) { setCptResults([]); return; }
-    cptTimer.current = setTimeout(async () => {
-      setCptSearching(true);
-      const { data } = await supabase
-        .from("medical_codes")
-        .select("code, description, category")
-        .or(`code.ilike.%${val}%,description.ilike.%${val}%,category.ilike.%${val}%`)
-        .order("code")
-        .limit(12);
-      setCptResults(data ?? []);
-      setCptSearching(false);
-    }, 300);
-  }
-
-  function attachCode(code: MedicalCode) {
-    if (attachedCodes.find(c => c.code === code.code)) return;
-    setAttachedCodes(prev => [...prev, code]);
-    // Append to the plan text with a standard format
-    setSoap(s => ({
-      ...s,
-      plan: s.plan
-        ? `${s.plan}\nCPT ${code.code} — ${code.description}`
-        : `CPT ${code.code} — ${code.description}`,
-    }));
-    setCptQuery("");
-    setCptResults([]);
-  }
-
-  function removeCode(code: string) {
-    setAttachedCodes(prev => prev.filter(c => c.code !== code));
-  }
-
-  function handlePhotoSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    files.forEach(file => {
-      const preview = URL.createObjectURL(file);
-      setPhotos(prev => [...prev, { file, preview, type: "before" }]);
-    });
-  }
-
-  async function handleSave() {
-    if (!soap.subjective && !soap.objective && !soap.assessment && !soap.plan) {
-      toast.error("Please fill in at least one SOAP section.");
-      return;
-    }
-    setSaving(true);
-
-    // Upload photos to Supabase Storage
-    const uploadedPhotos: { url: string; type: string }[] = [];
-    for (const p of photos) {
-      const ext  = p.file.name.split(".").pop();
-      const path = `${patient.clinic_id ?? "unlinked"}/${patient.id}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-      const { data: up, error: upErr } = await supabase.storage
-        .from("patient-photos")
-        .upload(path, p.file, { contentType: p.file.type, upsert: false });
-      if (!upErr && up) {
-        const { data: { publicUrl } } = supabase.storage.from("patient-photos").getPublicUrl(up.path);
-        uploadedPhotos.push({ url: publicUrl, type: p.type });
-      }
-    }
-
-    const res = await fetch(`/api/patients/${patient.id}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "save_encounter", ...soap, photos: uploadedPhotos, cpt_codes: attachedCodes.map(c => c.code) }),
-    });
-    const data = await res.json();
-    setSaving(false);
-
-    if (data.success) {
-      toast.success("Session saved to clinical record.");
-      onClose();
-    } else {
-      toast.error(data.error ?? "Failed to save session.");
-    }
-  }
-
-  const currentTab = SOAP_TABS.find(t => t.key === activeTab)!;
-  const hasContent = Object.values(soap).some(v => v.trim());
-
-  return (
-    <>
-      {/* Backdrop */}
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 40, background: "rgba(28,25,23,0.5)", backdropFilter: "blur(2px)" }} />
-
-      {/* Drawer */}
-      <div style={{ position: "fixed", right: 0, top: 0, bottom: 0, zIndex: 50, width: 640, display: "flex", flexDirection: "column", background: "#F9F7F2", boxShadow: "-8px 0 40px rgba(28,25,23,0.18)", animation: "slideInRight 0.3s ease" }}>
-
-        {/* Header */}
-        <div style={{ padding: "20px 24px", background: "white", borderBottom: "1px solid rgba(197,160,89,0.18)", flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.25)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Clipboard size={16} style={{ color: "#6366F1" }} />
-              </div>
-              <div>
-                <p style={{ fontSize: 15, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>New Clinical Session</p>
-                <p style={{ fontSize: 12, color: "#9C9584", margin: 0 }}>{patient.full_name} · {fmtDate(new Date().toISOString())}</p>
-              </div>
-            </div>
-            <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <X size={15} style={{ color: "#9C9584" }} />
-            </button>
-          </div>
-
-          {/* SOAP Tab Bar */}
-          <div style={{ display: "flex", gap: 6, marginTop: 16 }}>
-            {SOAP_TABS.map(tab => {
-              const isActive = activeTab === tab.key;
-              const filled   = !!soap[tab.key].trim();
-              return (
-                <button
-                  key={tab.key}
-                  onClick={() => setActiveTab(tab.key)}
-                  className="soap-tab"
-                  style={{
-                    flex: 1, padding: "8px 4px", borderRadius: 10, border: "none",
-                    background: isActive ? "rgba(99,102,241,0.1)" : "rgba(249,247,242,0.8)",
-                    cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
-                    outline: isActive ? "2px solid rgba(99,102,241,0.4)" : "2px solid transparent",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span style={{ fontSize: 16, fontWeight: 800, color: isActive ? "#4338CA" : "#9C9584", fontFamily: "Georgia, serif" }}>{tab.label}</span>
-                    {filled && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#4A8A4A" }} />}
-                  </div>
-                  <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.06em", color: isActive ? "#6366F1" : "#B8AE9C" }}>{tab.title}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Tab Content */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
-          {/* Section hint */}
-          <p style={{ fontSize: 11, color: "#B8AE9C", fontStyle: "italic", marginBottom: 12, lineHeight: 1.5 }}>
-            {currentTab.desc}
-          </p>
-
-          <textarea
-            key={activeTab}
-            value={soap[activeTab]}
-            onChange={e => setSoap(s => ({ ...s, [activeTab]: e.target.value }))}
-            placeholder={`Enter ${currentTab.title.toLowerCase()} notes…`}
-            style={{
-              width: "100%", minHeight: 220, padding: "14px 16px", borderRadius: 12,
-              border: "1px solid rgba(197,160,89,0.25)", background: "white",
-              fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917",
-              lineHeight: 1.75, resize: "vertical", outline: "none",
-              boxSizing: "border-box", transition: "border-color 0.2s",
-            }}
-            onFocus={e => (e.target.style.borderColor = "rgba(99,102,241,0.5)")}
-            onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
-          />
-
-          {/* CPT Procedure Search — only on Plan tab */}
-          {activeTab === "plan" && (
-            <div style={{ marginTop: 16 }}>
-              <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}>
-                <Stethoscope size={11} style={{ color: "#C5A059" }} />
-                Procedure Code Search (CPT)
-              </p>
-              <div style={{ position: "relative" }}>
-                <input
-                  type="text"
-                  value={cptQuery}
-                  onChange={e => onCptInput(e.target.value)}
-                  placeholder="e.g. Botox, laser, filler, 64612…"
-                  style={{
-                    width: "100%", padding: "9px 14px", borderRadius: 10, boxSizing: "border-box",
-                    border: "1px solid rgba(197,160,89,0.3)", background: "white",
-                    fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none",
-                  }}
-                  onFocus={e  => (e.target.style.borderColor = "rgba(197,160,89,0.6)")}
-                  onBlur={e   => (e.target.style.borderColor = "rgba(197,160,89,0.3)")}
-                />
-                {cptSearching && (
-                  <Loader2 size={13} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", color: "#C5A059", animation: "spin 1s linear infinite" }} />
-                )}
-
-                {cptResults.length > 0 && (
-                  <div style={{
-                    position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
-                    background: "white", borderRadius: 12, border: "1px solid rgba(197,160,89,0.25)",
-                    boxShadow: "0 10px 36px rgba(28,25,23,0.14)", zIndex: 200,
-                    maxHeight: 240, overflowY: "auto",
-                  }}>
-                    {cptResults.map(code => (
-                      <button
-                        key={code.code}
-                        onMouseDown={() => attachCode(code)}
-                        style={{
-                          width: "100%", padding: "9px 14px", textAlign: "left", border: "none",
-                          background: "transparent", cursor: "pointer",
-                          display: "flex", gap: 10, alignItems: "flex-start",
-                          borderBottom: "1px solid rgba(197,160,89,0.07)",
-                          transition: "background 0.12s",
-                        }}
-                        onMouseEnter={e => (e.currentTarget.style.background = "rgba(197,160,89,0.07)")}
-                        onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
-                      >
-                        <span style={{ fontSize: 11, fontWeight: 700, color: "#C5A059", minWidth: 52, flexShrink: 0, fontFamily: "monospace" }}>{code.code}</span>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <p style={{ fontSize: 12, color: "#1C1917", margin: 0, fontFamily: "Georgia, serif" }}>{code.description}</p>
-                          {code.category && <p style={{ fontSize: 10, color: "#9C9584", margin: "1px 0 0", textTransform: "uppercase", letterSpacing: "0.05em" }}>{code.category}</p>}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Attached codes */}
-              {attachedCodes.length > 0 && (
-                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {attachedCodes.map(code => (
-                    <span
-                      key={code.code}
-                      style={{
-                        display: "inline-flex", alignItems: "center", gap: 5,
-                        fontSize: 11, padding: "3px 8px", borderRadius: 7,
-                        background: "rgba(197,160,89,0.1)", border: "1px solid rgba(197,160,89,0.3)",
-                        color: "#7A5C14", fontFamily: "Georgia, serif",
-                      }}
-                    >
-                      <span style={{ fontWeight: 700, fontFamily: "monospace" }}>CPT {code.code}</span>
-                      <span style={{ color: "#9C9584" }}>·</span>
-                      <span style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{code.description}</span>
-                      <button
-                        onClick={() => removeCode(code.code)}
-                        style={{ background: "transparent", border: "none", cursor: "pointer", color: "#9C9584", padding: "0 2px", lineHeight: 1, fontSize: 13 }}
-                      >×</button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Photo Upload */}
-          <div style={{ marginTop: 20 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <p style={{ fontSize: 12, fontWeight: 600, color: "#6B6358", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 }}>Before & After Photos</p>
-              <button
-                onClick={() => fileRef.current?.click()}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", cursor: "pointer", fontSize: 12, color: "#8B6914" }}
-              >
-                <Upload size={12} /> Upload
-              </button>
-              <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handlePhotoSelect} />
-            </div>
-
-            {photos.length === 0 ? (
-              <div
-                onClick={() => fileRef.current?.click()}
-                style={{ border: "1.5px dashed rgba(197,160,89,0.3)", borderRadius: 12, padding: "24px", textAlign: "center", cursor: "pointer", background: "rgba(249,247,242,0.6)" }}
-              >
-                <Camera size={24} style={{ color: "rgba(197,160,89,0.5)", margin: "0 auto 8px" }} />
-                <p style={{ fontSize: 12, color: "#9C9584" }}>Click to attach before/after photos</p>
-                <p style={{ fontSize: 11, color: "#B8AE9C" }}>JPG, PNG up to 10MB</p>
-              </div>
-            ) : (
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                {photos.map((p, i) => (
-                  <div key={i} style={{ position: "relative" }}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={p.preview} alt="" style={{ width: 88, height: 88, objectFit: "cover", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)" }} />
-                    {/* Before/After toggle */}
-                    <div style={{ display: "flex", gap: 2, marginTop: 4 }}>
-                      {(["before", "after"] as const).map(t => (
-                        <button key={t} onClick={() => setPhotos(prev => prev.map((ph, j) => j === i ? { ...ph, type: t } : ph))}
-                          style={{ flex: 1, fontSize: 9, padding: "2px 0", borderRadius: 4, border: "none", cursor: "pointer", background: p.type === t ? (t === "before" ? "#1C1917" : "#4A8A4A") : "rgba(197,160,89,0.1)", color: p.type === t ? "white" : "#9C9584", fontWeight: 600, textTransform: "uppercase" }}>
-                          {t}
-                        </button>
-                      ))}
-                    </div>
-                    <button onClick={() => setPhotos(prev => prev.filter((_, j) => j !== i))}
-                      style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%", background: "#B43C3C", border: "2px solid white", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <X size={9} color="white" />
-                    </button>
-                  </div>
-                ))}
-                <button onClick={() => fileRef.current?.click()}
-                  style={{ width: 88, height: 88, borderRadius: 10, border: "1.5px dashed rgba(197,160,89,0.3)", background: "rgba(249,247,242,0.6)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4 }}>
-                  <Plus size={16} style={{ color: "rgba(197,160,89,0.5)" }} />
-                  <span style={{ fontSize: 10, color: "#B8AE9C" }}>Add</span>
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div style={{ padding: "16px 24px", borderTop: "1px solid rgba(197,160,89,0.18)", background: "white", display: "flex", gap: 10, flexShrink: 0 }}>
-          <button onClick={onClose} style={{ flex: "0 0 auto", padding: "10px 20px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", fontSize: 13, color: "#9C9584" }}>
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving || !hasContent}
-            style={{
-              flex: 1, padding: "12px 0", borderRadius: 10, border: "none",
-              background: saving || !hasContent ? "rgba(197,160,89,0.3)" : "linear-gradient(135deg, #C5A059, #A8853A)",
-              cursor: saving || !hasContent ? "not-allowed" : "pointer",
-              color: "white", fontSize: 14, fontWeight: 600, fontFamily: "Georgia, serif",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-              boxShadow: saving || !hasContent ? "none" : "0 4px 16px rgba(197,160,89,0.35)",
-            }}
-          >
-            {saving ? <><Loader2 size={15} style={{ animation: "spin 1s linear infinite" }} /> Saving…</> : <><CheckCircle2 size={15} /> Save Session</>}
-          </button>
-        </div>
       </div>
-      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
-    </>
-  );
-}
-
-// ─────────────────────────────────────── Quick Note Drawer ───────────────────
-
-function NoteDrawer({ patientId, onClose }: { patientId: string; onClose: () => void }) {
-  const [content, setContent] = useState("");
-  const [saving,  setSaving]  = useState(false);
-
-  async function handleSave() {
-    if (!content.trim()) return;
-    setSaving(true);
-    const res = await fetch(`/api/patients/${patientId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "add_note", note_type: "note", content }),
-    });
-    const data = await res.json();
-    setSaving(false);
-    if (data.success) { toast.success("Note added."); onClose(); }
-    else toast.error(data.error ?? "Failed to save note.");
-  }
-
-  return (
-    <>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 40, background: "rgba(28,25,23,0.45)", backdropFilter: "blur(2px)" }} />
-      <div style={{ position: "fixed", right: 0, top: 0, bottom: 0, zIndex: 50, width: 440, display: "flex", flexDirection: "column", background: "#F9F7F2", boxShadow: "-8px 0 40px rgba(28,25,23,0.18)", animation: "slideInRight 0.25s ease" }}>
-        <div style={{ padding: "20px 22px", background: "white", borderBottom: "1px solid rgba(197,160,89,0.18)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(107,114,128,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <FileText size={15} style={{ color: "#6B7280" }} />
-            </div>
-            <p style={{ fontSize: 14, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Quick Note</p>
-          </div>
-          <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <X size={14} style={{ color: "#9C9584" }} />
-          </button>
-        </div>
-        <div style={{ flex: 1, padding: "20px 22px" }}>
-          <textarea
-            autoFocus
-            value={content}
-            onChange={e => setContent(e.target.value)}
-            placeholder="Add a clinical note, observation, or reminder…"
-            style={{ width: "100%", height: "100%", padding: "14px 16px", borderRadius: 12, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", lineHeight: 1.75, resize: "none", outline: "none", boxSizing: "border-box" }}
-            onFocus={e => (e.target.style.borderColor = "rgba(197,160,89,0.6)")}
-            onBlur={e  => (e.target.style.borderColor = "rgba(197,160,89,0.25)")}
-          />
-        </div>
-        <div style={{ padding: "14px 22px", borderTop: "1px solid rgba(197,160,89,0.18)", background: "white", display: "flex", gap: 10 }}>
-          <button onClick={onClose} style={{ padding: "10px 18px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", fontSize: 13, color: "#9C9584" }}>Cancel</button>
-          <button onClick={handleSave} disabled={saving || !content.trim()} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: "none", background: saving || !content.trim() ? "rgba(197,160,89,0.3)" : "linear-gradient(135deg, #C5A059, #A8853A)", cursor: saving || !content.trim() ? "not-allowed" : "pointer", color: "white", fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif" }}>
-            {saving ? "Saving…" : "Add Note"}
-          </button>
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ─────────────────────────────────────── Counselling Session Drawer ──────────
-// Full counselling-session form embedded in the patient EMR.
-// Saves to counselling_sessions + patient_treatments for bidirectional sync.
-
-const INPUT_STYLE: React.CSSProperties = {
-  width: "100%", padding: "9px 12px", borderRadius: 8,
-  border: "1px solid rgba(197,160,89,0.25)", background: "white",
-  fontSize: 12, fontFamily: "Georgia, serif", color: "#1C1917",
-  outline: "none", boxSizing: "border-box",
-};
-
-const PKG_OPTS = [
-  { key: "single_service" as const, label: "Single Service" },
-  { key: "custom_package" as const, label: "Custom Package" },
-];
-
-function TreatmentDrawer({ patient, onClose }: { patient: Patient; onClose: () => void }) {
-  const { profile, activeClinicId: clinicId } = useClinic();
-
-  // ── Services & Staff ────────────────────────────────────────────────────────
-  const [services, setServices] = useState<Service[]>([]);
-  const [staff,    setStaff]    = useState<Staff[]>([]);
-  useEffect(() => {
-    if (!clinicId) return;
-    Promise.all([
-      supabase.from("services").select("id, name, selling_price, mrp").eq("clinic_id", clinicId).eq("is_active", true).order("name"),
-      supabase.from("profiles").select("id, full_name, role").eq("clinic_id", clinicId).eq("is_active", true),
-    ]).then(([sRes, stRes]) => {
-      setServices(sRes.data ?? []);
-      setStaff(stRes.data ?? []);
-    });
-  }, [clinicId]);
-
-  // ── Session-level fields ────────────────────────────────────────────────────
-  // Initialize counsellor to logged-in user immediately; editable by user
-  const [counsellorId,    setCounsellorId]    = useState(profile?.id ?? "");
-  const [sessionDate,     setSessionDate]     = useState(new Date().toISOString().split("T")[0]);
-  const [chiefComplaint,  setChiefComplaint]  = useState("");
-  const [pkgType,         setPkgType]         = useState<"single_service" | "custom_package">("single_service");
-  const [notes,           setNotes]           = useState("");
-  const [followupDate,    setFollowupDate]    = useState("");
-
-  // ── Treatment rows ──────────────────────────────────────────────────────────
-  const [treatments, setTreatments] = useState<CounsTreatmentRow[]>([
-    { service_id: "", service_name: "", mrp: 0, quoted_price: "", discount_pct: "0", sessions: "1", recommended: false },
-  ]);
-
-  const selectService = (idx: number, serviceId: string) => {
-    const svc = services.find(s => s.id === serviceId);
-    if (!svc) return;
-    const effectiveMrp = svc.mrp || svc.selling_price;
-    const disc = effectiveMrp > 0 ? ((effectiveMrp - svc.selling_price) / effectiveMrp * 100).toFixed(1) : "0";
-    const newT = [...treatments];
-    newT[idx] = { ...newT[idx], service_id: svc.id, service_name: svc.name, mrp: effectiveMrp, quoted_price: String(svc.selling_price), discount_pct: disc };
-    setTreatments(newT);
-  };
-
-  const updateRow = (idx: number, field: keyof CounsTreatmentRow, raw: string | boolean | number) => {
-    const newT = [...treatments];
-    const mrp  = newT[idx].mrp;
-    if (field === "quoted_price") {
-      const q = parseFloat(raw as string) || 0;
-      newT[idx] = { ...newT[idx], quoted_price: raw as string, discount_pct: mrp > 0 ? ((mrp - q) / mrp * 100).toFixed(1) : "0" };
-    } else if (field === "discount_pct") {
-      const d = parseFloat(raw as string) || 0;
-      newT[idx] = { ...newT[idx], discount_pct: raw as string, quoted_price: mrp > 0 ? (mrp * (1 - d / 100)).toFixed(0) : "0" };
-    } else if (field === "mrp") {
-      newT[idx] = { ...newT[idx], mrp: Number(raw) };
-    } else {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (newT[idx] as any)[field] = raw;
-    }
-    setTreatments(newT);
-  };
-
-  const [saving, setSaving] = useState(false);
-
-  const canSave = treatments.some(t => t.service_name.trim());
-
-  const handleSave = async () => {
-    if (!canSave) { toast.error("Add at least one treatment."); return; }
-    if (!clinicId) { toast.error("Clinic not found."); return; }
-    setSaving(true);
-
-    const counsellorName = staff.find(s => s.id === counsellorId)?.full_name || profile?.full_name || null;
-    const validRows = treatments.filter(t => t.service_name.trim());
-    const treatmentData = validRows.map(t => ({
-      service_id:   t.service_id || undefined,
-      service_name: t.service_name.trim(),
-      mrp:          t.mrp || 0,
-      price:        parseFloat(t.quoted_price) || 0,
-      quoted_price: parseFloat(t.quoted_price) || 0,
-      discount_pct: parseFloat(t.discount_pct) || 0,
-      recommended:  t.recommended,
-      sessions:     parseInt(t.sessions) || 1,
-    }));
-    const total_proposed = treatmentData.reduce((s, t) => s + t.quoted_price, 0);
-    const total_accepted  = treatmentData.filter(t => t.recommended).reduce((s, t) => s + t.quoted_price, 0);
-
-    const { data: session, error } = await supabase.from("counselling_sessions").insert({
-      clinic_id:            clinicId,
-      patient_id:           patient.id,
-      counsellor_id:        counsellorId || null,
-      session_date:         sessionDate,
-      chief_complaint:      chiefComplaint.trim() || null,
-      treatments_discussed: treatmentData,
-      total_proposed,
-      total_accepted,
-      conversion_status:    "pending",
-      package_type:         pkgType,
-      followup_date:        followupDate || null,
-      notes:                notes.trim() || null,
-    }).select("id").single();
-
-    if (!error && session) {
-      const ptInserts = treatmentData.map(t => ({
-        patient_id:              patient.id,
-        clinic_id:               clinicId,
-        treatment_name:          t.service_name,
-        status:                  "proposed",
-        price:                   t.quoted_price || null,
-        quoted_price:            t.quoted_price || null,
-        mrp:                     t.mrp || null,
-        discount_pct:            t.discount_pct || null,
-        package_type:            pkgType,
-        counselled_by:           counsellorName,
-        counselling_session_id:  session.id,
-        notes:                   notes.trim() || null,
-        recommended_sessions:    t.sessions || null,
-      }));
-      await supabase.from("patient_treatments").insert(ptInserts);
-      toast.success(`Session saved — ${treatmentData.length} treatment${treatmentData.length > 1 ? "s" : ""} added.`);
-      onClose();
-    } else {
-      toast.error(error?.message ?? "Failed to save session.");
-    }
-    setSaving(false);
-  };
-
-  const totalMrp    = treatments.reduce((s, t) => s + (t.mrp || 0), 0);
-  const totalQuoted = treatments.reduce((s, t) => s + (parseFloat(t.quoted_price) || 0), 0);
-  const avgDisc     = totalMrp > 0 ? ((totalMrp - totalQuoted) / totalMrp * 100) : 0;
-
-  return (
-    <>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 40, background: "rgba(28,25,23,0.45)", backdropFilter: "blur(2px)" }} />
-      <div style={{ position: "fixed", right: 0, top: 0, bottom: 0, zIndex: 50, width: 640, display: "flex", flexDirection: "column", background: "#F9F7F2", boxShadow: "-8px 0 40px rgba(28,25,23,0.18)", animation: "slideInRight 0.25s ease" }}>
-
-        {/* Header */}
-        <div style={{ padding: "18px 22px", background: "white", borderBottom: "1px solid rgba(197,160,89,0.18)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(197,160,89,0.1)", border: "1px solid rgba(197,160,89,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <DollarSign size={16} style={{ color: "var(--gold)" }} />
-            </div>
-            <div>
-              <p style={{ fontSize: 14, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Counselling Session</p>
-              <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>{patient.full_name} · Proposed treatments</p>
-            </div>
-          </div>
-          <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <X size={14} style={{ color: "#9C9584" }} />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div style={{ flex: 1, padding: "18px 22px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 }}>
-
-          {/* Session meta row */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Provider / Counsellor</label>
-              <select value={counsellorId} onChange={e => setCounsellorId(e.target.value)} style={{ ...INPUT_STYLE }}>
-                {/* If logged-in user not in staff list (e.g. superadmin), add them as first option */}
-                {profile?.id && profile?.full_name && !staff.find(s => s.id === profile.id) && (
-                  <option value={profile.id}>{profile.full_name} — you (current login)</option>
-                )}
-                {staff.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.full_name}{s.id === profile?.id ? " ✓ (you)" : ""} — {s.role}
-                  </option>
-                ))}
-                <option value="">— Unassigned —</option>
-              </select>
-            </div>
-            <div>
-              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Session Date</label>
-              <input type="date" value={sessionDate} onChange={e => setSessionDate(e.target.value)} style={{ ...INPUT_STYLE }} />
-            </div>
-          </div>
-
-          {/* Chief complaint */}
-          <div>
-            <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Chief Concern / Complaint</label>
-            <input value={chiefComplaint} onChange={e => setChiefComplaint(e.target.value)}
-              placeholder="e.g. Ageing, pigmentation, acne scarring, body contouring…"
-              style={{ ...INPUT_STYLE }} />
-          </div>
-
-          {/* Package Type */}
-          <div>
-            <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 6 }}>Package Type</label>
-            <div style={{ display: "flex", gap: 8 }}>
-              {PKG_OPTS.map(opt => (
-                <button key={opt.key} type="button" onClick={() => setPkgType(opt.key)}
-                  style={{ flex: 1, padding: "7px 4px", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer",
-                    background: pkgType === opt.key ? "var(--gold)" : "transparent",
-                    color: pkgType === opt.key ? "#fff" : "#9C9584",
-                    border: pkgType === opt.key ? "1px solid var(--gold)" : "1px solid rgba(197,160,89,0.2)" }}>
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* ── Treatment rows ── */}
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358" }}>Treatments</label>
-              <button type="button" onClick={() => setTreatments(p => [...p, { service_id: "", service_name: "", mrp: 0, quoted_price: "", discount_pct: "0", sessions: "1", recommended: false }])}
-                style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", cursor: "pointer", fontSize: 11, color: "var(--gold)", fontWeight: 600 }}>
-                <Plus size={11} /> Add Row
-              </button>
-            </div>
-
-            {/* Column headers */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 60px 80px 55px 46px 30px 24px", gap: 4, padding: "5px 0", borderBottom: "1px solid rgba(197,160,89,0.15)", marginBottom: 6 }}>
-              {["Service", "MRP ₹", "Quoted ₹", "Disc %", "Sess.", "Rec", ""].map(h => (
-                <span key={h} style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "#9C9584" }}>{h}</span>
-              ))}
-            </div>
-
-            {/* Rows */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {treatments.map((row, idx) => (
-                <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 60px 80px 55px 46px 30px 24px", gap: 4, alignItems: "center" }}>
-                  {/* Service selector + manual text */}
-                  <div>
-                    {services.length > 0 ? (
-                      <select value={row.service_id}
-                        onChange={e => {
-                          if (e.target.value === "__manual__") {
-                            updateRow(idx, "service_id", "");
-                            updateRow(idx, "service_name", "");
-                          } else {
-                            selectService(idx, e.target.value);
-                          }
-                        }}
-                        style={{ ...INPUT_STYLE, padding: "8px 8px", fontSize: 11 }}>
-                        <option value="">— pick service —</option>
-                        {services.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                        <option value="__manual__">✏️ Enter manually…</option>
-                      </select>
-                    ) : null}
-                    {(!row.service_id) && (
-                      <input value={row.service_name} onChange={e => updateRow(idx, "service_name", e.target.value)}
-                        placeholder="Treatment name"
-                        style={{ ...INPUT_STYLE, padding: "8px 8px", fontSize: 11, marginTop: services.length > 0 ? 4 : 0 }} />
-                    )}
-                  </div>
-                  {/* MRP */}
-                  <input type="number" min={0} value={row.mrp || ""}
-                    onChange={e => updateRow(idx, "mrp", Number(e.target.value))}
-                    placeholder="0"
-                    style={{ ...INPUT_STYLE, padding: "8px 6px", fontSize: 11, textAlign: "right" }} />
-                  {/* Quoted */}
-                  <input type="number" min={0} value={row.quoted_price}
-                    onChange={e => updateRow(idx, "quoted_price", e.target.value)}
-                    placeholder="0"
-                    style={{ ...INPUT_STYLE, padding: "8px 6px", fontSize: 11, textAlign: "right" }} />
-                  {/* Disc % */}
-                  <input type="number" min={0} max={100} value={row.discount_pct}
-                    onChange={e => updateRow(idx, "discount_pct", e.target.value)}
-                    placeholder="0"
-                    style={{ ...INPUT_STYLE, padding: "8px 6px", fontSize: 11, textAlign: "right" }} />
-                  {/* Sessions */}
-                  <input type="number" min={1} value={row.sessions}
-                    onChange={e => updateRow(idx, "sessions", e.target.value)}
-                    style={{ ...INPUT_STYLE, padding: "8px 4px", fontSize: 11, textAlign: "center" }} />
-                  {/* Recommended */}
-                  <button type="button" onClick={() => updateRow(idx, "recommended", !row.recommended)}
-                    title="Mark as recommended"
-                    style={{ width: 26, height: 26, borderRadius: 6, border: row.recommended ? "1px solid #059669" : "1px solid rgba(197,160,89,0.25)", background: row.recommended ? "rgba(5,150,105,0.12)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <CheckCircle2 size={13} style={{ color: row.recommended ? "#059669" : "#C5A059" }} />
-                  </button>
-                  {/* Remove */}
-                  <button type="button" onClick={() => setTreatments(p => p.filter((_, i) => i !== idx))}
-                    disabled={treatments.length === 1}
-                    style={{ width: 22, height: 22, borderRadius: 5, border: "none", background: "transparent", cursor: treatments.length === 1 ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", opacity: treatments.length === 1 ? 0.3 : 1 }}>
-                    <X size={11} style={{ color: "#9C9584" }} />
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            {/* Totals summary */}
-            {totalQuoted > 0 && (
-              <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.2)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 11, color: "#9C9584" }}>
-                  {totalMrp > 0 && <span style={{ textDecoration: "line-through", marginRight: 6 }}>₹{totalMrp.toLocaleString("en-IN")}</span>}
-                  {avgDisc > 0 && <span style={{ color: "#16a34a", fontWeight: 600, fontSize: 10, marginRight: 6 }}>{avgDisc.toFixed(1)}% avg off</span>}
-                </span>
-                <span style={{ fontSize: 14, fontWeight: 700, color: "var(--gold)", fontFamily: "Georgia, serif" }}>
-                  Total ₹{totalQuoted.toLocaleString("en-IN")}
-                </span>
-              </div>
-            )}
-          </div>
-
-          {/* Notes + Follow-up */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Session Notes</label>
-              <textarea value={notes} onChange={e => setNotes(e.target.value)}
-                placeholder="Patient concerns, doctor observations…"
-                rows={3}
-                style={{ ...INPUT_STYLE, resize: "vertical", lineHeight: 1.6 }} />
-            </div>
-            <div>
-              <label style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B6358", display: "block", marginBottom: 5 }}>Follow-up Date</label>
-              <input type="date" value={followupDate} onChange={e => setFollowupDate(e.target.value)} style={{ ...INPUT_STYLE }} />
-            </div>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div style={{ padding: "14px 22px", borderTop: "1px solid rgba(197,160,89,0.18)", background: "white", display: "flex", gap: 10, flexShrink: 0 }}>
-          <button onClick={onClose} style={{ padding: "10px 18px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", fontSize: 13, color: "#9C9584" }}>Cancel</button>
-          <button onClick={handleSave} disabled={saving || !canSave}
-            style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: "none", background: saving || !canSave ? "rgba(197,160,89,0.3)" : "linear-gradient(135deg, #C5A059, #A8853A)", cursor: saving || !canSave ? "not-allowed" : "pointer", color: "white", fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-            {saving ? <><Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> Saving…</> : <><CheckCircle2 size={14} /> Save Session & Treatments</>}
-          </button>
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ─────────────────────────────────────── Shared UI ───────────────────────────
-
-function Card({ title, children }: { title?: string; children: React.ReactNode }) {
-  return (
-    <div style={{ background: "white", border: "1px solid rgba(197,160,89,0.15)", borderRadius: 14, padding: "14px 16px", boxShadow: "0 1px 4px rgba(28,25,23,0.04)" }}>
-      {title && (
-        <p style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", marginBottom: 10 }}>
-          {title}
-        </p>
-      )}
-      {children}
-    </div>
-  );
-}
-
-function CardRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, paddingBottom: 8, borderBottom: "1px solid rgba(197,160,89,0.07)", marginBottom: 8 }}>
-      <span style={{ color: "#C5A059", flexShrink: 0 }}>{icon}</span>
-      <span style={{ fontSize: 11, color: "#9C9584", flex: 1 }}>{label}</span>
-      <span style={{ fontSize: 12, color: "#3D3530", fontFamily: "Georgia, serif", fontWeight: 500, textAlign: "right" }}>{value}</span>
-    </div>
-  );
-}
-
-function SectionLabel({ icon, label }: { icon: React.ReactNode; label: string }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid rgba(197,160,89,0.12)" }}>
-      <span style={{ color: "#C5A059" }}>{icon}</span>
-      <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", margin: 0 }}>{label}</p>
-    </div>
-  );
-}
-
-function EmptyMini({ label }: { label: string }) {
-  return <p style={{ fontSize: 12, color: "#B8AE9C", fontStyle: "italic", margin: 0 }}>{label}</p>;
-}
-
-// ─────────────────────────────────────── Loading / 404 ───────────────────────
-
-function EMRSkeleton() {
-  return (
-    <div style={{ height: "100%", background: "#F9F7F2" }}>
-      <div style={{ height: 72, background: "white", borderBottom: "1px solid rgba(197,160,89,0.15)" }} />
-      <div style={{ display: "grid", gridTemplateColumns: "292px 1fr 308px", height: "calc(100% - 72px)" }}>
-        {[1, 2, 3].map(n => (
-          <div key={n} style={{ padding: 20, display: "flex", flexDirection: "column", gap: 12, borderRight: n < 3 ? "1px solid rgba(197,160,89,0.12)" : "none" }}>
-            {[80, 120, 100, 90].map((h, i) => (
-              <div key={i} style={{ height: h, borderRadius: 14, background: "rgba(197,160,89,0.07)", animation: "pulse 1.5s ease-in-out infinite" }} />
-            ))}
-          </div>
+      {/* Content skeleton */}
+      <div style={{ flex: 1, padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+        {[120, 200, 160].map((h, i) => (
+          <div key={i} style={{ height: h, borderRadius: 14, background: "rgba(197,160,89,0.07)" }} />
         ))}
       </div>
     </div>
@@ -2052,15 +255,12 @@ function EMRSkeleton() {
 
 function NotFound({ onBack }: { onBack: () => void }) {
   return (
-    <div style={{ height: "100%", background: "#F9F7F2", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ textAlign: "center", maxWidth: 360 }}>
-        <User size={40} style={{ color: "rgba(197,160,89,0.4)", margin: "0 auto 16px" }} />
-        <h2 style={{ fontSize: 20, fontFamily: "Georgia, serif", color: "#1C1917", marginBottom: 8 }}>Patient Not Found</h2>
-        <p style={{ fontSize: 13, color: "#9C9584", marginBottom: 20 }}>This patient record doesn't exist or you don't have access to it.</p>
-        <button onClick={onBack} style={{ padding: "10px 24px", borderRadius: 10, background: "linear-gradient(135deg, #C5A059, #A8853A)", border: "none", color: "white", cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif" }}>
-          Back to Patient Records
-        </button>
-      </div>
+    <div style={{ height: "100vh", background: "#F9F7F2", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+      <p style={{ fontSize: 20, fontFamily: "Georgia, serif", color: "#1C1917", fontWeight: 700 }}>Patient Not Found</p>
+      <p style={{ fontSize: 14, color: "#9C9584" }}>This patient record doesn&apos;t exist or you don&apos;t have access.</p>
+      <button onClick={onBack} style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#C5A059,#A8853A)", color: "white", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+        Back to Patients
+      </button>
     </div>
   );
 }
