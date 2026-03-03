@@ -1,8 +1,18 @@
 "use client";
 
-import { ArrowLeft, Phone, Mail, Eye, EyeOff, Shield, Calendar, Sparkles } from "lucide-react";
+import { useState, useEffect } from "react";
+import { ArrowLeft, Phone, Mail, Eye, EyeOff, Shield, Calendar, Sparkles, Trophy } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
+import { useClinic } from "@/contexts/ClinicContext";
 import { Patient, FITZPATRICK, TIER_CONFIG, calcAge, maskPhone, maskEmail } from "./types";
+
+const LOYALTY_TIER_STYLE: Record<string, { bg: string; text: string; border: string }> = {
+  Bronze:   { bg: "rgba(205,127,50,0.12)",  text: "#8B5A2B", border: "rgba(205,127,50,0.4)" },
+  Silver:   { bg: "rgba(148,163,184,0.15)", text: "#475569", border: "rgba(148,163,184,0.5)" },
+  Gold:     { bg: "rgba(197,160,89,0.15)",  text: "#8B6914", border: "rgba(197,160,89,0.45)" },
+  Platinum: { bg: "rgba(139,126,200,0.15)", text: "#6B5FAA", border: "rgba(139,126,200,0.45)" },
+};
 
 interface PatientHeaderProps {
   patient: Patient;
@@ -17,9 +27,19 @@ export default function PatientHeader({
   patient, activeTab, tabs, onTabChange, privacyMode, onTogglePrivacy,
 }: PatientHeaderProps) {
   const router = useRouter();
+  const { activeClinicId } = useClinic();
   const fitz = FITZPATRICK[patient.fitzpatrick_type ?? 0];
   const tier = TIER_CONFIG[patient.patient_tier ?? "standard"] ?? TIER_CONFIG.standard;
   const age  = calcAge(patient.date_of_birth);
+
+  const [loyaltyData, setLoyaltyData] = useState<{ balance: number; tier: string; color: string } | null>(null);
+
+  useEffect(() => {
+    if (!activeClinicId || !patient.id) return;
+    supabase.rpc("get_patient_loyalty", { p_patient_id: patient.id, p_clinic_id: activeClinicId })
+      .single()
+      .then(({ data }) => { if (data) setLoyaltyData(data as { balance: number; tier: string; color: string }); });
+  }, [patient.id, activeClinicId]);
 
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 30, background: "#FFFFFF", borderBottom: "1px solid rgba(197,160,89,0.2)", boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}>
@@ -71,6 +91,19 @@ export default function PatientHeader({
             {patient.allergies && patient.allergies.length > 0 && (
               <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "rgba(220,38,38,0.1)", color: "#DC2626", border: "1px solid rgba(220,38,38,0.3)", letterSpacing: "0.04em" }}>
                 ⚠ ALLERGY
+              </span>
+            )}
+            {/* C2: Loyalty tier + balance */}
+            {loyaltyData && (
+              <span style={{
+                fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 999, display: "flex", alignItems: "center", gap: 4,
+                ...(LOYALTY_TIER_STYLE[loyaltyData.tier] ?? { bg: "rgba(120,130,140,0.1)", text: "#6B7280", border: "rgba(120,130,140,0.3)" }),
+                background: (LOYALTY_TIER_STYLE[loyaltyData.tier] ?? LOYALTY_TIER_STYLE.Bronze).bg,
+                color: (LOYALTY_TIER_STYLE[loyaltyData.tier] ?? LOYALTY_TIER_STYLE.Bronze).text,
+                border: `1px solid ${(LOYALTY_TIER_STYLE[loyaltyData.tier] ?? LOYALTY_TIER_STYLE.Bronze).border}`,
+              }}>
+                <Trophy size={9} />
+                {loyaltyData.balance.toLocaleString()} pts · {loyaltyData.tier}
               </span>
             )}
           </div>

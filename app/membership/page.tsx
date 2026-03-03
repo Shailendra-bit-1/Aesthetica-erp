@@ -6,11 +6,31 @@ import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
 import {
   Star, Plus, X, ChevronDown, Wallet, Users, Crown,
-  Check, Pause, Trash2, Gift, Edit2, Search,
+  Check, Pause, Trash2, Gift, Edit2, Search, Trophy, Zap, TrendingUp,
 } from "lucide-react";
 
 type DurationType = "monthly" | "quarterly" | "annual" | "lifetime";
 type MembershipStatus = "active" | "expired" | "cancelled" | "paused";
+
+interface LoyaltyTier {
+  id: string;
+  name: string;
+  min_points: number;
+  color: string;
+  icon: string | null;
+  benefits: Array<{ label: string }> | null;
+}
+
+interface LoyaltyActivity {
+  id: string;
+  patient_id: string;
+  type: string;
+  points: number;
+  balance_after: number;
+  reason: string | null;
+  created_at: string;
+  patients: { full_name: string } | null;
+}
 
 interface MembershipPlan {
   id: string;
@@ -70,7 +90,7 @@ const TXN_COLORS: Record<string, { bg: string; color: string }> = {
 export default function MembershipPage() {
   const { profile, activeClinicId } = useClinic();
 
-  const [tab, setTab] = useState<"plans" | "members" | "wallet">("plans");
+  const [tab, setTab] = useState<"plans" | "members" | "wallet" | "loyalty">("plans");
   const [plans, setPlans] = useState<MembershipPlan[]>([]);
   const [memberships, setMemberships] = useState<PatientMembership[]>([]);
   const [walletTxns, setWalletTxns] = useState<WalletTxn[]>([]);
@@ -98,6 +118,11 @@ export default function MembershipPage() {
 
   const [saving, setSaving] = useState(false);
   const [searchPatient, setSearchPatient] = useState("");
+
+  // C5: Loyalty tab state
+  const [loyaltyTiers,    setLoyaltyTiers]    = useState<LoyaltyTier[]>([]);
+  const [loyaltyActivity, setLoyaltyActivity] = useState<LoyaltyActivity[]>([]);
+  const [loyaltyStats,    setLoyaltyStats]    = useState({ totalEarned: 0, totalRedeemed: 0, activePatients: 0 });
 
   const clinicId = activeClinicId || profile?.clinic_id;
 
@@ -132,14 +157,30 @@ export default function MembershipPage() {
     setWalletTxns((data as WalletTxn[]) || []);
   }, [clinicId, supabase]);
 
+  const fetchLoyaltyData = useCallback(async () => {
+    if (!clinicId) return;
+    const [{ data: tiers }, { data: activity }] = await Promise.all([
+      supabase.from("loyalty_tiers").select("*").or(`is_global.eq.true,clinic_id.eq.${clinicId}`).order("min_points"),
+      supabase.from("loyalty_points_ledger").select("*, patients(full_name)")
+        .eq("clinic_id", clinicId).order("created_at", { ascending: false }).limit(50),
+    ]);
+    setLoyaltyTiers((tiers as LoyaltyTier[]) || []);
+    const acts = (activity as LoyaltyActivity[]) || [];
+    setLoyaltyActivity(acts);
+    const earned   = acts.filter(a => a.type === "earn").reduce((s, a) => s + a.points, 0);
+    const redeemed = acts.filter(a => a.type === "redeem").reduce((s, a) => s + a.points, 0);
+    const uniquePts = new Set(acts.map(a => a.patient_id)).size;
+    setLoyaltyStats({ totalEarned: earned, totalRedeemed: redeemed, activePatients: uniquePts });
+  }, [clinicId, supabase]);
+
   useEffect(() => {
     if (!clinicId) return;
     setLoading(true);
     // Auto-expire memberships past their expires_at before fetching
     supabase.rpc("update_expired_memberships").then(() => {
-      Promise.all([fetchPlans(), fetchMemberships(), fetchWalletTxns()]).finally(() => setLoading(false));
+      Promise.all([fetchPlans(), fetchMemberships(), fetchWalletTxns(), fetchLoyaltyData()]).finally(() => setLoading(false));
     });
-  }, [clinicId, fetchPlans, fetchMemberships, fetchWalletTxns]);
+  }, [clinicId, fetchPlans, fetchMemberships, fetchWalletTxns, fetchLoyaltyData]);
 
   const openNewPlan = () => {
     setEditPlan(null);
@@ -298,14 +339,14 @@ export default function MembershipPage() {
       <div className="flex-1 overflow-auto p-6">
         {/* Tabs */}
         <div className="flex gap-1 mb-6 p-1 rounded-xl w-fit" style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.15)" }}>
-          {(["plans", "members", "wallet"] as const).map(t => (
+          {(["plans", "members", "wallet", "loyalty"] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
               className="px-5 py-2 rounded-lg text-sm font-medium transition-all capitalize"
               style={tab === t
                 ? { background: "var(--gold)", color: "#fff", fontFamily: "Georgia, serif" }
                 : { color: "rgba(197,160,89,0.7)" }}
             >
-              {t === "plans" ? "Plans" : t === "members" ? "Members" : "Wallet"}
+              {t === "plans" ? "Plans" : t === "members" ? "Members" : t === "wallet" ? "Wallet" : "Loyalty"}
             </button>
           ))}
         </div>
@@ -418,6 +459,112 @@ export default function MembershipPage() {
                   })}
                   {filteredMembers.length === 0 && (
                     <tr><td colSpan={7} className="px-4 py-12 text-center text-sm" style={{ color: "#9ca3af" }}>No memberships found</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* LOYALTY TAB */}
+        {tab === "loyalty" && (
+          <div className="space-y-6">
+            {/* Stats row */}
+            <div className="grid grid-cols-3 gap-4">
+              {[
+                { label: "Points Earned",    value: loyaltyStats.totalEarned.toLocaleString(),    icon: TrendingUp, color: "#16a34a" },
+                { label: "Points Redeemed",  value: loyaltyStats.totalRedeemed.toLocaleString(),  icon: Zap,        color: "#2563eb" },
+                { label: "Active Earners",   value: loyaltyStats.activePatients.toLocaleString(), icon: Users,      color: "#C5A059" },
+              ].map(s => (
+                <div key={s.label} className="rounded-xl p-4 flex items-center gap-3" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
+                  <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${s.color}18` }}>
+                    <s.icon size={16} style={{ color: s.color }} />
+                  </div>
+                  <div>
+                    <p className="text-xl font-bold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>{s.value}</p>
+                    <p className="text-xs" style={{ color: "#6b7280" }}>{s.label}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Tier progression */}
+            <div className="rounded-xl p-5" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
+              <div className="flex items-center gap-2 mb-4">
+                <Trophy size={16} style={{ color: "var(--gold)" }} />
+                <h3 className="font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Tier Progression</h3>
+                <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(197,160,89,0.1)", color: "#8B6914" }}>100 pts = ₹10 reward value</span>
+              </div>
+              {loyaltyTiers.length === 0 ? (
+                <p className="text-sm" style={{ color: "#9ca3af" }}>No tiers configured</p>
+              ) : (
+                <div className="flex gap-3">
+                  {loyaltyTiers.map((tier, i) => {
+                    const nextTier = loyaltyTiers[i + 1];
+                    const COLORS: Record<string, { bg: string; text: string; border: string }> = {
+                      "#CD7F32": { bg: "rgba(205,127,50,0.1)",  text: "#8B5A2B", border: "rgba(205,127,50,0.35)" },
+                      "#C0C0C0": { bg: "rgba(148,163,184,0.1)", text: "#475569", border: "rgba(148,163,184,0.4)" },
+                      "#FFD700": { bg: "rgba(197,160,89,0.1)",  text: "#8B6914", border: "rgba(197,160,89,0.4)" },
+                      "#E5E4E2": { bg: "rgba(139,126,200,0.1)", text: "#6B5FAA", border: "rgba(139,126,200,0.4)" },
+                    };
+                    const c = COLORS[tier.color] ?? { bg: "rgba(120,130,140,0.08)", text: "#6B7280", border: "rgba(120,130,140,0.25)" };
+                    return (
+                      <div key={tier.id} className="flex-1 rounded-xl p-4" style={{ background: c.bg, border: `1px solid ${c.border}` }}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span style={{ fontSize: 18 }}>{tier.icon || "⭐"}</span>
+                          <span className="font-bold text-sm" style={{ fontFamily: "Georgia, serif", color: c.text }}>{tier.name}</span>
+                        </div>
+                        <p className="text-xs font-semibold mb-1" style={{ color: c.text }}>{tier.min_points.toLocaleString()} pts+</p>
+                        {nextTier && <p className="text-xs" style={{ color: "#9ca3af" }}>Up to {(nextTier.min_points - 1).toLocaleString()} pts</p>}
+                        {tier.benefits && tier.benefits.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {tier.benefits.slice(0, 2).map((b, j) => (
+                              <div key={j} className="flex items-center gap-1.5 text-xs" style={{ color: c.text }}>
+                                <Check size={9} /> {b.label}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Recent activity */}
+            <div className="rounded-xl overflow-hidden" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
+              <div className="px-5 py-4" style={{ borderBottom: "1px solid rgba(197,160,89,0.1)" }}>
+                <h3 className="font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Recent Activity</h3>
+              </div>
+              <table className="w-full">
+                <thead>
+                  <tr style={{ background: "rgba(197,160,89,0.04)" }}>
+                    {["Date", "Patient", "Type", "Points", "Balance After", "Reason"].map(h => (
+                      <th key={h} className="px-4 py-3 text-left text-xs font-medium" style={{ color: "rgba(197,160,89,0.7)", letterSpacing: "0.05em" }}>{h.toUpperCase()}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {loyaltyActivity.map(a => (
+                    <tr key={a.id} style={{ borderTop: "1px solid rgba(197,160,89,0.06)" }}>
+                      <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>{new Date(a.created_at).toLocaleDateString("en-IN")}</td>
+                      <td className="px-4 py-3 text-sm font-medium" style={{ color: "#1a1714" }}>{a.patients?.full_name || "—"}</td>
+                      <td className="px-4 py-3">
+                        <span className="text-xs px-2 py-1 rounded-full font-medium capitalize" style={{
+                          background: a.type === "earn" ? "rgba(34,197,94,0.12)" : a.type === "redeem" ? "rgba(59,130,246,0.12)" : "rgba(107,114,128,0.1)",
+                          color: a.type === "earn" ? "#16a34a" : a.type === "redeem" ? "#2563eb" : "#6b7280",
+                        }}>{a.type}</span>
+                      </td>
+                      <td className="px-4 py-3 text-sm font-semibold" style={{ color: a.type === "earn" ? "#16a34a" : "#dc2626" }}>
+                        {a.type === "earn" ? "+" : "-"}{Math.abs(a.points)}
+                      </td>
+                      <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>{a.balance_after.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-sm" style={{ color: "#6b7280" }}>{a.reason || "—"}</td>
+                    </tr>
+                  ))}
+                  {loyaltyActivity.length === 0 && (
+                    <tr><td colSpan={6} className="px-4 py-12 text-center text-sm" style={{ color: "#9ca3af" }}>No loyalty activity yet</td></tr>
                   )}
                 </tbody>
               </table>

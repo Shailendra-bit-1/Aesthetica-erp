@@ -1,9 +1,18 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { TrendingUp, Target, MessageSquare, ExternalLink, Calendar, User } from "lucide-react";
+import { TrendingUp, Target, MessageSquare, ExternalLink, Calendar, User, Star, ThumbsUp } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { toast } from "sonner";
 import { Patient, fmtDate } from "../types";
+
+interface PatientFeedback {
+  id: string;
+  rating: number;
+  comment: string | null;
+  nps_score: number | null;
+  submitted_at: string;
+}
 
 interface CrmLead {
   id: string;
@@ -52,12 +61,20 @@ const fmtINR = (n: number | null) =>
 export default function MarketingTab({ patient, clinicId }: Props) {
   const [leads, setLeads]       = useState<CrmLead[]>([]);
   const [sessions, setSessions] = useState<CounsellingSession[]>([]);
+  const [feedback, setFeedback] = useState<PatientFeedback[]>([]);
   const [loading, setLoading]   = useState(true);
+
+  // C8: Feedback form state
+  const [showFeedbackForm,   setShowFeedbackForm]   = useState(false);
+  const [feedbackRating,     setFeedbackRating]     = useState(0);
+  const [feedbackHover,      setFeedbackHover]      = useState(0);
+  const [feedbackComment,    setFeedbackComment]    = useState("");
+  const [savingFeedback,     setSavingFeedback]     = useState(false);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
-      const [leadsRes, sessionsRes] = await Promise.all([
+      const [leadsRes, sessionsRes, feedbackRes] = await Promise.all([
         supabase
           .from("crm_leads")
           .select("id, source, interest, status, next_followup")
@@ -69,16 +86,46 @@ export default function MarketingTab({ patient, clinicId }: Props) {
           .eq("patient_id", patient.id)
           .eq("clinic_id", clinicId)
           .order("session_date", { ascending: false }),
+        supabase
+          .from("patient_feedback")
+          .select("id, rating, comment, nps_score, submitted_at")
+          .eq("patient_id", patient.id)
+          .eq("clinic_id", clinicId)
+          .order("submitted_at", { ascending: false }),
       ]);
       setLeads((leadsRes.data ?? []) as CrmLead[]);
       setSessions((sessionsRes.data ?? []).map((r: Record<string, unknown>) => ({
         ...r,
         counsellor: Array.isArray(r.counsellor) ? (r.counsellor[0] ?? null) : (r.counsellor ?? null),
       })) as unknown as CounsellingSession[]);
+      setFeedback((feedbackRes.data ?? []) as PatientFeedback[]);
       setLoading(false);
     }
     load();
   }, [patient.id, clinicId]);
+
+  const submitFeedback = async () => {
+    if (feedbackRating === 0) { toast.error("Please select a rating"); return; }
+    setSavingFeedback(true);
+    const { error } = await supabase.from("patient_feedback").insert({
+      clinic_id:    clinicId,
+      patient_id:   patient.id,
+      rating:       feedbackRating,
+      comment:      feedbackComment.trim() || null,
+      submitted_at: new Date().toISOString(),
+    });
+    if (error) { toast.error("Failed to save feedback"); setSavingFeedback(false); return; }
+    setFeedback(prev => [{ id: crypto.randomUUID(), rating: feedbackRating, comment: feedbackComment.trim() || null, nps_score: null, submitted_at: new Date().toISOString() }, ...prev]);
+    setShowFeedbackForm(false);
+    setFeedbackRating(0);
+    setFeedbackComment("");
+    setSavingFeedback(false);
+    if (feedbackRating >= 4) {
+      toast.success("Great feedback! Share it on Google.", { description: "Consider asking the patient to leave a Google review.", duration: 5000 });
+    } else {
+      toast.warning("Feedback flagged for review", { description: "A staff member will follow up with this patient." });
+    }
+  };
 
   // Conversion funnel stats
   const totalProposed  = sessions.reduce((s, r) => s + (r.total_proposed ?? 0), 0);
@@ -261,6 +308,90 @@ export default function MarketingTab({ patient, clinicId }: Props) {
                 </div>
               );
             })}
+          </div>
+        )}
+      </section>
+
+      {/* C8: Patient Feedback */}
+      <section>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <Star size={13} color="#C5A059" />
+            <span style={sectionLabel}>Patient Feedback</span>
+          </div>
+          {!showFeedbackForm && (
+            <button
+              onClick={() => setShowFeedbackForm(true)}
+              style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.35)", background: "rgba(197,160,89,0.07)", color: "#8B6914", cursor: "pointer" }}>
+              <ThumbsUp size={11} /> Record Feedback
+            </button>
+          )}
+        </div>
+
+        {/* Feedback form */}
+        {showFeedbackForm && (
+          <div style={{ ...card, marginBottom: 10 }}>
+            <p style={{ fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", color: "#1C1917", marginBottom: 10 }}>Rate this patient&apos;s visit</p>
+            {/* Star selector */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+              {[1,2,3,4,5].map(n => (
+                <button key={n}
+                  onMouseEnter={() => setFeedbackHover(n)}
+                  onMouseLeave={() => setFeedbackHover(0)}
+                  onClick={() => setFeedbackRating(n)}
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
+                  <Star size={28} fill={(feedbackHover || feedbackRating) >= n ? "#C5A059" : "none"} color={(feedbackHover || feedbackRating) >= n ? "#C5A059" : "#D1D5DB"} />
+                </button>
+              ))}
+              {feedbackRating > 0 && (
+                <span style={{ fontSize: 12, color: "#6B7280", alignSelf: "center", marginLeft: 4 }}>
+                  {["","Poor","Fair","Good","Very Good","Excellent"][feedbackRating]}
+                </span>
+              )}
+            </div>
+            {/* Comment */}
+            <textarea
+              value={feedbackComment}
+              onChange={e => setFeedbackComment(e.target.value)}
+              placeholder="Optional comment…"
+              rows={2}
+              style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, fontFamily: "inherit", resize: "none", outline: "none", background: "rgba(249,247,242,0.8)", boxSizing: "border-box" }}
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button onClick={() => { setShowFeedbackForm(false); setFeedbackRating(0); setFeedbackComment(""); }}
+                style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(120,130,140,0.25)", background: "#fff", fontSize: 12, color: "#6B7280", cursor: "pointer" }}>Cancel</button>
+              <button onClick={submitFeedback} disabled={savingFeedback || feedbackRating === 0}
+                style={{ padding: "6px 16px", borderRadius: 8, border: "none", background: "var(--gold)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: feedbackRating === 0 ? 0.5 : 1 }}>
+                {savingFeedback ? "Saving…" : "Submit"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Feedback history */}
+        {!loading && feedback.length === 0 && !showFeedbackForm ? (
+          <div style={{ ...card, textAlign: "center" }}>
+            <Star size={28} color="rgba(197,160,89,0.3)" style={{ marginBottom: 8 }} />
+            <p style={{ fontSize: 13, color: "#9CA3AF", margin: 0 }}>No feedback recorded yet</p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {feedback.map(fb => (
+              <div key={fb.id} style={card}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: fb.comment ? 6 : 0 }}>
+                  <div style={{ display: "flex", gap: 2 }}>
+                    {[1,2,3,4,5].map(n => (
+                      <Star key={n} size={13} fill={fb.rating >= n ? "#C5A059" : "none"} color={fb.rating >= n ? "#C5A059" : "#D1D5DB"} />
+                    ))}
+                  </div>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: fb.rating >= 4 ? "#16a34a" : fb.rating <= 2 ? "#dc2626" : "#CA8A04" }}>
+                    {["","Poor","Fair","Good","Very Good","Excellent"][fb.rating]}
+                  </span>
+                  <span style={{ fontSize: 11, color: "#9CA3AF", marginLeft: "auto" }}>{fmtDate(fb.submitted_at)}</span>
+                </div>
+                {fb.comment && <p style={{ fontSize: 13, color: "#374151", margin: 0, fontStyle: "italic" }}>&ldquo;{fb.comment}&rdquo;</p>}
+              </div>
+            ))}
           </div>
         )}
       </section>

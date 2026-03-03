@@ -1116,14 +1116,46 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
   const [tipAmount, setTipAmount] = useState("0"); // B9: Tip at checkout
   const [saving,    setSaving]    = useState(false);
 
+  // C4: Loyalty points redemption
+  const [loyaltyPts,  setLoyaltyPts]  = useState(0);
+  const [redeemPts,   setRedeemPts]   = useState(0);
+  const [loyaltyTier, setLoyaltyTier] = useState("");
+
   const due = inv.total_amount ?? inv.amount ?? 0;
   const tip = parseFloat(tipAmount) || 0;
+  const pointsDiscount = Math.floor(redeemPts / 100) * 10; // 100 pts = ₹10
+
+  // C4: Fetch loyalty balance on mount
+  useEffect(() => {
+    if (!inv.patient_id) return;
+    supabase.rpc("get_patient_loyalty", { p_patient_id: inv.patient_id, p_clinic_id: clinicId })
+      .single()
+      .then(({ data }) => {
+        if (data) {
+          const d = data as { balance: number; tier: string; color: string };
+          setLoyaltyPts(d.balance);
+          setLoyaltyTier(d.tier);
+        }
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSave = async () => {
     const pay = parseFloat(amount);
     if (!pay || pay <= 0) { toast.error("Enter a valid amount"); return; }
     setSaving(true);
     try {
+      // C4: Redeem loyalty points first (before payment)
+      if (redeemPts > 0 && inv.patient_id) {
+        const { error: re } = await supabase.rpc("redeem_loyalty_points", {
+          p_patient_id: inv.patient_id,
+          p_clinic_id:  clinicId,
+          p_points:     redeemPts,
+          p_invoice_id: inv.id,
+        });
+        if (re) throw new Error(re.message);
+      }
+
       // C-3 fix: single atomic RPC — inserts payment + recomputes invoice status
       const { data: newStatus, error: pe } = await supabase.rpc("record_payment", {
         p_invoice_id:      inv.id,
@@ -1141,11 +1173,21 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
         await supabase.from("pending_invoices").update({ tip_amount: tip }).eq("id", inv.id);
       }
 
+      // C1: Earn loyalty points (fire-and-forget, 1 pt per ₹10)
+      if (inv.patient_id) {
+        supabase.rpc("earn_loyalty_points", {
+          p_patient_id: inv.patient_id,
+          p_clinic_id:  clinicId,
+          p_amount:     pay,
+          p_invoice_id: inv.id,
+        }).then(() => {});
+      }
+
       await logAction({
         action:     "record_payment",
         targetId:   inv.id,
         targetName: inv.invoice_number,
-        metadata:   { amount: pay, mode, tip: tip > 0 ? tip : undefined, status: newStatus },
+        metadata:   { amount: pay, mode, tip: tip > 0 ? tip : undefined, redeemPts: redeemPts > 0 ? redeemPts : undefined, status: newStatus },
       });
       onSuccess();
     } catch (e: any) {
@@ -1253,6 +1295,47 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
               style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }}
             />
           </div>
+
+          {/* C4: Redeem Loyalty Points */}
+          {loyaltyPts >= 100 && (
+            <div style={{ padding: "14px 16px", borderRadius: 12, background: "rgba(139,126,200,0.06)", border: "1px solid rgba(139,126,200,0.25)" }}>
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <p className="text-sm font-semibold" style={{ fontFamily: "Georgia, serif", color: "var(--foreground)" }}>
+                    Loyalty Points
+                  </p>
+                  <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+                    {loyaltyPts.toLocaleString()} pts available · {loyaltyTier} · 100 pts = ₹10 off
+                  </p>
+                </div>
+                {redeemPts === 0 ? (
+                  <button
+                    onClick={() => {
+                      const maxRedeemable = Math.floor(Math.min(loyaltyPts, (due * 100) / 10) / 100) * 100;
+                      setRedeemPts(maxRedeemable);
+                      setAmount((due - (maxRedeemable / 100) * 10).toFixed(2));
+                    }}
+                    style={{ fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 8, border: "1px solid rgba(139,126,200,0.5)", background: "rgba(139,126,200,0.1)", color: "#6B5FAA", cursor: "pointer" }}>
+                    Apply Max
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => { setRedeemPts(0); setAmount(due.toFixed(2)); }}
+                    style={{ fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 8, border: "1px solid rgba(220,38,38,0.3)", background: "rgba(220,38,38,0.06)", color: "#DC2626", cursor: "pointer" }}>
+                    Remove
+                  </button>
+                )}
+              </div>
+              {redeemPts > 0 && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: "rgba(139,126,200,0.1)" }}>
+                  <BadgeCheck size={13} style={{ color: "#6B5FAA" }} />
+                  <p className="text-xs font-semibold" style={{ color: "#6B5FAA" }}>
+                    {redeemPts} pts → ₹{pointsDiscount} discount applied · Patient pays ₹{(due - pointsDiscount).toFixed(2)}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* B9: Tip at checkout */}
           <div style={{ padding: "14px 16px", borderRadius: 12, background: "rgba(197,160,89,0.05)", border: "1px solid rgba(197,160,89,0.2)" }}>

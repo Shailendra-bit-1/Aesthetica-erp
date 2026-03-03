@@ -248,6 +248,35 @@ export default function NewPatientModal({ isOpen, onClose }: Props) {
     const code = genReferralCode(basic.fullName);
     supabase.from("referral_codes").insert({ patient_id: patientId, code }).then(() => {});
 
+    // C6: Referral conversion tracking
+    if (basic.referralCode.trim()) {
+      supabase
+        .from("referral_codes")
+        .select("patient_id, id")
+        .eq("code", basic.referralCode.trim().toUpperCase())
+        .maybeSingle()
+        .then(({ data: referrerCode }) => {
+          if (!referrerCode) return;
+          // Record conversion
+          supabase.from("referral_conversions").insert({
+            clinic_id:           clinicId,
+            referral_code_id:    referrerCode.id,
+            referrer_patient_id: referrerCode.patient_id,
+            referred_patient_id: patientId,
+            wallet_reward:       0,
+            points_reward:       200,
+            converted_at:        new Date().toISOString(),
+          }).then(() => {});
+          // Award 200 pts to referrer (p_amount=2000 → 200 pts at 1 pt/₹10)
+          supabase.rpc("earn_loyalty_points", {
+            p_patient_id: referrerCode.patient_id,
+            p_clinic_id:  clinicId,
+            p_amount:     2000,
+            p_invoice_id: null,
+          }).then(() => {});
+        });
+    }
+
     setSubmitState("success");
     toast.success(`${basic.fullName} registered`, {
       description: basic.sendIntake ? "Patient added · Intake form link ready." : "Patient added to records.",
