@@ -31,6 +31,7 @@ import {
   Webhook,
   Puzzle,
   Banknote,
+  MessageCirclePlus,
 } from "lucide-react";
 import clsx from "clsx";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -70,7 +71,8 @@ const ADMIN_ITEMS = [
   { label: "Form Builder",       href: "/admin/forms",               icon: FormInput,  superadminOnly: false },
   { label: "Webhooks",           href: "/admin/webhooks",            icon: Webhook,    superadminOnly: false },
   { label: "Plugins",            href: "/admin/plugins",             icon: Puzzle,     superadminOnly: false },
-  { label: "Payroll",            href: "/payroll",                   icon: Banknote,   superadminOnly: false },
+  { label: "Payroll",            href: "/payroll",                   icon: Banknote,          superadminOnly: false },
+  { label: "Beta Feedback",     href: "/admin/beta-feedback",       icon: MessageCirclePlus, superadminOnly: false },
 ] as const;
 
 const BOTTOM_ITEMS = [

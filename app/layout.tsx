@@ -7,6 +7,7 @@ import { ClinicProvider } from "@/contexts/ClinicContext";
 import { ImpersonationProvider } from "@/contexts/ImpersonationContext";
 import { FeatureFlagsProvider } from "@flags/context";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
+import FeedbackWidget from "@/components/FeedbackWidget";
 import { Toaster } from "sonner";
 
 const geistSans = Geist({
@@ -44,6 +45,7 @@ export default function RootLayout({
                     {children}
                   </main>
                 </div>
+                <FeedbackWidget />
               </InactivityGuard>
             </ImpersonationProvider>
           </FeatureFlagsProvider>
