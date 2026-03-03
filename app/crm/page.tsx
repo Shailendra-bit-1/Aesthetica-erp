@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import {
   Megaphone, Plus, X, Search, Phone, Mail, UserPlus,
   Calendar, MessageSquare, Send, CheckCircle, Clock, ChevronRight,
+  LayoutGrid, List, Inbox, Zap,
 } from "lucide-react";
 
 type LeadStatus = "new" | "contacted" | "interested" | "converted" | "lost" | "junk";
@@ -90,6 +91,9 @@ export default function CRMPage() {
   const [campaignDrawer, setCampaignDrawer] = useState(false);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [saving, setSaving] = useState(false);
+  // D11: Kanban view state
+  const [leadView, setLeadView] = useState<"list" | "kanban">("kanban");
+  const [draggedLeadId, setDraggedLeadId] = useState<string | null>(null);
 
   const [leadForm, setLeadForm] = useState({
     full_name: "", phone: "", email: "", source: "walk_in", interest: "", notes: "",
@@ -134,13 +138,22 @@ export default function CRMPage() {
   const saveLead = async () => {
     if (!clinicId || !leadForm.full_name) return;
     setSaving(true);
-    await supabase.from("crm_leads").insert({
+    const { data: newLead } = await supabase.from("crm_leads").insert({
       clinic_id: clinicId, full_name: leadForm.full_name, phone: leadForm.phone || null,
       email: leadForm.email || null, source: leadForm.source,
       interest: leadForm.interest ? leadForm.interest.split(",").map(s => s.trim()).filter(Boolean) : [],
       notes: leadForm.notes || null, assigned_to: leadForm.assigned_to || null,
       next_followup: leadForm.next_followup || null, status: "new",
-    });
+    }).select("id").single();
+    // D4: Auto-enroll in standard nurture drip
+    if (newLead?.id) {
+      supabase.from("drip_enrollments").insert({
+        clinic_id:     clinicId,
+        lead_id:       newLead.id,
+        sequence_name: "standard_nurture",
+        next_send_at:  new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      }).then(() => {});
+    }
     setSaving(false);
     setLeadDrawer(false);
     setLeadForm({ full_name: "", phone: "", email: "", source: "walk_in", interest: "", notes: "", assigned_to: "", next_followup: "" });
@@ -240,6 +253,7 @@ export default function CRMPage() {
         {/* LEADS TAB */}
         {tab === "leads" && (
           <div>
+            {/* Header */}
             <div className="flex justify-between items-center mb-5">
               <div className="flex items-center gap-3">
                 <h2 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Leads</h2>
@@ -249,80 +263,168 @@ export default function CRMPage() {
                     placeholder="Search leads…" className="pl-8 pr-3 py-1.5 rounded-lg text-sm border bg-white outline-none"
                     style={{ borderColor: "rgba(197,160,89,0.2)", width: 200 }} />
                 </div>
+                {/* D11: View toggle */}
+                <div className="flex gap-1 p-0.5 rounded-lg" style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.15)" }}>
+                  {(["kanban", "list"] as const).map(v => (
+                    <button key={v} onClick={() => setLeadView(v)}
+                      className="p-1.5 rounded-md transition-all"
+                      style={{ background: leadView === v ? "var(--gold)" : "transparent", color: leadView === v ? "#fff" : "rgba(197,160,89,0.6)" }}
+                      title={v === "kanban" ? "Kanban" : "List"}>
+                      {v === "kanban" ? <LayoutGrid size={14} /> : <List size={14} />}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <button onClick={() => setLeadDrawer(true)}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white"
-                style={{ background: "var(--gold)" }}>
-                <Plus size={15} /> New Lead
-              </button>
+              <div className="flex items-center gap-2">
+                <a href="/crm/inbox"
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium"
+                  style={{ border: "1px solid rgba(197,160,89,0.3)", color: "#C5A059" }}>
+                  <Inbox size={14} /> Inbox
+                </a>
+                <button onClick={() => setLeadDrawer(true)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white"
+                  style={{ background: "var(--gold)" }}>
+                  <Plus size={15} /> New Lead
+                </button>
+              </div>
             </div>
-            <div className="rounded-xl overflow-hidden" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
-              <table className="w-full">
-                <thead>
-                  <tr style={{ borderBottom: "1px solid rgba(197,160,89,0.1)", background: "rgba(197,160,89,0.04)" }}>
-                    {["Name", "Phone", "Source", "Assigned", "Next Follow-up", "Status", "Actions"].map(h => (
-                      <th key={h} className="px-4 py-3 text-left text-xs font-medium" style={{ color: "rgba(197,160,89,0.7)", letterSpacing: "0.05em" }}>{h.toUpperCase()}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {loading ? (
-                    <tr><td colSpan={7} className="px-4 py-12 text-center text-sm" style={{ color: "#9ca3af" }}>Loading…</td></tr>
-                  ) : filteredLeads.length === 0 ? (
-                    <tr><td colSpan={7} className="px-4 py-12 text-center text-sm" style={{ color: "#9ca3af" }}>No leads yet</td></tr>
-                  ) : filteredLeads.map(lead => {
-                    const sc = LEAD_STATUS_CONFIG[lead.status];
-                    return (
-                      <tr key={lead.id} style={{ borderBottom: "1px solid rgba(197,160,89,0.06)" }}>
-                        <td className="px-4 py-3" style={{ cursor: "pointer" }} onClick={() => setSelectedLead(lead)}>
-                          <div className="flex items-center gap-1">
-                            <p className="text-sm font-medium" style={{ color: "#1a1714" }}>{lead.full_name}</p>
-                            <ChevronRight size={12} style={{ color: "rgba(197,160,89,0.5)" }} />
+
+            {/* D11: KANBAN VIEW */}
+            {leadView === "kanban" && (
+              <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 12 }}>
+                {(["new","contacted","interested","converted","lost","junk"] as LeadStatus[]).map(col => {
+                  const cfg = LEAD_STATUS_CONFIG[col];
+                  const colLeads = filteredLeads.filter(l => l.status === col);
+                  return (
+                    <div key={col} style={{ flexShrink: 0, width: 220 }}
+                      onDragOver={e => e.preventDefault()}
+                      onDrop={() => { if (draggedLeadId) { updateLeadStatus(draggedLeadId, col); setDraggedLeadId(null); } }}>
+                      {/* Column header */}
+                      <div className="flex items-center justify-between px-3 py-2 mb-2 rounded-lg"
+                        style={{ background: cfg.bg, border: `1px solid ${cfg.color}30` }}>
+                        <span className="text-xs font-bold uppercase tracking-wider" style={{ color: cfg.color }}>{cfg.label}</span>
+                        <span className="text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center" style={{ background: cfg.color + "20", color: cfg.color }}>{colLeads.length}</span>
+                      </div>
+                      {/* Cards */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 60 }}>
+                        {loading ? (
+                          <div className="h-16 rounded-xl animate-pulse" style={{ background: "rgba(197,160,89,0.06)" }} />
+                        ) : colLeads.map(lead => (
+                          <div key={lead.id}
+                            draggable
+                            onDragStart={() => setDraggedLeadId(lead.id)}
+                            onDragEnd={() => setDraggedLeadId(null)}
+                            onClick={() => setSelectedLead(lead)}
+                            style={{
+                              padding: "12px 14px", borderRadius: 10, background: "#fff", cursor: "grab",
+                              border: "1px solid rgba(197,160,89,0.15)",
+                              boxShadow: draggedLeadId === lead.id ? "0 8px 24px rgba(0,0,0,0.14)" : "0 1px 4px rgba(0,0,0,0.04)",
+                              opacity: draggedLeadId === lead.id ? 0.6 : 1,
+                              transition: "box-shadow 0.15s, opacity 0.15s",
+                            }}>
+                            <div className="flex items-start justify-between gap-1 mb-1.5">
+                              <p className="text-sm font-semibold leading-tight" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>{lead.full_name}</p>
+                              {lead.patient_id && <CheckCircle size={11} style={{ color: "#16a34a", flexShrink: 0, marginTop: 2 }} />}
+                            </div>
+                            {lead.phone && (
+                              <div className="flex items-center gap-1 text-xs" style={{ color: "#6b7280" }}>
+                                <Phone size={9} /> {lead.phone}
+                              </div>
+                            )}
+                            {lead.source && (
+                              <span className="text-xs px-1.5 py-0.5 rounded mt-1.5 inline-block" style={{ background: "rgba(197,160,89,0.1)", color: "#8B6914" }}>
+                                {SOURCE_LABELS[lead.source] || lead.source}
+                              </span>
+                            )}
+                            {lead.next_followup && (
+                              <div className="flex items-center gap-1 text-xs mt-1.5" style={{ color: "#9ca3af" }}>
+                                <Calendar size={9} /> {new Date(lead.next_followup).toLocaleDateString("en-IN")}
+                              </div>
+                            )}
                           </div>
-                          {lead.email && <p className="text-xs" style={{ color: "#9ca3af" }}>{lead.email}</p>}
-                        </td>
-                        <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>{lead.phone || "—"}</td>
-                        <td className="px-4 py-3">
-                          {lead.source && (
-                            <span className="text-xs px-2 py-1 rounded-full" style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)" }}>
-                              {SOURCE_LABELS[lead.source] || lead.source}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>{lead.profiles?.full_name || "—"}</td>
-                        <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>
-                          {lead.next_followup ? new Date(lead.next_followup).toLocaleDateString("en-IN") : "—"}
-                        </td>
-                        <td className="px-4 py-3">
-                          <select value={lead.status}
-                            onChange={e => updateLeadStatus(lead.id, e.target.value as LeadStatus)}
-                            className="text-xs px-2 py-1.5 rounded-lg border bg-white font-medium"
-                            style={{ borderColor: sc.color + "40", color: sc.color, background: sc.bg }}>
-                            {Object.entries(LEAD_STATUS_CONFIG).map(([k, v]) => (
-                              <option key={k} value={k}>{v.label}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="px-4 py-3">
-                          {!lead.patient_id && lead.status !== "junk" && lead.status !== "lost" && (
-                            <button onClick={() => convertLead(lead)}
-                              className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg"
-                              style={{ background: "rgba(34,197,94,0.1)", color: "#16a34a" }}>
-                              <UserPlus size={11} /> Convert
-                            </button>
-                          )}
-                          {lead.patient_id && (
-                            <span className="flex items-center gap-1 text-xs" style={{ color: "#16a34a" }}>
-                              <CheckCircle size={11} /> Patient
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                        ))}
+                        {!loading && colLeads.length === 0 && (
+                          <div className="text-xs text-center py-4 rounded-lg" style={{ color: "#d1d5db", border: "2px dashed rgba(197,160,89,0.15)" }}>
+                            Drop here
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* LIST VIEW */}
+            {leadView === "list" && (
+              <div className="rounded-xl overflow-hidden" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
+                <table className="w-full">
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid rgba(197,160,89,0.1)", background: "rgba(197,160,89,0.04)" }}>
+                      {["Name", "Phone", "Source", "Assigned", "Next Follow-up", "Status", "Actions"].map(h => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-medium" style={{ color: "rgba(197,160,89,0.7)", letterSpacing: "0.05em" }}>{h.toUpperCase()}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading ? (
+                      <tr><td colSpan={7} className="px-4 py-12 text-center text-sm" style={{ color: "#9ca3af" }}>Loading…</td></tr>
+                    ) : filteredLeads.length === 0 ? (
+                      <tr><td colSpan={7} className="px-4 py-12 text-center text-sm" style={{ color: "#9ca3af" }}>No leads yet</td></tr>
+                    ) : filteredLeads.map(lead => {
+                      const sc = LEAD_STATUS_CONFIG[lead.status];
+                      return (
+                        <tr key={lead.id} style={{ borderBottom: "1px solid rgba(197,160,89,0.06)" }}>
+                          <td className="px-4 py-3" style={{ cursor: "pointer" }} onClick={() => setSelectedLead(lead)}>
+                            <div className="flex items-center gap-1">
+                              <p className="text-sm font-medium" style={{ color: "#1a1714" }}>{lead.full_name}</p>
+                              <ChevronRight size={12} style={{ color: "rgba(197,160,89,0.5)" }} />
+                            </div>
+                            {lead.email && <p className="text-xs" style={{ color: "#9ca3af" }}>{lead.email}</p>}
+                          </td>
+                          <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>{lead.phone || "—"}</td>
+                          <td className="px-4 py-3">
+                            {lead.source && (
+                              <span className="text-xs px-2 py-1 rounded-full" style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)" }}>
+                                {SOURCE_LABELS[lead.source] || lead.source}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>{lead.profiles?.full_name || "—"}</td>
+                          <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>
+                            {lead.next_followup ? new Date(lead.next_followup).toLocaleDateString("en-IN") : "—"}
+                          </td>
+                          <td className="px-4 py-3">
+                            <select value={lead.status}
+                              onChange={e => updateLeadStatus(lead.id, e.target.value as LeadStatus)}
+                              className="text-xs px-2 py-1.5 rounded-lg border bg-white font-medium"
+                              style={{ borderColor: sc.color + "40", color: sc.color, background: sc.bg }}>
+                              {Object.entries(LEAD_STATUS_CONFIG).map(([k, v]) => (
+                                <option key={k} value={k}>{v.label}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-4 py-3">
+                            {!lead.patient_id && lead.status !== "junk" && lead.status !== "lost" && (
+                              <button onClick={() => convertLead(lead)}
+                                className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg"
+                                style={{ background: "rgba(34,197,94,0.1)", color: "#16a34a" }}>
+                                <UserPlus size={11} /> Convert
+                              </button>
+                            )}
+                            {lead.patient_id && (
+                              <span className="flex items-center gap-1 text-xs" style={{ color: "#16a34a" }}>
+                                <CheckCircle size={11} /> Patient
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
@@ -388,10 +490,17 @@ export default function CRMPage() {
         {/* LOG TAB */}
         {tab === "log" && (
           <div>
-            <h2 className="text-lg font-semibold mb-5" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Communication Log</h2>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Communication Log</h2>
+              <a href="/crm/inbox"
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium"
+                style={{ background: "var(--gold)", color: "#fff" }}>
+                <Inbox size={14} /> Open WhatsApp Inbox
+              </a>
+            </div>
             <div className="rounded-xl p-8 text-center" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
               <MessageSquare size={40} className="mx-auto mb-3 opacity-20" style={{ color: "var(--gold)" }} />
-              <p className="text-sm" style={{ color: "#9ca3af" }}>Communication log will populate as campaigns are sent</p>
+              <p className="text-sm" style={{ color: "#9ca3af" }}>Communication log will populate as campaigns are sent and WhatsApp messages are exchanged</p>
             </div>
           </div>
         )}
