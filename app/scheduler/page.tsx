@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { logAction } from "@/lib/audit";
 import {
   ChevronLeft, ChevronRight, Plus, Settings, Eye, EyeOff,
-  Clock, User, X, AlertCircle, Loader2, Zap,
+  Clock, User, Users, X, AlertCircle, Loader2, Zap,
   Star, RefreshCw, Bell, Shield, Search, Scissors,
   CheckCircle2, XCircle, UserCheck, PhoneOff, CalendarCheck,
   AlertTriangle, Package, Calendar, MapPin, Edit2, Trash2,
@@ -143,6 +143,17 @@ function apptHeight(startTime: string, endTime: string): number {
   return Math.max(26, (ms / 3600000) * HOUR_HEIGHT);
 }
 
+// B6: Recall interval by service name keywords
+function calcRecallDays(serviceName: string): number {
+  const s = (serviceName ?? "").toLowerCase();
+  if (s.includes("botox") || s.includes("wrinkle") || s.includes("prp")) return 90;
+  if (s.includes("filler") || s.includes("lip") || s.includes("cheek")) return 180;
+  if (s.includes("laser") || s.includes("ipl") || s.includes("rf")) return 30;
+  if (s.includes("peel") || s.includes("facial") || s.includes("hydra")) return 60;
+  if (s.includes("body") || s.includes("contour") || s.includes("cavita")) return 120;
+  return 90; // default
+}
+
 // WhatsApp placeholder — calls Edge Function
 async function sendWhatsAppReminder(appointmentId: string) {
   try {
@@ -176,6 +187,7 @@ function SchedulerPageInner() {
   const [showNewAppt,   setShowNewAppt]   = useState(false);
   const [showSettings,  setShowSettings]  = useState(false);
   const [prefillSlot,   setPrefillSlot]   = useState<{ date: Date; hour: number; providerId?: string } | null>(null);
+  const [schedulerTab,  setSchedulerTab]  = useState<"calendar" | "waitlist" | "recalls">("calendar");
 
   // Date range for current view
   const viewRange = useMemo(() => {
@@ -255,6 +267,14 @@ function SchedulerPageInner() {
     }).eq("id", apptId);
     if (error) toast.error("Could not move appointment");
     else { toast.success("Appointment moved"); fetchAll(); }
+  }
+
+  async function handleQuickAction(apptId: string, status: AppointmentStatus) {
+    const { error } = await supabase.from("appointments")
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq("id", apptId);
+    if (error) toast.error("Update failed");
+    else { toast.success(`Marked as ${STATUS_CFG[status].label}`); fetchAll(); }
   }
 
   function navigate(dir: -1 | 1) {
@@ -385,42 +405,79 @@ function SchedulerPageInner() {
         )}
       </div>
 
-      {/* ── Calendar body ────────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
-        {loading ? (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 400 }}>
-            <Loader2 size={28} style={{ color: "rgba(197,160,89,0.5)", animation: "spin 1s linear infinite" }} />
-          </div>
-        ) : view === "week" ? (
-          <WeekView
-            appointments={appointments}
-            currentDate={currentDate}
-            privacyMode={privacyMode}
-            settings={settings}
-            onSelectAppt={setSelectedAppt}
-            onSlotClick={(date, hour) => { setPrefillSlot({ date, hour }); setShowNewAppt(true); }}
-            onDragAppt={handleDragAppt}
-          />
-        ) : view === "day" ? (
-          <DayView
-            appointments={appointments}
-            currentDate={currentDate}
-            providers={providers}
-            privacyMode={privacyMode}
-            settings={settings}
-            onSelectAppt={setSelectedAppt}
-            onSlotClick={(date, hour, pid) => { setPrefillSlot({ date, hour, providerId: pid }); setShowNewAppt(true); }}
-            onDragAppt={handleDragAppt}
-          />
-        ) : (
-          <MonthView
-            appointments={appointments}
-            currentDate={currentDate}
-            privacyMode={privacyMode}
-            onDayClick={(d) => { setCurrentDate(d); setView("day"); }}
-          />
-        )}
+      {/* ── Main tabs ────────────────────────────────────────────────────── */}
+      <div style={{ background: "white", borderBottom: "1px solid var(--border)", display: "flex", paddingLeft: 16 }}>
+        {([
+          { key: "calendar" as const,  label: "Calendar",  icon: Calendar },
+          { key: "waitlist" as const,  label: "Waitlist",  icon: Users },
+          { key: "recalls"  as const,  label: "Recalls",   icon: CalendarClock },
+        ]).map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setSchedulerTab(key)}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "9px 18px", border: "none", background: "none", cursor: "pointer",
+              fontSize: 13, fontFamily: "Georgia, serif",
+              color: schedulerTab === key ? "#C5A059" : "var(--text-muted)",
+              borderBottom: schedulerTab === key ? "2px solid #C5A059" : "2px solid transparent",
+              fontWeight: schedulerTab === key ? 600 : 400,
+              transition: "all 0.15s",
+            }}
+          >
+            <Icon size={13} /> {label}
+          </button>
+        ))}
       </div>
+
+      {/* ── Calendar body / Waitlist / Recalls ───────────────────────────── */}
+      {schedulerTab === "calendar" ? (
+        <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
+          {loading ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 400 }}>
+              <Loader2 size={28} style={{ color: "rgba(197,160,89,0.5)", animation: "spin 1s linear infinite" }} />
+            </div>
+          ) : view === "week" ? (
+            <WeekView
+              appointments={appointments}
+              currentDate={currentDate}
+              privacyMode={privacyMode}
+              settings={settings}
+              onSelectAppt={setSelectedAppt}
+              onSlotClick={(date, hour) => { setPrefillSlot({ date, hour }); setShowNewAppt(true); }}
+              onDragAppt={handleDragAppt}
+              onActionAppt={handleQuickAction}
+            />
+          ) : view === "day" ? (
+            <DayView
+              appointments={appointments}
+              currentDate={currentDate}
+              providers={providers}
+              privacyMode={privacyMode}
+              settings={settings}
+              onSelectAppt={setSelectedAppt}
+              onSlotClick={(date, hour, pid) => { setPrefillSlot({ date, hour, providerId: pid }); setShowNewAppt(true); }}
+              onDragAppt={handleDragAppt}
+              onActionAppt={handleQuickAction}
+            />
+          ) : (
+            <MonthView
+              appointments={appointments}
+              currentDate={currentDate}
+              privacyMode={privacyMode}
+              onDayClick={(d) => { setCurrentDate(d); setView("day"); }}
+            />
+          )}
+        </div>
+      ) : schedulerTab === "waitlist" ? (
+        <div style={{ flex: 1, overflow: "auto" }}>
+          <WaitlistTab activeClinicId={activeClinicId} onBook={() => setShowNewAppt(true)} />
+        </div>
+      ) : (
+        <div style={{ flex: 1, overflow: "auto" }}>
+          <RecallsTab activeClinicId={activeClinicId} onBook={() => setShowNewAppt(true)} />
+        </div>
+      )}
 
       {/* ── Modals / Drawers ─────────────────────────────────────────────────── */}
       {selectedAppt && (
@@ -483,7 +540,7 @@ const navBtn: React.CSSProperties = {
 
 // ── Week View ─────────────────────────────────────────────────────────────────
 
-function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAppt, onSlotClick, onDragAppt }: {
+function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAppt, onSlotClick, onDragAppt, onActionAppt }: {
   appointments: Appointment[];
   currentDate: Date;
   privacyMode: boolean;
@@ -491,6 +548,7 @@ function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAp
   onSelectAppt: (a: Appointment) => void;
   onSlotClick: (date: Date, hour: number) => void;
   onDragAppt: (apptId: string, newStart: Date) => void;
+  onActionAppt: (apptId: string, status: AppointmentStatus) => void;
 }) {
   const weekStart = startOfWeek(currentDate);
   const days  = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
@@ -609,6 +667,7 @@ function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAp
                       col={col}
                       totalCols={total}
                       onClick={() => onSelectAppt(appt)}
+                      onActionAppt={onActionAppt}
                     />
                   );
                 })}
@@ -636,7 +695,7 @@ function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAp
 
 // ── Day View (providers as columns) ──────────────────────────────────────────
 
-function DayView({ appointments, currentDate, providers, privacyMode, settings, onSelectAppt, onSlotClick, onDragAppt }: {
+function DayView({ appointments, currentDate, providers, privacyMode, settings, onSelectAppt, onSlotClick, onDragAppt, onActionAppt }: {
   appointments: Appointment[];
   currentDate: Date;
   providers: Provider[];
@@ -645,6 +704,7 @@ function DayView({ appointments, currentDate, providers, privacyMode, settings, 
   onSelectAppt: (a: Appointment) => void;
   onSlotClick: (date: Date, hour: number, providerId?: string) => void;
   onDragAppt: (apptId: string, newStart: Date) => void;
+  onActionAppt: (apptId: string, status: AppointmentStatus) => void;
 }) {
   const hours = Array.from({ length: TOTAL_HOURS }, (_, i) => WORKING_START + i);
   // Columns: one per provider, plus an "Unassigned" column
@@ -732,6 +792,7 @@ function DayView({ appointments, currentDate, providers, privacyMode, settings, 
                     col={0}
                     totalCols={1}
                     onClick={() => onSelectAppt(appt)}
+                    onActionAppt={onActionAppt}
                   />
                 ))}
 
@@ -857,7 +918,9 @@ function MonthView({ appointments, currentDate, privacyMode, onDayClick }: {
 
 // ── Appointment Card (in time grid) ──────────────────────────────────────────
 
-function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick }: {
+// ── B7: Appointment Card with hover-expand + inline quick actions ─────────────
+
+function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick, onActionAppt }: {
   appt: Appointment;
   top: number;
   height: number;
@@ -865,7 +928,9 @@ function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick }
   col: number;
   totalCols: number;
   onClick: () => void;
+  onActionAppt: (apptId: string, status: AppointmentStatus) => void;
 }) {
+  const [hovered, setHovered] = useState(false);
   const cfg   = STATUS_CFG[a.status];
   const isVip = a.patient_tier === "vip";
   const isHni = a.patient_tier === "hni";
@@ -873,6 +938,17 @@ function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick }
 
   const colWidth = totalCols > 1 ? `${100 / totalCols}%` : undefined;
   const colLeft  = totalCols > 1 ? `${(col * 100) / totalCols}%` : undefined;
+
+  // Quick actions available per status (B7)
+  const quickActions: { status: AppointmentStatus; label: string; color: string }[] = [];
+  if (a.status === "planned" || a.status === "confirmed")
+    quickActions.push({ status: "arrived", label: "Check In", color: "#2A4A8A" });
+  if (a.status === "arrived" || a.status === "in_session")
+    quickActions.push({ status: "completed", label: "Complete", color: "#4A8A4A" });
+  if (["planned","confirmed","arrived"].includes(a.status))
+    quickActions.push({ status: "no_show", label: "No Show", color: "#B43C3C" });
+
+  const displayHeight = hovered && height >= 44 ? Math.max(height, 80) : Math.max(height, 26);
 
   return (
     <div
@@ -883,15 +959,17 @@ function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick }
         e.dataTransfer.setData("apptId", a.id);
       }}
       onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         position: "absolute",
-        top, height: Math.max(height, 26),
+        top,
+        height: displayHeight,
         left: colLeft ? `calc(${colLeft} + 2px)` : 2,
         width: colWidth ? `calc(${colWidth} - 4px)` : undefined,
         right: totalCols === 1 ? 2 : undefined,
         background: cfg.bg,
         borderRadius: 7,
-        borderLeft: `3px solid ${cfg.border}`,
         border: isVip
           ? `1px solid rgba(197,160,89,0.55)`
           : isHni
@@ -899,18 +977,18 @@ function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick }
             : `1px solid rgba(0,0,0,0.07)`,
         borderLeftWidth: 3,
         borderLeftColor: cfg.border,
-        cursor: "grab", overflow: "hidden",
+        cursor: "pointer", overflow: "hidden",
         padding: height > 38 ? "4px 8px" : "2px 6px",
-        boxShadow: a.status === "in_session"
-          ? "0 0 0 0 rgba(212,160,23,0.4)"
-          : isVip ? "0 2px 8px rgba(197,160,89,0.2)"
-            : "0 1px 4px rgba(0,0,0,0.05)",
+        boxShadow: hovered
+          ? "0 6px 20px rgba(0,0,0,0.15)"
+          : a.status === "in_session"
+            ? "0 0 0 0 rgba(212,160,23,0.4)"
+            : isVip ? "0 2px 8px rgba(197,160,89,0.2)"
+              : "0 1px 4px rgba(0,0,0,0.05)",
         animation: a.status === "in_session" ? "pulse-gold 2s infinite" : "none",
-        zIndex: 3,
-        transition: "box-shadow 0.2s",
+        zIndex: hovered ? 8 : 3,
+        transition: "box-shadow 0.15s, height 0.15s, z-index 0s",
       }}
-      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.boxShadow = "none"; }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 3, marginBottom: height > 44 ? 2 : 0 }}>
         {isVip && <span style={{ fontSize: 8, fontWeight: 700, color: "#C5A059", background: "rgba(197,160,89,0.2)", padding: "1px 5px", borderRadius: 999 }}>VIP</span>}
@@ -919,19 +997,48 @@ function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick }
           fontSize: 12, fontWeight: 600, fontFamily: "Georgia, serif", color: cfg.text,
           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
           filter: masked ? "blur(4px)" : "none", userSelect: masked ? "none" : "auto",
+          flex: 1,
         }}>
           {masked ? (isVip ? "VIP Patient" : "HNI Patient") : a.patient_name}
         </span>
       </div>
-      {height > 44 && (
+      {(height > 44 || hovered) && (
         <p style={{ fontSize: 10, color: cfg.text, opacity: 0.7, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "Georgia, serif" }}>
           {a.service_name}
         </p>
       )}
-      {height > 58 && (
-        <p style={{ fontSize: 9, color: cfg.text, opacity: 0.5, margin: 0 }}>
+      {(height > 58 || hovered) && (
+        <p style={{ fontSize: 9, color: cfg.text, opacity: 0.5, margin: "1px 0 0" }}>
           {fmtTime(new Date(a.start_time))} – {fmtTime(new Date(a.end_time))}
         </p>
+      )}
+      {/* B7: Inline quick actions on hover */}
+      {hovered && quickActions.length > 0 && (
+        <div
+          style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap" }}
+          onClick={e => e.stopPropagation()}
+        >
+          {quickActions.map(qa => (
+            <button
+              key={qa.status}
+              onClick={e => { e.stopPropagation(); onActionAppt(a.id, qa.status); }}
+              style={{
+                fontSize: 9, padding: "2px 7px", borderRadius: 5, border: "none",
+                background: qa.color, color: "white", cursor: "pointer",
+                fontFamily: "Georgia, serif", fontWeight: 600,
+                opacity: 0.92,
+              }}
+            >
+              {qa.label}
+            </button>
+          ))}
+          <button
+            onClick={e => { e.stopPropagation(); onClick(); }}
+            style={{ fontSize: 9, padding: "2px 7px", borderRadius: 5, border: `1px solid ${cfg.border}`, background: "white", color: cfg.text, cursor: "pointer", fontFamily: "Georgia, serif" }}
+          >
+            Details
+          </button>
+        </div>
       )}
     </div>
   );
@@ -1035,7 +1142,6 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
     setUpdating(true);
     try {
       if (status === "no_show") {
-        // Single atomic RPC: restores credit + increments no_show_count + updates appointment (C-1 fix)
         const { error: nsErr } = await supabase.rpc("increment_no_show", {
           p_appointment_id: a.id,
           p_credit_id:      a.credit_id ?? null,
@@ -1043,26 +1149,36 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
           p_clinic_id:      activeClinicId,
         });
         if (nsErr) throw nsErr;
-        // B5 fix: void any pending commission linked to this appointment
         await supabase.from("staff_commissions")
           .update({ status: "voided" })
-          .eq("appointment_id", a.id)
-          .eq("status", "pending");
+          .eq("appointment_id", a.id).eq("status", "pending");
       } else {
         const patch: Record<string, unknown> = { status, updated_at: new Date().toISOString(), ...extra };
         const { error } = await supabase.from("appointments").update(patch).eq("id", a.id);
         if (error) throw error;
-        // B5 fix: void any pending commission when cancelling
         if (status === "cancelled") {
           await supabase.from("staff_commissions")
             .update({ status: "voided" })
-            .eq("appointment_id", a.id)
-            .eq("status", "pending");
+            .eq("appointment_id", a.id).eq("status", "pending");
+        }
+        // B6: Auto-create recall task on completion
+        if (status === "completed" && a.patient_id && activeClinicId) {
+          const recallDays = calcRecallDays(a.service_name);
+          const recallDate = new Date();
+          recallDate.setDate(recallDate.getDate() + recallDays);
+          supabase.from("recall_tasks").insert({
+            clinic_id:      activeClinicId,
+            patient_id:     a.patient_id,
+            appointment_id: a.id,
+            service_name:   a.service_name,
+            recall_date:    recallDate.toISOString().slice(0, 10),
+            status:         "pending",
+          }).then(() => {});
         }
       }
       toast.success(`Marked as ${STATUS_CFG[status].label}`);
       onUpdated();
-    } catch (e) {
+    } catch {
       toast.error("Update failed");
     } finally {
       setUpdating(false);
@@ -1570,6 +1686,14 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
   const initHour = prefillSlot?.hour ?? 10;
   const initTime = `${String(initHour).padStart(2,"0")}:00`;
 
+  // B4: 3-step wizard state
+  const [step,           setStep]           = useState<1 | 2 | 3>(1);
+  // B3: Risk score
+  const [riskScore,      setRiskScore]      = useState<number | null>(null);
+  // B4 Step 3 toggles
+  const [sendWhatsApp,   setSendWhatsApp]   = useState(false);
+  const [sendIntake,     setSendIntake]     = useState(false);
+
   const [patientSearch,  setPatientSearch]  = useState("");
   const [patientResults, setPatientResults] = useState<{ id: string; full_name: string; patient_tier: PatientTier | null; phone: string | null }[]>([]);
   const [selectedPatient, setSelectedPatient] = useState<{ id: string; full_name: string; patient_tier: PatientTier | null } | null>(null);
@@ -1606,6 +1730,23 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
     }, 300);
     return () => clearTimeout(timer);
   }, [patientSearch]);
+
+  // B3: Fetch risk score when patient selected
+  useEffect(() => {
+    if (!selectedPatient) { setRiskScore(null); return; }
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    supabase.from("appointments")
+      .select("status")
+      .eq("patient_id", selectedPatient.id)
+      .in("status", ["no_show", "cancelled"])
+      .gte("start_time", sixMonthsAgo.toISOString())
+      .then(({ data }) => {
+        const noShows = (data ?? []).filter(a => a.status === "no_show").length;
+        const cancels = (data ?? []).filter(a => a.status === "cancelled").length;
+        setRiskScore(Math.min(100, noShows * 25 + cancels * 10));
+      });
+  }, [selectedPatient?.id]);
 
   // Fetch patient credits when patient + service changes
   useEffect(() => {
@@ -1745,12 +1886,36 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div style={{ padding: "24px 28px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
+        <div style={{ padding: "20px 28px 14px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
             <h2 style={{ fontFamily: "Georgia, serif", fontSize: 20, fontWeight: 600, color: "var(--foreground)", margin: 0 }}>Book Appointment</h2>
-            <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>Fill in the details below</p>
+            <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)" }}><X size={20} /></button>
           </div>
-          <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)" }}><X size={20} /></button>
+          {/* B4: Step progress bar */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {([
+              { n: 1, label: "Patient" },
+              { n: 2, label: "Details" },
+              { n: 3, label: "Confirm" },
+            ] as const).map(({ n, label }, i) => (
+              <div key={n} style={{ display: "flex", alignItems: "center", gap: 6, flex: n === 2 ? 1 : 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <div style={{
+                    width: 22, height: 22, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+                    background: step >= n ? "#C5A059" : "var(--border)",
+                    color: step >= n ? "white" : "var(--text-muted)",
+                    fontSize: 11, fontWeight: 700, flexShrink: 0,
+                  }}>
+                    {step > n ? <Check size={11} /> : n}
+                  </div>
+                  <span style={{ fontSize: 11, color: step >= n ? "#C5A059" : "var(--text-muted)", fontFamily: "Georgia, serif", fontWeight: step === n ? 600 : 400 }}>
+                    {label}
+                  </span>
+                </div>
+                {i < 2 && <div style={{ flex: 1, height: 1, background: step > n ? "#C5A059" : "var(--border)", minWidth: 20 }} />}
+              </div>
+            ))}
+          </div>
         </div>
         <div style={{ height: 1, background: "linear-gradient(to right, #C5A059, transparent)" }} />
 
@@ -1758,6 +1923,8 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
         <div style={{ flex: 1, overflowY: "auto", padding: "20px 28px" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
 
+          {/* ── Step 1: Patient Selection ─────────────────────────────────── */}
+          {step === 1 && <>
             {/* Patient */}
             <DLabel label="Patient" required>
               {selectedPatient ? (
@@ -1819,6 +1986,39 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
               )}
             </DLabel>
 
+            {/* B3: Risk Score badge */}
+            {selectedPatient && riskScore !== null && riskScore > 40 && (
+              <div style={{
+                display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px",
+                borderRadius: 10,
+                background: riskScore > 60 ? "rgba(180,60,60,0.07)" : "rgba(212,160,23,0.07)",
+                border: `1px solid ${riskScore > 60 ? "rgba(180,60,60,0.3)" : "rgba(212,160,23,0.35)"}`,
+              }}>
+                <AlertTriangle size={15} style={{ color: riskScore > 60 ? "#B43C3C" : "#D4A017", flexShrink: 0, marginTop: 1 }} />
+                <div>
+                  <p style={{ fontSize: 12, fontWeight: 700, color: riskScore > 60 ? "#B43C3C" : "#D4A017", margin: 0 }}>
+                    {riskScore > 60 ? "⚠ High-Risk Patient — Deposit Recommended" : "Moderate Risk Patient"}
+                  </p>
+                  <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "2px 0 0" }}>
+                    Risk score: {riskScore}/100 — based on recent no-shows & cancellations
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Patient's active credits summary */}
+            {selectedPatient && patientCredits.length > 0 && (
+              <div style={{ padding: "8px 14px", borderRadius: 10, background: "rgba(197,160,89,0.05)", border: "1px solid rgba(197,160,89,0.2)" }}>
+                <p style={{ fontSize: 11, color: "#C5A059", fontWeight: 600, margin: 0 }}>
+                  <CreditCard size={11} style={{ display: "inline", marginRight: 4 }} />
+                  {patientCredits.length} active package{patientCredits.length > 1 ? "s" : ""} — assignable on next step
+                </p>
+              </div>
+            )}
+          </>}
+
+          {/* ── Step 2: Service Details ───────────────────────────────────── */}
+          {step === 2 && <>
             {/* Service */}
             <DLabel label="Service" required>
               <select value={serviceId} onChange={e => setServiceId(e.target.value)} style={inputStyle}>
@@ -1980,31 +2180,385 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
                 </div>
               </div>
             )}
+          </>}
+
+          {/* ── Step 3: Confirm ───────────────────────────────────────────── */}
+          {step === 3 && <>
+            {/* Summary card */}
+            <div style={{ padding: 16, borderRadius: 12, background: "rgba(197,160,89,0.05)", border: "1px solid rgba(197,160,89,0.2)" }}>
+              <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "#9C9584", marginBottom: 12 }}>Booking Summary</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Patient</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif" }}>{selectedPatient?.full_name}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Service</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif" }}>{selectedSvc?.name}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Provider</span>
+                  <span style={{ fontSize: 13, fontFamily: "Georgia, serif" }}>{providers.find(p => p.id === providerId)?.full_name ?? "Unassigned"}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Date & Time</span>
+                  <span style={{ fontSize: 13, fontFamily: "Georgia, serif" }}>{date} at {startTime}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Duration</span>
+                  <span style={{ fontSize: 13, fontFamily: "Georgia, serif" }}>{durationMins} min</span>
+                </div>
+                {useCredit && selectedCreditId && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 12, color: "#C5A059" }}>Using Credit</span>
+                    <span style={{ fontSize: 12, color: "#C5A059" }}>{patientCredits.find(c => c.id === selectedCreditId)?.service_name}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* B4: Toggles */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderRadius: 10, border: "1px solid var(--border)", cursor: "pointer" }}>
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", margin: 0 }}>Send WhatsApp Reminder</p>
+                  <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>24-hour reminder before appointment</p>
+                </div>
+                <input type="checkbox" checked={sendWhatsApp} onChange={e => setSendWhatsApp(e.target.checked)} style={{ accentColor: "#C5A059", width: 16, height: 16 }} />
+              </label>
+              <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderRadius: 10, border: "1px solid var(--border)", cursor: "pointer" }}>
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", margin: 0 }}>Send Intake Form</p>
+                  <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>Pre-visit health questionnaire</p>
+                </div>
+                <input type="checkbox" checked={sendIntake} onChange={e => setSendIntake(e.target.checked)} style={{ accentColor: "#C5A059", width: 16, height: 16 }} />
+              </label>
+            </div>
+
+            {/* High-risk deposit reminder */}
+            {riskScore !== null && riskScore > 60 && (
+              <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(180,60,60,0.07)", border: "1px solid rgba(180,60,60,0.3)" }}>
+                <p style={{ fontSize: 12, fontWeight: 700, color: "#B43C3C", margin: 0 }}>
+                  <AlertTriangle size={12} style={{ display: "inline", marginRight: 4 }} />
+                  High-Risk: Consider collecting a deposit before confirming
+                </p>
+              </div>
+            )}
+          </>}
+
           </div>
         </div>
 
-        {/* Footer */}
+        {/* Footer — step-aware */}
         <div style={{ padding: "16px 28px", borderTop: "1px solid var(--border)", display: "flex", gap: 12 }}>
-          <button onClick={onClose} style={{ flex: 1, padding: "11px 0", borderRadius: 12, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--foreground)", fontSize: 14, fontFamily: "Georgia, serif", cursor: "pointer" }}>
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={saving || (!settings?.enable_double_booking && !!conflict)}
-            style={{
-              flex: 2, padding: "11px 0", borderRadius: 12, border: "none",
-              background: saving || (!settings?.enable_double_booking && !!conflict) ? "rgba(197,160,89,0.5)" : "linear-gradient(135deg, #C5A059, #A8853A)",
-              color: "white", fontSize: 14, fontWeight: 600,
-              fontFamily: "Georgia, serif", cursor: saving ? "not-allowed" : "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-              boxShadow: "0 4px 14px rgba(197,160,89,0.3)",
-            }}
-          >
-            {saving && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
-            Book Appointment
-          </button>
+          {step === 1 && (
+            <>
+              <button onClick={onClose} style={{ flex: 1, padding: "11px 0", borderRadius: 12, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--foreground)", fontSize: 14, fontFamily: "Georgia, serif", cursor: "pointer" }}>
+                Cancel
+              </button>
+              <button
+                onClick={() => { if (!selectedPatient) { toast.error("Select a patient first"); return; } setStep(2); }}
+                style={{ flex: 2, padding: "11px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #C5A059, #A8853A)", color: "white", fontSize: 14, fontWeight: 600, fontFamily: "Georgia, serif", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, boxShadow: "0 4px 14px rgba(197,160,89,0.3)" }}
+              >
+                Next: Service Details <ChevronRight size={15} />
+              </button>
+            </>
+          )}
+          {step === 2 && (
+            <>
+              <button onClick={() => setStep(1)} style={{ flex: 1, padding: "11px 0", borderRadius: 12, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--foreground)", fontSize: 14, fontFamily: "Georgia, serif", cursor: "pointer" }}>
+                ← Back
+              </button>
+              <button
+                onClick={() => { if (!serviceId) { toast.error("Select a service"); return; } if (conflict && !settings?.enable_double_booking) { toast.error("Resolve conflict first"); return; } setStep(3); }}
+                style={{ flex: 2, padding: "11px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #C5A059, #A8853A)", color: "white", fontSize: 14, fontWeight: 600, fontFamily: "Georgia, serif", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, boxShadow: "0 4px 14px rgba(197,160,89,0.3)" }}
+              >
+                Next: Confirm <ChevronRight size={15} />
+              </button>
+            </>
+          )}
+          {step === 3 && (
+            <>
+              <button onClick={() => setStep(2)} style={{ flex: 1, padding: "11px 0", borderRadius: 12, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--foreground)", fontSize: 14, fontFamily: "Georgia, serif", cursor: "pointer" }}>
+                ← Back
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                style={{
+                  flex: 2, padding: "11px 0", borderRadius: 12, border: "none",
+                  background: saving ? "rgba(197,160,89,0.5)" : "linear-gradient(135deg, #C5A059, #A8853A)",
+                  color: "white", fontSize: 14, fontWeight: 600,
+                  fontFamily: "Georgia, serif", cursor: saving ? "not-allowed" : "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+                  boxShadow: "0 4px 14px rgba(197,160,89,0.3)",
+                }}
+              >
+                {saving && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
+                <CalendarCheck size={15} /> Confirm Booking
+              </button>
+            </>
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── B5: Waitlist Tab ──────────────────────────────────────────────────────────
+
+interface WaitlistEntry {
+  id: string;
+  patient_id: string;
+  preferred_date: string | null;
+  time_preference: string | null;
+  notes: string | null;
+  created_at: string;
+  status: string;
+  patients: { full_name: string } | null;
+  services: { name: string } | null;
+}
+
+function WaitlistTab({ activeClinicId, onBook }: { activeClinicId: string | null; onBook: () => void }) {
+  const [list, setList]       = useState<WaitlistEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!activeClinicId) return;
+    supabase.from("scheduler_waitlist")
+      .select("*, patients!patient_id(full_name), services!service_id(name)")
+      .eq("clinic_id", activeClinicId)
+      .eq("status", "waiting")
+      .order("created_at")
+      .then(({ data }) => { setList((data ?? []) as WaitlistEntry[]); setLoading(false); });
+  }, [activeClinicId]);
+
+  async function offerSlot(id: string) {
+    await supabase.from("scheduler_waitlist")
+      .update({ status: "offered", offered_at: new Date().toISOString() })
+      .eq("id", id);
+    toast.success("Slot offered — patient notified via WhatsApp (when enabled)");
+    setList(l => l.filter(x => x.id !== id));
+  }
+
+  async function removeEntry(id: string) {
+    await supabase.from("scheduler_waitlist").update({ status: "cancelled" }).eq("id", id);
+    setList(l => l.filter(x => x.id !== id));
+    toast.success("Removed from waitlist");
+  }
+
+  if (loading) return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 60 }}>
+      <Loader2 size={24} style={{ color: "rgba(197,160,89,0.5)", animation: "spin 1s linear infinite" }} />
+    </div>
+  );
+
+  return (
+    <div style={{ maxWidth: 860, margin: "0 auto", padding: "28px 24px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+        <div>
+          <h3 style={{ fontFamily: "Georgia, serif", fontSize: 18, fontWeight: 600, margin: 0 }}>Waitlist</h3>
+          <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "4px 0 0" }}>{list.length} patient{list.length !== 1 ? "s" : ""} waiting</p>
+        </div>
+        <button
+          onClick={onBook}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 10, border: "none", background: "linear-gradient(135deg, #C5A059, #A8853A)", color: "white", fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", cursor: "pointer" }}
+        >
+          <Plus size={13} /> Book Appointment
+        </button>
+      </div>
+
+      {list.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--text-muted)" }}>
+          <Users size={40} style={{ color: "rgba(197,160,89,0.3)", marginBottom: 12 }} />
+          <p style={{ fontFamily: "Georgia, serif", fontSize: 16 }}>No patients on the waitlist</p>
+          <p style={{ fontSize: 13 }}>Patients are added when they request a slot outside availability</p>
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid var(--border)", background: "rgba(249,247,242,0.8)" }}>
+                {["Patient", "Service", "Preferred Date", "Time Preference", "On Waitlist Since", "Actions"].map(h => (
+                  <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#9C9584" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {list.map(entry => (
+                <tr key={entry.id} style={{ borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
+                  <td style={{ padding: "12px 16px", fontFamily: "Georgia, serif", fontSize: 14, fontWeight: 600 }}>
+                    {(entry.patients as { full_name: string } | null)?.full_name ?? "—"}
+                  </td>
+                  <td style={{ padding: "12px 16px", fontSize: 13, color: "var(--text-muted)" }}>
+                    {(entry.services as { name: string } | null)?.name ?? "Any"}
+                  </td>
+                  <td style={{ padding: "12px 16px", fontSize: 13 }}>{entry.preferred_date ?? "—"}</td>
+                  <td style={{ padding: "12px 16px", fontSize: 13, color: "var(--text-muted)" }}>{entry.time_preference ?? "Flexible"}</td>
+                  <td style={{ padding: "12px 16px", fontSize: 12, color: "var(--text-muted)" }}>
+                    {new Date(entry.created_at).toLocaleDateString("en-IN")}
+                  </td>
+                  <td style={{ padding: "12px 16px" }}>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        onClick={() => offerSlot(entry.id)}
+                        style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, border: "none", background: "#4A8A4A", color: "white", cursor: "pointer", fontFamily: "Georgia, serif" }}
+                      >
+                        Offer Slot
+                      </button>
+                      <button
+                        onClick={onBook}
+                        style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.08)", color: "#A8853A", cursor: "pointer", fontFamily: "Georgia, serif" }}
+                      >
+                        Book
+                      </button>
+                      <button
+                        onClick={() => removeEntry(entry.id)}
+                        style={{ fontSize: 12, padding: "5px 10px", borderRadius: 8, border: "none", background: "rgba(180,60,60,0.07)", color: "#B43C3C", cursor: "pointer" }}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── B6: Recalls Tab ───────────────────────────────────────────────────────────
+
+interface RecallTask {
+  id: string;
+  patient_id: string;
+  service_name: string;
+  recall_date: string;
+  status: string;
+  notes: string | null;
+  created_at: string;
+  patients: { full_name: string } | null;
+}
+
+function RecallsTab({ activeClinicId, onBook }: { activeClinicId: string | null; onBook: () => void }) {
+  const [tasks, setTasks]     = useState<RecallTask[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!activeClinicId) return;
+    supabase.from("recall_tasks")
+      .select("*, patients!patient_id(full_name)")
+      .eq("clinic_id", activeClinicId)
+      .in("status", ["pending", "sent"])
+      .order("recall_date")
+      .then(({ data }) => { setTasks((data ?? []) as RecallTask[]); setLoading(false); });
+  }, [activeClinicId]);
+
+  async function sendRecall(id: string) {
+    await supabase.from("recall_tasks").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", id);
+    toast.success("Recall notification sent");
+    setTasks(t => t.map(x => x.id === id ? { ...x, status: "sent" } : x));
+  }
+
+  async function dismissRecall(id: string) {
+    await supabase.from("recall_tasks").update({ status: "dismissed" }).eq("id", id);
+    setTasks(t => t.filter(x => x.id !== id));
+    toast.success("Recall dismissed");
+  }
+
+  if (loading) return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 60 }}>
+      <Loader2 size={24} style={{ color: "rgba(197,160,89,0.5)", animation: "spin 1s linear infinite" }} />
+    </div>
+  );
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  return (
+    <div style={{ maxWidth: 860, margin: "0 auto", padding: "28px 24px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+        <div>
+          <h3 style={{ fontFamily: "Georgia, serif", fontSize: 18, fontWeight: 600, margin: 0 }}>Recall Tasks</h3>
+          <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "4px 0 0" }}>Patients due for follow-up treatment</p>
+        </div>
+      </div>
+
+      {tasks.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--text-muted)" }}>
+          <CalendarClock size={40} style={{ color: "rgba(197,160,89,0.3)", marginBottom: 12 }} />
+          <p style={{ fontFamily: "Georgia, serif", fontSize: 16 }}>No pending recalls</p>
+          <p style={{ fontSize: 13 }}>Recalls are auto-created when appointments are completed</p>
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid var(--border)", background: "rgba(249,247,242,0.8)" }}>
+                {["Patient", "Treatment", "Recall Date", "Status", "Actions"].map(h => (
+                  <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#9C9584" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {tasks.map(task => {
+                const isOverdue = task.recall_date < today;
+                const isDueToday = task.recall_date === today;
+                return (
+                  <tr key={task.id} style={{ borderBottom: "1px solid rgba(0,0,0,0.04)", background: isOverdue ? "rgba(180,60,60,0.03)" : isDueToday ? "rgba(212,160,23,0.04)" : "transparent" }}>
+                    <td style={{ padding: "12px 16px", fontFamily: "Georgia, serif", fontSize: 14, fontWeight: 600 }}>
+                      {(task.patients as { full_name: string } | null)?.full_name ?? "—"}
+                    </td>
+                    <td style={{ padding: "12px 16px", fontSize: 13 }}>{task.service_name}</td>
+                    <td style={{ padding: "12px 16px", fontSize: 13 }}>
+                      <span style={{ color: isOverdue ? "#B43C3C" : isDueToday ? "#D4A017" : "var(--foreground)", fontWeight: isOverdue || isDueToday ? 600 : 400 }}>
+                        {task.recall_date}
+                        {isOverdue && " (Overdue)"}
+                        {isDueToday && " (Today)"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "12px 16px" }}>
+                      <span style={{
+                        fontSize: 11, padding: "2px 8px", borderRadius: 999, fontWeight: 600,
+                        background: task.status === "sent" ? "rgba(74,138,74,0.1)" : "rgba(197,160,89,0.1)",
+                        color: task.status === "sent" ? "#4A8A4A" : "#C5A059",
+                      }}>
+                        {task.status === "sent" ? "Notified" : "Pending"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "12px 16px" }}>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {task.status === "pending" && (
+                          <button
+                            onClick={() => sendRecall(task.id)}
+                            style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, border: "none", background: "#C5A059", color: "white", cursor: "pointer", fontFamily: "Georgia, serif", display: "flex", alignItems: "center", gap: 4 }}
+                          >
+                            <Bell size={11} /> Send Recall
+                          </button>
+                        )}
+                        <button
+                          onClick={onBook}
+                          style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.08)", color: "#A8853A", cursor: "pointer", fontFamily: "Georgia, serif" }}
+                        >
+                          Book
+                        </button>
+                        <button
+                          onClick={() => dismissRecall(task.id)}
+                          style={{ fontSize: 12, padding: "5px 10px", borderRadius: 8, border: "none", background: "rgba(180,60,60,0.07)", color: "#B43C3C", cursor: "pointer" }}
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

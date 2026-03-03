@@ -352,6 +352,11 @@ function SOAPDrawer({ patient, clinicId, onClose }: { patient: Patient; clinicId
   const [cptResults,    setCptResults]    = useState<MedicalCode[]>([]);
   const [cptSearching,  setCptSearching]  = useState(false);
   const [attachedCodes, setAttachedCodes] = useState<MedicalCode[]>([]);
+  // B10: Injectable lot tracking
+  const [injectables, setInjectables] = useState<{
+    uid: string; productName: string; lotNumber: string;
+    expiryDate: string; unitsUsed: string; injectionSite: string;
+  }[]>([]);
   const fileRef  = useRef<HTMLInputElement>(null);
   const cptTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -400,6 +405,23 @@ function SOAPDrawer({ patient, clinicId, onClose }: { patient: Patient; clinicId
       body: JSON.stringify({ action: "save_encounter", ...soap, photos: uploadedPhotos, cpt_codes: attachedCodes.map(c => c.code) }),
     });
     const json = await res.json();
+    // B10: Save injectables to encounter_injectables table
+    if (json.success && json.encounterId && injectables.length > 0) {
+      const rows = injectables
+        .filter(inj => inj.productName.trim())
+        .map(inj => ({
+          encounter_id:   json.encounterId,
+          clinic_id:      clinicId,
+          product_name:   inj.productName.trim(),
+          lot_number:     inj.lotNumber.trim() || null,
+          expiry_date:    inj.expiryDate || null,
+          units_used:     parseFloat(inj.unitsUsed) || null,
+          injection_site: inj.injectionSite.trim() || null,
+        }));
+      if (rows.length > 0) {
+        await supabase.from("encounter_injectables").insert(rows);
+      }
+    }
     setSaving(false);
     if (json.success) { toast.success("Session saved."); onClose(); }
     else toast.error(json.error ?? "Failed to save.");
@@ -531,6 +553,68 @@ function SOAPDrawer({ patient, clinicId, onClose }: { patient: Patient; clinicId
                   <Plus size={16} color="rgba(197,160,89,0.5)" />
                   <span style={{ fontSize: 10, color: "#B8AE9C" }}>Add</span>
                 </button>
+              </div>
+            )}
+          </div>
+
+          {/* B10: Injectable Lot Tracking */}
+          <div style={{ marginTop: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <p style={{ fontSize: 12, fontWeight: 600, color: "#6B6358", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 5 }}>
+                <Syringe size={12} color="#C5A059" /> Injectables Used (Lot Tracking)
+              </p>
+              <button
+                onClick={() => setInjectables(prev => [...prev, { uid: crypto.randomUUID(), productName: "", lotNumber: "", expiryDate: "", unitsUsed: "", injectionSite: "" }])}
+                style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", cursor: "pointer", fontSize: 11, color: "#8B6914" }}
+              >
+                <Plus size={11} /> Add Injectable
+              </button>
+            </div>
+            {injectables.length === 0 ? (
+              <div style={{ border: "1.5px dashed rgba(197,160,89,0.25)", borderRadius: 10, padding: "12px 16px", textAlign: "center" }}>
+                <p style={{ fontSize: 11, color: "#B8AE9C", margin: 0 }}>No injectables recorded — add if any were used</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {injectables.map((inj, idx) => (
+                  <div key={inj.uid} style={{ padding: "12px 14px", borderRadius: 10, background: "white", border: "1px solid rgba(197,160,89,0.2)", position: "relative" }}>
+                    <button onClick={() => setInjectables(prev => prev.filter(x => x.uid !== inj.uid))} style={{ position: "absolute", top: 8, right: 8, background: "transparent", border: "none", cursor: "pointer", color: "#9C9584" }}>
+                      <X size={13} />
+                    </button>
+                    <p style={{ fontSize: 10, fontWeight: 700, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 10px" }}>Injectable #{idx + 1}</p>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <div>
+                        <label style={{ fontSize: 10, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product Name *</label>
+                        <input value={inj.productName} onChange={e => setInjectables(prev => prev.map(x => x.uid === inj.uid ? { ...x, productName: e.target.value } : x))}
+                          placeholder="e.g. Botox, Juvederm"
+                          style={{ width: "100%", padding: "7px 10px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", background: "#FDFCF9", fontSize: 12, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", boxSizing: "border-box" }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Lot Number</label>
+                        <input value={inj.lotNumber} onChange={e => setInjectables(prev => prev.map(x => x.uid === inj.uid ? { ...x, lotNumber: e.target.value } : x))}
+                          placeholder="e.g. LOT-2024-001"
+                          style={{ width: "100%", padding: "7px 10px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", background: "#FDFCF9", fontSize: 12, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", boxSizing: "border-box" }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Expiry Date</label>
+                        <input type="date" value={inj.expiryDate} onChange={e => setInjectables(prev => prev.map(x => x.uid === inj.uid ? { ...x, expiryDate: e.target.value } : x))}
+                          style={{ width: "100%", padding: "7px 10px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", background: "#FDFCF9", fontSize: 12, color: "#1C1917", outline: "none", boxSizing: "border-box" }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Units Used</label>
+                        <input type="number" value={inj.unitsUsed} onChange={e => setInjectables(prev => prev.map(x => x.uid === inj.uid ? { ...x, unitsUsed: e.target.value } : x))}
+                          placeholder="e.g. 20"
+                          style={{ width: "100%", padding: "7px 10px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", background: "#FDFCF9", fontSize: 12, color: "#1C1917", outline: "none", boxSizing: "border-box" }} />
+                      </div>
+                      <div style={{ gridColumn: "1 / -1" }}>
+                        <label style={{ fontSize: 10, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Injection Site</label>
+                        <input value={inj.injectionSite} onChange={e => setInjectables(prev => prev.map(x => x.uid === inj.uid ? { ...x, injectionSite: e.target.value } : x))}
+                          placeholder="e.g. Forehead, Glabella, Crow's feet"
+                          style={{ width: "100%", padding: "7px 10px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", background: "#FDFCF9", fontSize: 12, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", boxSizing: "border-box" }} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>

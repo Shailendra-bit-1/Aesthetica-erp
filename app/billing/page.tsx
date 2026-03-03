@@ -267,6 +267,9 @@ export default function BillingPage() {
     URL.revokeObjectURL(url);
   };
 
+  // B8: 2-panel layout — selected invoice for right panel
+  const [panelInv, setPanelInv] = useState<Invoice | null>(null);
+
   // ── Render ──
 
   return (
@@ -296,7 +299,10 @@ export default function BillingPage() {
         {/* ── Stats row ── */}
         <StatsRow todayRev={todayRev} mtdRev={mtdRev} outstanding={outstanding} commOwed={commOwed} />
 
-        {/* ── Invoice panel ── */}
+        {/* ── B8: 2-panel layout ── */}
+        <div style={{ display: "grid", gridTemplateColumns: panelInv ? "1fr 380px" : "1fr", gap: 20, alignItems: "start" }}>
+
+        {/* ── Left: Invoice panel ── */}
         <div className="rounded-2xl overflow-hidden" style={{ background: "var(--card-bg)", border: "1px solid var(--border)" }}>
 
           {/* Tabs */}
@@ -376,10 +382,30 @@ export default function BillingPage() {
           <InvoiceTable
             invoices={filtered}
             loading={loading}
-            onView={openDetail}
+            onView={inv => { setPanelInv(inv); openDetail(inv); }}
             onPay={setPayInv}
           />
         </div>
+
+        {/* ── Right: Smart Panel (B8) ── */}
+        {panelInv && (
+          <div style={{ position: "sticky", top: 80 }}>
+            <BillingSmartPanel
+              invoice={panelInv}
+              payments={detailPayments}
+              items={detailItems}
+              loading={loadingDetail}
+              isAdmin={isAdmin}
+              todayRev={todayRev}
+              outstanding={outstanding}
+              onClose={() => setPanelInv(null)}
+              onPay={() => setPayInv(panelInv)}
+              onVoid={reason => { voidInvoice(panelInv, reason); setPanelInv(null); }}
+              onFull={() => openDetail(panelInv)}
+            />
+          </div>
+        )}
+        </div>{/* end 2-panel grid */}
       </div>
 
       {/* ── Modals ── */}
@@ -413,6 +439,196 @@ export default function BillingPage() {
     </div>
   );
 }
+
+// ── B8: Billing Smart Panel ──────────────────────────────────────────────────
+
+function BillingSmartPanel({
+  invoice: inv, payments, items, loading, isAdmin, todayRev, outstanding,
+  onClose, onPay, onVoid, onFull,
+}: {
+  invoice: Invoice; payments: InvoicePayment[]; items: InvoiceItem[];
+  loading: boolean; isAdmin: boolean; todayRev: number; outstanding: number;
+  onClose: () => void; onPay: () => void;
+  onVoid: (reason: string) => void; onFull: () => void;
+}) {
+  const [showVoidInput, setShowVoidInput] = useState(false);
+  const [voidReason, setVoidReason] = useState("");
+
+  const cfg    = STATUS_CFG_BILLING[inv.status];
+  const isPaid = inv.status === "paid";
+  const isVoid = inv.status === "void";
+  const paidSoFar = payments.reduce((s, p) => s + p.amount, 0);
+
+  return (
+    <div className="rounded-2xl overflow-hidden"
+      style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "0 8px 32px rgba(0,0,0,0.08)" }}>
+      {/* Panel header */}
+      <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: "var(--border)", background: "rgba(249,247,242,0.7)" }}>
+        <div>
+          <p className="text-xs font-mono font-semibold" style={{ color: "var(--gold)" }}>{inv.invoice_number}</p>
+          <p className="font-semibold mt-0.5" style={{ fontFamily: "Georgia, serif", color: "var(--foreground)", fontSize: 15 }}>
+            {inv.patient_name ?? "Walk-in"}
+          </p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            onClick={onFull}
+            style={{ fontSize: 12, padding: "4px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--input-bg)", color: "var(--text-muted)", cursor: "pointer" }}
+          >
+            Full View
+          </button>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)" }}><X size={16} /></button>
+        </div>
+      </div>
+
+      <div className="px-5 py-4 space-y-4">
+        {loading ? (
+          <div style={{ display: "flex", justifyContent: "center", padding: "20px 0" }}>
+            <Loader2 size={20} style={{ color: "rgba(197,160,89,0.5)", animation: "spin 1s linear infinite" }} />
+          </div>
+        ) : (
+          <>
+            {/* Amount + Status */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <p style={{ fontSize: 28, fontWeight: 700, fontFamily: "Georgia, serif", color: "var(--gold)", margin: 0 }}>
+                  {fmt(inv.total_amount)}
+                </p>
+                {paidSoFar > 0 && paidSoFar < inv.total_amount && (
+                  <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "2px 0 0" }}>
+                    {fmt(paidSoFar)} paid · {fmt(inv.total_amount - paidSoFar)} remaining
+                  </p>
+                )}
+              </div>
+              <span style={{ fontSize: 12, padding: "4px 12px", borderRadius: 999, fontWeight: 700, background: cfg.bg, color: cfg.text, border: `1px solid ${cfg.border}` }}>
+                {cfg.label}
+              </span>
+            </div>
+
+            {/* Service info */}
+            <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(249,247,242,0.8)", border: "1px solid var(--border)" }}>
+              <p style={{ fontSize: 13, fontFamily: "Georgia, serif", fontWeight: 600, margin: 0 }}>{inv.service_name}</p>
+              {inv.provider_name && <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "3px 0 0" }}>Provider: {inv.provider_name}</p>}
+              <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "2px 0 0" }}>{fmtDate(inv.created_at)}</p>
+            </div>
+
+            {/* Line items summary */}
+            {items.length > 0 && (
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#9C9584", marginBottom: 8 }}>Items</p>
+                {items.map((item, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: i < items.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none" }}>
+                    <span style={{ fontSize: 12, color: "var(--foreground)" }}>{item.description}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "var(--gold)" }}>{fmt(item.line_total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* GST + Discount chips */}
+            {(inv.gst_pct > 0 || inv.discount_amount > 0) && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {inv.discount_amount > 0 && (
+                  <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 999, background: "rgba(74,138,74,0.08)", color: "#4A8A4A", border: "1px solid rgba(74,138,74,0.2)" }}>
+                    -{fmt(inv.discount_amount)} discount
+                  </span>
+                )}
+                {inv.gst_pct > 0 && (
+                  <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 999, background: "rgba(42,74,138,0.07)", color: "#2A4A8A", border: "1px solid rgba(42,74,138,0.2)" }}>
+                    GST {inv.gst_pct}% (+{fmt(inv.tax_amount)})
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Payment history */}
+            {payments.length > 0 && (
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#9C9584", marginBottom: 8 }}>Payments</p>
+                {payments.map(p => (
+                  <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
+                    <div>
+                      <span style={{ fontSize: 12, textTransform: "capitalize" }}>{p.payment_mode}</span>
+                      {p.transaction_ref && <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: 6 }}>{p.transaction_ref}</span>}
+                    </div>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#4A8A4A" }}>{fmt(p.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Smart suggestions strip */}
+            <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(197,160,89,0.05)", border: "1px solid rgba(197,160,89,0.18)" }}>
+              <p style={{ fontSize: 11, fontWeight: 700, color: "#9C9584", margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                <Sparkles size={11} style={{ display: "inline", marginRight: 4 }} /> Smart Suggestions
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {!isPaid && !isVoid && (
+                  <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>
+                    ✓ {fmt(inv.total_amount - paidSoFar)} remaining — collect via {inv.payment_mode ?? "any mode"}
+                  </p>
+                )}
+                {inv.gst_pct === 0 && !isPaid && (
+                  <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>
+                    ℹ Consider adding 18% GST for B2B client invoices
+                  </p>
+                )}
+                {outstanding > 50000 && (
+                  <p style={{ fontSize: 12, color: "#D4A017", margin: 0 }}>
+                    ⚠ ₹{(outstanding/1000).toFixed(0)}K total outstanding across clinic — follow up needed
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            {!isPaid && !isVoid && (
+              <button
+                onClick={onPay}
+                style={{ width: "100%", padding: "11px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #C5A059, #A8853A)", color: "white", fontSize: 14, fontWeight: 600, fontFamily: "Georgia, serif", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 4px 14px rgba(197,160,89,0.35)" }}
+              >
+                <IndianRupee size={15} /> Record Payment
+              </button>
+            )}
+
+            {isAdmin && !isVoid && inv.status !== "paid" && (
+              <>
+                {!showVoidInput ? (
+                  <button
+                    onClick={() => setShowVoidInput(true)}
+                    style={{ width: "100%", padding: "8px 0", borderRadius: 10, border: "1px solid rgba(180,60,60,0.3)", background: "rgba(180,60,60,0.05)", color: "#B43C3C", fontSize: 13, cursor: "pointer" }}
+                  >
+                    Void Invoice
+                  </button>
+                ) : (
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input
+                      value={voidReason}
+                      onChange={e => setVoidReason(e.target.value)}
+                      placeholder="Reason for voiding…"
+                      style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--input-bg)", fontSize: 12, color: "var(--foreground)", outline: "none" }}
+                    />
+                    <button onClick={() => { onVoid(voidReason); setShowVoidInput(false); }} style={{ padding: "8px 12px", borderRadius: 8, border: "none", background: "#B43C3C", color: "white", fontSize: 12, cursor: "pointer" }}>Void</button>
+                    <button onClick={() => setShowVoidInput(false)} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-muted)", cursor: "pointer" }}><X size={12} /></button>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// STATUS_CFG for billing (mirrors STATUS_CFG in scheduler but for invoices)
+const STATUS_CFG_BILLING: Record<string, { label: string; bg: string; border: string; text: string }> = {
+  pending:  { label: "Pending",  bg: "#FDF9F2", border: "rgba(197,160,89,0.5)", text: "#A8853A" },
+  partial:  { label: "Partial",  bg: "#FFF8E8", border: "rgba(212,160,23,0.5)", text: "#D4A017" },
+  paid:     { label: "Paid",     bg: "#EFF6EF", border: "rgba(74,138,74,0.5)",  text: "#4A8A4A" },
+  overdue:  { label: "Overdue",  bg: "#FEF2F2", border: "rgba(180,60,60,0.4)", text: "#B43C3C" },
+  void:     { label: "Voided",   bg: "#F5F5F5", border: "rgba(0,0,0,0.15)",    text: "#6B7280" },
+};
 
 // ── Stats Row ─────────────────────────────────────────────────────────────────
 
@@ -891,15 +1107,17 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
   onClose:   () => void;
   onSuccess: () => void;
 }) {
-  const [amount, setAmount] = useState(
+  const [amount,    setAmount]    = useState(
     ((inv.total_amount ?? inv.amount ?? 0) - 0).toFixed(2)
   );
-  const [mode,   setMode]   = useState<PaymentMode>("cash");
-  const [ref,    setRef]    = useState("");
-  const [notes,  setNotes]  = useState("");
-  const [saving, setSaving] = useState(false);
+  const [mode,      setMode]      = useState<PaymentMode>("cash");
+  const [ref,       setRef]       = useState("");
+  const [notes,     setNotes]     = useState("");
+  const [tipAmount, setTipAmount] = useState("0"); // B9: Tip at checkout
+  const [saving,    setSaving]    = useState(false);
 
   const due = inv.total_amount ?? inv.amount ?? 0;
+  const tip = parseFloat(tipAmount) || 0;
 
   const handleSave = async () => {
     const pay = parseFloat(amount);
@@ -918,11 +1136,16 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
       });
       if (pe) throw pe;
 
+      // B9: Save tip amount if any
+      if (tip > 0) {
+        await supabase.from("pending_invoices").update({ tip_amount: tip }).eq("id", inv.id);
+      }
+
       await logAction({
         action:     "record_payment",
         targetId:   inv.id,
         targetName: inv.invoice_number,
-        metadata:   { amount: pay, mode, status: newStatus },
+        metadata:   { amount: pay, mode, tip: tip > 0 ? tip : undefined, status: newStatus },
       });
       onSuccess();
     } catch (e: any) {
@@ -1029,6 +1252,49 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
               className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
               style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }}
             />
+          </div>
+
+          {/* B9: Tip at checkout */}
+          <div style={{ padding: "14px 16px", borderRadius: 12, background: "rgba(197,160,89,0.05)", border: "1px solid rgba(197,160,89,0.2)" }}>
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <p className="text-sm font-semibold" style={{ fontFamily: "Georgia, serif", color: "var(--foreground)" }}>
+                  Add a Tip (Optional)
+                </p>
+                <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>Patient can tip their provider</p>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {[0, 100, 200, 500].map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setTipAmount(String(t))}
+                    style={{
+                      padding: "4px 10px", borderRadius: 8, fontSize: 12, cursor: "pointer",
+                      border: tip === t ? "1px solid #C5A059" : "1px solid var(--border)",
+                      background: tip === t ? "rgba(197,160,89,0.15)" : "var(--input-bg)",
+                      color: tip === t ? "#A8853A" : "var(--text-muted)",
+                      fontWeight: tip === t ? 700 : 400,
+                    }}
+                  >
+                    {t === 0 ? "None" : `₹${t}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold" style={{ color: "var(--gold)" }}>₹</span>
+              <input
+                type="number" value={tipAmount} min="0"
+                onChange={e => setTipAmount(e.target.value)}
+                className="w-full pl-7 pr-3 py-2.5 rounded-xl text-sm outline-none"
+                style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }}
+              />
+            </div>
+            {tip > 0 && (
+              <p className="text-xs mt-1.5" style={{ color: "#C5A059" }}>
+                Total to collect: ₹{(parseFloat(amount) + tip).toFixed(2)} (including ₹{tip} tip)
+              </p>
+            )}
           </div>
         </div>
 

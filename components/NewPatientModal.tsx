@@ -4,94 +4,168 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
-  X,
-  Sparkles,
-  User,
-  Mail,
-  Phone,
-  Stethoscope,
-  ChevronDown,
-  Send,
-  CheckCircle2,
-  Loader2,
-  AlertCircle,
+  X, Sparkles, User, Mail, Phone, Stethoscope, ChevronDown,
+  Send, CheckCircle2, Loader2, AlertCircle, Heart, Link2,
+  Tag, Calendar, MapPin, FlaskConical,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
+import { useClinic } from "@/contexts/ClinicContext";
 
-interface Specialist {
-  id: string;
-  full_name: string;
-  role: string;
-}
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-interface NewPatientModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-}
-
-const concerns = [
-  "Botox & Wrinkle Relaxers",
-  "Dermal Fillers",
-  "Skin Care & Facials",
-  "Laser Treatments",
-  "PRP Therapy",
-  "Body Contouring",
-  "Chemical Peels",
-  "Acne & Scarring",
-  "Pigmentation",
-  "Other / Consultation",
+const CONCERNS = [
+  "Botox & Wrinkle Relaxers", "Dermal Fillers", "Skin Care & Facials",
+  "Laser Treatments", "PRP Therapy", "Body Contouring",
+  "Chemical Peels", "Acne & Scarring", "Pigmentation", "Other / Consultation",
 ];
 
+const REFERRAL_SOURCES = [
+  "Google Search", "Instagram", "Word of Mouth", "Facebook",
+  "Walk-in", "Doctor Referral", "WhatsApp", "Other",
+];
+
+const FST_OPTIONS = [
+  { value: 1, label: "Type I — Very fair, always burns" },
+  { value: 2, label: "Type II — Fair, usually burns" },
+  { value: 3, label: "Type III — Medium, sometimes burns" },
+  { value: 4, label: "Type IV — Olive, rarely burns" },
+  { value: 5, label: "Type V — Brown, very rarely burns" },
+  { value: 6, label: "Type VI — Dark brown, never burns" },
+];
+
+type Tab = "basic" | "medical";
 type SubmitState = "idle" | "loading" | "success";
 
-const emptyForm = {
-  fullName: "",
-  email: "",
-  phone: "",
-  provider: "",
-  concern: "",
-  notes: "",
+const emptyBasic = {
+  fullName: "", email: "", phone: "", dob: "", gender: "",
+  address: "", provider: "", concerns: [] as string[],
+  referralSource: "", referralCode: "", fitzpatrick: 0,
   sendIntake: true,
 };
 
-export default function NewPatientModal({ isOpen, onClose }: NewPatientModalProps) {
+const emptyMedical = {
+  allergies: [] as string[], allergyInput: "",
+  conditions: [] as string[], conditionInput: "",
+  medications: "", previousTreatments: "", priorInjections: false,
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function genReferralCode(name: string): string {
+  const prefix = name.replace(/[^a-zA-Z]/g, "").slice(0, 3).toUpperCase().padEnd(3, "X");
+  const chars   = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const suffix  = Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  return `${prefix}-${suffix}`;
+}
+
+const labelStyle: React.CSSProperties = {
+  display: "flex", alignItems: "center", gap: 5,
+  fontSize: 11, fontWeight: 600, textTransform: "uppercase",
+  letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 7,
+};
+
+function Required() {
+  return <span style={{ color: "var(--gold)", fontSize: 13, lineHeight: 1 }}>*</span>;
+}
+
+const inputBase: React.CSSProperties = {
+  width: "100%", padding: "9px 12px", borderRadius: "var(--radius-md)",
+  border: "1px solid var(--border)", background: "var(--bg-elevated)",
+  color: "var(--text-primary)", fontFamily: "var(--font-sans)", fontSize: 13,
+  outline: "none", boxSizing: "border-box",
+};
+
+function AeInput({ value, onChange, type = "text", placeholder, id }: {
+  value: string; onChange: (v: string) => void; type?: string; placeholder?: string; id?: string;
+}) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <input id={id} type={type} value={value} placeholder={placeholder}
+      onChange={e => onChange(e.target.value)}
+      onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+      style={{ ...inputBase, borderColor: focused ? "var(--gold)" : "var(--border)", boxShadow: focused ? "0 0 0 3px rgba(197,160,89,0.12)" : "none" }}
+    />
+  );
+}
+
+function AeSelect({ value, onChange, children }: { value: string | number; onChange: (v: string) => void; children: React.ReactNode }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <div style={{ position: "relative" }}>
+      <select value={value} onChange={e => onChange(e.target.value)}
+        onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+        style={{ ...inputBase, appearance: "none", paddingRight: 32, cursor: "pointer", borderColor: focused ? "var(--gold)" : "var(--border)", boxShadow: focused ? "0 0 0 3px rgba(197,160,89,0.12)" : "none" }}>
+        {children}
+      </select>
+      <ChevronDown size={14} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", pointerEvents: "none", color: "var(--text-muted)" }} />
+    </div>
+  );
+}
+
+// ── Tag input (for allergies / conditions) ────────────────────────────────────
+
+function TagInput({ tags, inputValue, onInput, onAdd, onRemove, placeholder, color = "#B43C3C", bg = "rgba(180,60,60,0.08)" }: {
+  tags: string[]; inputValue: string; onInput: (v: string) => void;
+  onAdd: () => void; onRemove: (i: number) => void;
+  placeholder?: string; color?: string; bg?: string;
+}) {
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: tags.length ? 8 : 0 }}>
+        {tags.map((t, i) => (
+          <span key={i} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 600, background: bg, color, border: `1px solid ${color}44` }}>
+            {t}
+            <button type="button" onClick={() => onRemove(i)} style={{ background: "none", border: "none", cursor: "pointer", color, lineHeight: 1, padding: 0, fontSize: 14, marginTop: -1 }}>×</button>
+          </span>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <input value={inputValue} onChange={e => onInput(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); onAdd(); } }}
+          placeholder={placeholder} style={{ ...inputBase, flex: 1 }} />
+        <button type="button" onClick={onAdd}
+          style={{ padding: "9px 14px", borderRadius: "var(--radius-md)", border: "1px solid var(--border)", background: "var(--bg-subtle)", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", cursor: "pointer" }}>
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Component ─────────────────────────────────────────────────────────────
+
+interface Props { isOpen: boolean; onClose: () => void; }
+
+export default function NewPatientModal({ isOpen, onClose }: Props) {
   const router = useRouter();
-  const [visible, setVisible] = useState(false);
-  const [mounted, setMounted] = useState(false);
-  const [form, setForm] = useState(emptyForm);
-  const [submitState, setSubmitState] = useState<SubmitState>("idle");
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [specialists, setSpecialists] = useState<Specialist[]>([]);
-  const [clinicId, setClinicId] = useState<string | null>(null);
-  const [dupPatient, setDupPatient] = useState<{ id: string; full_name: string; phone: string } | null>(null);
-  const firstInputRef = useRef<HTMLInputElement>(null);
+  const { profile, activeClinicId } = useClinic();
+  const [visible,       setVisible]       = useState(false);
+  const [mounted,       setMounted]       = useState(false);
+  const [tab,           setTab]           = useState<Tab>("basic");
+  const [basic,         setBasic]         = useState(emptyBasic);
+  const [medical,       setMedical]       = useState(emptyMedical);
+  const [submitState,   setSubmitState]   = useState<SubmitState>("idle");
+  const [errorMsg,      setErrorMsg]      = useState<string | null>(null);
+  const [providers,     setProviders]     = useState<{ id: string; full_name: string }[]>([]);
+  const [dupPatient,    setDupPatient]    = useState<{ id: string; full_name: string; phone: string } | null>(null);
+  const firstRef = useRef<HTMLInputElement>(null);
+
+  // Derive clinicId (use activeClinicId or profile.clinic_id)
+  const clinicId = activeClinicId ?? profile?.clinic_id ?? null;
 
   useEffect(() => { setMounted(true); }, []);
 
-  // Fetch real specialists from profiles table when modal opens
   useEffect(() => {
-    if (!isOpen) return;
-    (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("clinic_id")
-        .eq("id", user.id)
-        .single();
-      if (!profile?.clinic_id) return;
-      setClinicId(profile.clinic_id); // save for the patient insert
-      const { data: docs } = await supabase
-        .from("profiles")
-        .select("id, full_name, role")
-        .eq("clinic_id", profile.clinic_id)
-        .eq("role", "doctor")
-        .eq("is_active", true)
-        .order("full_name");
-      setSpecialists(docs ?? []);
-    })();
-  }, [isOpen]);
+    if (!isOpen || !clinicId) return;
+    supabase.from("profiles")
+      .select("id, full_name")
+      .eq("clinic_id", clinicId)
+      .eq("is_active", true)
+      .in("role", ["doctor","therapist","counsellor"])
+      .order("full_name")
+      .then(({ data }) => setProviders(data ?? []));
+  }, [isOpen, clinicId]);
 
   useEffect(() => {
     if (isOpen) {
@@ -100,17 +174,16 @@ export default function NewPatientModal({ isOpen, onClose }: NewPatientModalProp
     } else {
       setVisible(false);
       const t = setTimeout(() => {
-        setForm(emptyForm);
-        setSubmitState("idle");
-        setErrorMsg(null);
+        setBasic(emptyBasic); setMedical(emptyMedical);
+        setTab("basic"); setSubmitState("idle"); setErrorMsg(null); setDupPatient(null);
       }, 380);
       return () => clearTimeout(t);
     }
   }, [isOpen]);
 
   useEffect(() => {
-    if (visible && firstInputRef.current) {
-      const t = setTimeout(() => firstInputRef.current?.focus(), 360);
+    if (visible && firstRef.current) {
+      const t = setTimeout(() => firstRef.current?.focus(), 360);
       return () => clearTimeout(t);
     }
   }, [visible]);
@@ -121,123 +194,108 @@ export default function NewPatientModal({ isOpen, onClose }: NewPatientModalProp
     return () => document.removeEventListener("keydown", handler);
   }, [isOpen, onClose]);
 
-  const doInsert = async () => {
-    setDupPatient(null);
-    setSubmitState("loading");
-    setErrorMsg(null);
+  const isBasicValid = !!basic.fullName.trim() && !!basic.phone.trim() && basic.concerns.length > 0;
 
-    const { data: newPatient, error } = await supabase
+  async function doInsert() {
+    setSubmitState("loading"); setErrorMsg(null);
+
+    // 1. Create patient
+    const { data: patient, error: patErr } = await supabase
       .from("patients")
       .insert({
-        full_name:             form.fullName.trim(),
-        email:                 form.email?.trim()  || null,
-        phone:                 form.phone.trim(),
-        preferred_provider_id: form.provider       || null,
-        primary_concern:       form.concern ? [form.concern] : null,
-        notes:                 form.notes?.trim()  || null,
+        full_name:             basic.fullName.trim(),
+        email:                 basic.email?.trim()    || null,
+        phone:                 basic.phone.trim(),
+        date_of_birth:         basic.dob              || null,
+        preferred_provider_id: basic.provider         || null,
+        primary_concern:       basic.concerns.length  ? basic.concerns : null,
+        notes:                 basic.address?.trim()  || null,
+        fitzpatrick_type:      basic.fitzpatrick       || null,
         clinic_id:             clinicId,
       })
       .select("id")
       .single();
 
-    if (error) {
+    if (patErr) {
       setSubmitState("idle");
-      setErrorMsg(error.message);
-      toast.error(`DB Error — ${error.message}`, {
-        duration: 10000,
-        style: {
-          background: "#1C1917",
-          border: "1px solid #C5A059",
-          color: "#C5A059",
-          fontFamily: "Georgia, serif",
-          fontSize: 13,
-        },
-      });
+      setErrorMsg(patErr.message);
+      toast.error("Registration failed — " + patErr.message);
       return;
     }
 
+    const patientId = patient.id;
+
+    // 2. Create patient_medical_history (fire-and-forget)
+    const hasMedical =
+      medical.allergies.length > 0 || medical.conditions.length > 0 ||
+      medical.medications.trim() || medical.previousTreatments.trim() ||
+      medical.priorInjections;
+
+    if (hasMedical) {
+      supabase.from("patient_medical_history").insert({
+        patient_id:           patientId,
+        clinic_id:            clinicId,
+        allergies:            medical.allergies.length ? medical.allergies : null,
+        current_medications:  medical.medications.trim()          || null,
+        past_procedures:      medical.previousTreatments.trim()   || null,
+        primary_concerns:     medical.conditions.length ? medical.conditions : null,
+        had_prior_injections: medical.priorInjections,
+        recorded_at:          new Date().toISOString(),
+      }).then(() => {});
+    }
+
+    // 3. Generate referral code (fire-and-forget)
+    const code = genReferralCode(basic.fullName);
+    supabase.from("referral_codes").insert({ patient_id: patientId, code }).then(() => {});
+
     setSubmitState("success");
-    toast.success(`${form.fullName} registered`, {
-      description: form.sendIntake
-        ? "Patient added · Digital intake form sent."
-        : "Patient added to records.",
+    toast.success(`${basic.fullName} registered`, {
+      description: basic.sendIntake ? "Patient added · Intake form link ready." : "Patient added to records.",
       icon: <Sparkles size={15} color="#C5A059" />,
       duration: 4000,
     });
-    setTimeout(() => {
-      onClose();
-      router.push(`/patients/${newPatient.id}`);
-    }, 800);
-  };
+    setTimeout(() => { onClose(); router.push(`/patients/${patientId}`); }, 800);
+  }
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setSubmitState("loading");
-    setErrorMsg(null);
+    if (!isBasicValid) { setTab("basic"); return; }
 
-    // Duplicate phone check within this clinic
-    if (clinicId && form.phone.trim()) {
+    // Duplicate check
+    if (clinicId && basic.phone.trim()) {
       const { data: existing } = await supabase
         .from("patients")
         .select("id, full_name, phone")
         .eq("clinic_id", clinicId)
-        .eq("phone", form.phone.trim())
-        .limit(1)
-        .maybeSingle();
-      if (existing) {
-        setSubmitState("idle");
-        setDupPatient(existing);
-        return;
-      }
+        .eq("phone", basic.phone.trim())
+        .limit(1).maybeSingle();
+      if (existing) { setDupPatient(existing); return; }
     }
-
     await doInsert();
-  };
-
-  const inputClass =
-    "w-full px-4 py-2.5 rounded-xl text-sm outline-none transition-all duration-200";
-  const inputStyle = {
-    background: "#FDFCF9",
-    border: "1px solid var(--border)",
-    color: "var(--foreground)",
-    fontFamily: "Georgia, serif",
-  };
-  const focusHandler = (e: React.FocusEvent<HTMLInputElement | HTMLSelectElement>) => {
-    e.target.style.borderColor = "var(--gold)";
-    e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.12)";
-  };
-  const blurHandler = (e: React.FocusEvent<HTMLInputElement | HTMLSelectElement>) => {
-    e.target.style.borderColor = "var(--border)";
-    e.target.style.boxShadow = "none";
-  };
-
-  // Email is optional — the patients table allows null email (for walk-in registrations)
-  const isFormValid = !!form.fullName && !!form.phone && !!form.concern;
+  }
 
   if (!mounted) return null;
 
   return createPortal(
     <>
-      {/* ── Duplicate patient warning dialog ── */}
+      {/* Duplicate warning */}
       {dupPatient && (
         <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)" }}>
           <div style={{ background: "#fff", borderRadius: 16, padding: 28, maxWidth: 400, width: "90vw", border: "1px solid rgba(197,160,89,0.3)", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
               <AlertCircle size={20} color="#D97706" />
-              <p style={{ fontFamily: "Georgia, serif", fontWeight: 600, fontSize: 15, color: "#1C1917" }}>Patient Already Exists</p>
+              <p style={{ fontFamily: "var(--font-serif)", fontWeight: 600, fontSize: 15, color: "var(--text-primary)" }}>Patient Already Exists</p>
             </div>
-            <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 18, lineHeight: 1.5 }}>
-              A patient named <strong style={{ color: "#1C1917" }}>{dupPatient.full_name}</strong> is already registered with phone <strong style={{ color: "#1C1917" }}>{dupPatient.phone}</strong>.
+            <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 18, lineHeight: 1.5 }}>
+              <strong style={{ color: "var(--text-primary)" }}>{dupPatient.full_name}</strong> is already registered with phone <strong>{dupPatient.phone}</strong>.
             </p>
             <div style={{ display: "flex", gap: 10 }}>
-              <button
-                onClick={() => { setDupPatient(null); onClose(); router.push(`/patients/${dupPatient.id}`); }}
-                style={{ flex: 1, padding: "9px 0", borderRadius: 10, background: "var(--gold)", color: "#fff", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "Georgia, serif" }}>
-                View Existing Patient
+              <button onClick={() => { setDupPatient(null); onClose(); router.push(`/patients/${dupPatient.id}`); }}
+                style={{ flex: 1, padding: "9px 0", borderRadius: 10, background: "var(--gold)", color: "#fff", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "var(--font-serif)" }}>
+                View Existing
               </button>
-              <button
-                onClick={doInsert}
-                style={{ flex: 1, padding: "9px 0", borderRadius: 10, background: "#fff", color: "#6B7280", fontWeight: 600, fontSize: 13, border: "1px solid rgba(197,160,89,0.3)", cursor: "pointer" }}>
+              <button onClick={() => { setDupPatient(null); doInsert(); }}
+                style={{ flex: 1, padding: "9px 0", borderRadius: 10, background: "#fff", color: "var(--text-secondary)", fontWeight: 600, fontSize: 13, border: "1px solid var(--border)", cursor: "pointer" }}>
                 Create Anyway
               </button>
             </div>
@@ -245,540 +303,307 @@ export default function NewPatientModal({ isOpen, onClose }: NewPatientModalProp
         </div>
       )}
 
-      {/* ── Backdrop ── */}
-      <div
-        onClick={onClose}
-        aria-hidden="true"
-        style={{
-          position: "fixed",
-          inset: 0,
-          zIndex: 40,
-          background: "rgba(14,12,10,0.55)",
-          backdropFilter: "blur(3px)",
-          opacity: visible ? 1 : 0,
-          transition: "opacity 0.35s cubic-bezier(0.4,0,0.2,1)",
-          pointerEvents: isOpen ? "auto" : "none",
-        }}
-      />
+      {/* Backdrop */}
+      <div onClick={onClose} aria-hidden="true" style={{
+        position: "fixed", inset: 0, zIndex: 40,
+        background: "rgba(14,12,10,0.55)", backdropFilter: "blur(3px)",
+        opacity: visible ? 1 : 0,
+        transition: "opacity 0.35s cubic-bezier(0.4,0,0.2,1)",
+        pointerEvents: isOpen ? "auto" : "none",
+      }} />
 
-      {/* ── Drawer ── */}
-      <aside
-        role="dialog"
-        aria-modal="true"
-        aria-label="New Patient Registration"
-        style={{
-          position: "fixed",
-          top: 0,
-          right: 0,
-          bottom: 0,
-          zIndex: 50,
-          width: "100%",
-          maxWidth: "480px",
-          display: "flex",
-          flexDirection: "column",
-          background: "#FFFFFF",
-          borderLeft: "2px solid var(--gold)",
-          boxShadow: "-12px 0 60px rgba(0,0,0,0.18)",
-          transform: visible ? "translateX(0)" : "translateX(100%)",
-          transition: "transform 0.38s cubic-bezier(0.4,0,0.2,1)",
-          pointerEvents: isOpen ? "auto" : "none",
-        }}
-      >
-        {/* ── Header ── */}
-        <div
-          style={{
-            padding: "24px 28px 20px",
-            borderBottom: "1px solid var(--border)",
-            background: "linear-gradient(135deg, #FFFDF8 0%, #FFFFFF 100%)",
-            flexShrink: 0,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-              <div
-                style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 12,
-                  background: "rgba(197,160,89,0.12)",
-                  border: "1px solid rgba(197,160,89,0.3)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}
-              >
+      {/* Drawer */}
+      <aside role="dialog" aria-modal="true" aria-label="New Patient Registration" style={{
+        position: "fixed", top: 0, right: 0, bottom: 0, zIndex: 50,
+        width: "100%", maxWidth: 520,
+        display: "flex", flexDirection: "column",
+        background: "#FFFFFF",
+        borderLeft: "2px solid var(--gold)",
+        boxShadow: "-12px 0 60px rgba(0,0,0,0.18)",
+        transform: visible ? "translateX(0)" : "translateX(100%)",
+        transition: "transform 0.38s cubic-bezier(0.4,0,0.2,1)",
+        pointerEvents: isOpen ? "auto" : "none",
+      }}>
+
+        {/* Header */}
+        <div style={{ padding: "22px 28px 0", borderBottom: "1px solid var(--border)", background: "linear-gradient(135deg,#FFFDF8,#FFFFFF)", flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 12, background: "rgba(197,160,89,0.12)", border: "1px solid rgba(197,160,89,0.3)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <Sparkles size={18} color="var(--gold)" />
               </div>
               <div>
-                <h2
-                  style={{
-                    fontSize: 20,
-                    fontWeight: 600,
-                    fontFamily: "Georgia, serif",
-                    color: "var(--foreground)",
-                    margin: 0,
-                    lineHeight: 1.2,
-                  }}
-                >
-                  New Patient
-                </h2>
+                <h2 style={{ fontSize: 19, fontWeight: 700, fontFamily: "var(--font-serif)", color: "var(--text-primary)", margin: 0 }}>New Patient</h2>
                 <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-                  {form.fullName
-                    ? `Registering — ${form.fullName}`
-                    : "Complete the details below"}
+                  {basic.fullName ? `Registering — ${basic.fullName}` : "Complete the details below"}
                 </p>
               </div>
             </div>
-
-            <button
-              onClick={onClose}
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: "50%",
-                border: "1px solid var(--border)",
-                background: "var(--surface-warm)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                cursor: "pointer",
-                color: "var(--text-muted)",
-                transition: "all 0.15s",
-                flexShrink: 0,
-              }}
-              onMouseEnter={e => {
-                (e.currentTarget as HTMLButtonElement).style.background = "rgba(197,160,89,0.12)";
-                (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--gold)";
-                (e.currentTarget as HTMLButtonElement).style.color = "var(--gold)";
-              }}
-              onMouseLeave={e => {
-                (e.currentTarget as HTMLButtonElement).style.background = "var(--surface-warm)";
-                (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border)";
-                (e.currentTarget as HTMLButtonElement).style.color = "var(--text-muted)";
-              }}
-              aria-label="Close"
-            >
+            <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: "50%", border: "1px solid var(--border)", background: "var(--bg-subtle)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--text-muted)" }}>
               <X size={15} />
             </button>
           </div>
 
-          {/* Step indicator */}
-          <div style={{ display: "flex", gap: 6, marginTop: 18 }}>
-            {["Personal Info", "Clinical", "Preferences"].map((step, i) => (
-              <div key={step} style={{ flex: 1 }}>
-                <div
-                  style={{
-                    height: 3,
-                    borderRadius: 2,
-                    background: i === 0 ? "var(--gold)" : "var(--border)",
-                    transition: "background 0.3s",
-                  }}
-                />
-                <p
-                  style={{
-                    fontSize: 10,
-                    color: i === 0 ? "var(--gold)" : "var(--text-muted)",
-                    marginTop: 4,
-                    fontWeight: i === 0 ? 600 : 400,
-                    letterSpacing: "0.04em",
-                  }}
-                >
-                  {step}
-                </p>
-              </div>
+          {/* Tab bar */}
+          <div style={{ display: "flex", gap: 0, marginBottom: -1 }}>
+            {([
+              { key: "basic"   as Tab, label: "Basic Info",   icon: User   },
+              { key: "medical" as Tab, label: "Medical",      icon: Heart  },
+            ] as const).map(({ key, label, icon: Icon }) => (
+              <button key={key} type="button" onClick={() => setTab(key)} style={{
+                padding: "8px 18px", border: "none", borderBottom: `2px solid ${tab === key ? "var(--gold)" : "transparent"}`,
+                background: "transparent", cursor: "pointer", fontSize: 13, fontWeight: tab === key ? 600 : 400,
+                color: tab === key ? "var(--gold)" : "var(--text-muted)",
+                display: "flex", alignItems: "center", gap: 6,
+                transition: "all 0.15s",
+              }}>
+                <Icon size={13} /> {label}
+              </button>
             ))}
           </div>
         </div>
 
-        {/* ── Form body (scrollable) ── */}
-        <form
-          onSubmit={handleSubmit}
-          style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}
-        >
-          <div style={{ padding: "24px 28px", display: "flex", flexDirection: "column", gap: 20 }}>
+        {/* Scrollable body */}
+        <form onSubmit={handleSubmit} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
 
-            {/* Full Name */}
-            <div>
-              <label style={labelStyle}>
-                <User size={12} color="var(--gold)" />
-                Full Name <Required />
-              </label>
-              <input
-                ref={firstInputRef}
-                type="text"
-                required
-                placeholder="e.g. Sophia Laurent"
-                value={form.fullName}
-                onChange={e => setForm(f => ({ ...f, fullName: e.target.value }))}
-                className={inputClass}
-                style={inputStyle}
-                onFocus={focusHandler}
-                onBlur={blurHandler}
-              />
-            </div>
+          {/* ── Basic Info Tab ── */}
+          {tab === "basic" && (
+            <div style={{ padding: "24px 28px", display: "flex", flexDirection: "column", gap: 18 }}>
 
-            {/* Email + Phone row */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              {/* Full Name */}
               <div>
-                <label style={labelStyle}>
-                  <Mail size={12} color="var(--gold)" />
-                  Email
-                </label>
-                <input
-                  type="email"
-                  placeholder="client@email.com"
-                  value={form.email}
-                  onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-                  className={inputClass}
-                  style={inputStyle}
-                  onFocus={focusHandler}
-                  onBlur={blurHandler}
+                <label style={labelStyle}><User size={11} color="var(--gold)" />Full Name <Required /></label>
+                <input ref={firstRef} type="text" value={basic.fullName} placeholder="e.g. Priya Sharma"
+                  onChange={e => setBasic(b => ({ ...b, fullName: e.target.value }))}
+                  style={inputBase}
+                  onFocus={e => { e.target.style.borderColor = "var(--gold)"; e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.12)"; }}
+                  onBlur={e  => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
                 />
               </div>
+
+              {/* Phone + Email */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={labelStyle}><Phone size={11} color="var(--gold)" />Phone <Required /></label>
+                  <AeInput value={basic.phone} onChange={v => setBasic(b => ({ ...b, phone: v }))} type="tel" placeholder="+91 98765 43210" />
+                </div>
+                <div>
+                  <label style={labelStyle}><Mail size={11} color="var(--gold)" />Email</label>
+                  <AeInput value={basic.email} onChange={v => setBasic(b => ({ ...b, email: v }))} type="email" placeholder="priya@email.com" />
+                </div>
+              </div>
+
+              {/* DOB + Gender */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={labelStyle}><Calendar size={11} color="var(--gold)" />Date of Birth</label>
+                  <AeInput value={basic.dob} onChange={v => setBasic(b => ({ ...b, dob: v }))} type="date" />
+                </div>
+                <div>
+                  <label style={labelStyle}>Gender</label>
+                  <AeSelect value={basic.gender} onChange={v => setBasic(b => ({ ...b, gender: v }))}>
+                    <option value="">Prefer not to say</option>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                    <option value="non_binary">Non-binary</option>
+                  </AeSelect>
+                </div>
+              </div>
+
+              {/* Address */}
               <div>
-                <label style={labelStyle}>
-                  <Phone size={12} color="var(--gold)" />
-                  Phone <Required />
-                </label>
-                <input
-                  type="tel"
-                  required
-                  placeholder="(555) 000-0000"
-                  value={form.phone}
-                  onChange={e => setForm(f => ({ ...f, phone: formatPhone(e.target.value) }))}
-                  className={inputClass}
-                  style={inputStyle}
-                  onFocus={focusHandler}
-                  onBlur={blurHandler}
+                <label style={labelStyle}><MapPin size={11} color="var(--gold)" />Address</label>
+                <AeInput value={basic.address} onChange={v => setBasic(b => ({ ...b, address: v }))} placeholder="Area, City" />
+              </div>
+
+              <div style={{ height: 1, background: "var(--border)" }} />
+
+              {/* Preferred Provider */}
+              <div>
+                <label style={labelStyle}><Stethoscope size={11} color="var(--gold)" />Preferred Provider</label>
+                <AeSelect value={basic.provider} onChange={v => setBasic(b => ({ ...b, provider: v }))}>
+                  <option value="">No preference</option>
+                  {providers.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+                </AeSelect>
+              </div>
+
+              {/* Primary Concerns (multi-select chips) */}
+              <div>
+                <label style={labelStyle}><Sparkles size={11} color="var(--gold)" />Primary Concerns <Required /></label>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+                  {CONCERNS.map(c => {
+                    const sel = basic.concerns.includes(c);
+                    return (
+                      <button key={c} type="button" onClick={() => setBasic(b => ({
+                        ...b, concerns: sel ? b.concerns.filter(x => x !== c) : [...b.concerns, c],
+                      }))} style={{
+                        padding: "5px 12px", borderRadius: 999, fontSize: 12,
+                        fontFamily: "var(--font-serif)", cursor: "pointer", transition: "all 0.15s",
+                        border: sel ? "1.5px solid var(--gold)" : "1.5px solid var(--border)",
+                        background: sel ? "rgba(197,160,89,0.12)" : "var(--bg-subtle)",
+                        color: sel ? "var(--gold)" : "var(--text-muted)", fontWeight: sel ? 600 : 400,
+                      }}>{c}</button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Fitzpatrick Type */}
+              <div>
+                <label style={labelStyle}><FlaskConical size={11} color="var(--gold)" />Fitzpatrick Skin Type</label>
+                <AeSelect value={basic.fitzpatrick} onChange={v => setBasic(b => ({ ...b, fitzpatrick: Number(v) }))}>
+                  <option value={0}>Not specified</option>
+                  {FST_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </AeSelect>
+              </div>
+
+              {/* Referral Source + Code */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={labelStyle}><Link2 size={11} color="var(--gold)" />Referral Source</label>
+                  <AeSelect value={basic.referralSource} onChange={v => setBasic(b => ({ ...b, referralSource: v }))}>
+                    <option value="">Unknown</option>
+                    {REFERRAL_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+                  </AeSelect>
+                </div>
+                <div>
+                  <label style={labelStyle}><Tag size={11} color="var(--gold)" />Referral Code</label>
+                  <AeInput value={basic.referralCode} onChange={v => setBasic(b => ({ ...b, referralCode: v.toUpperCase() }))} placeholder="e.g. PRI-A7K2P" />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Medical Tab ── */}
+          {tab === "medical" && (
+            <div style={{ padding: "24px 28px", display: "flex", flexDirection: "column", gap: 20 }}>
+
+              {/* Allergies */}
+              <div>
+                <label style={labelStyle}><AlertCircle size={11} color="#B43C3C" />Allergies</label>
+                <TagInput
+                  tags={medical.allergies}
+                  inputValue={medical.allergyInput}
+                  onInput={v => setMedical(m => ({ ...m, allergyInput: v }))}
+                  onAdd={() => {
+                    const v = medical.allergyInput.trim();
+                    if (v && !medical.allergies.includes(v)) setMedical(m => ({ ...m, allergies: [...m.allergies, v], allergyInput: "" }));
+                  }}
+                  onRemove={i => setMedical(m => ({ ...m, allergies: m.allergies.filter((_, idx) => idx !== i) }))}
+                  placeholder="e.g. Penicillin, Latex…"
+                  color="#B43C3C" bg="rgba(180,60,60,0.08)"
                 />
               </div>
-            </div>
 
-            {/* Divider */}
-            <div
-              style={{
-                borderTop: "1px solid var(--border)",
-                paddingTop: 4,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 10,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.1em",
-                  color: "var(--text-muted)",
-                  fontWeight: 600,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                Clinical Details
-              </span>
-              <div style={{ flex: 1, height: 1, background: "var(--border)" }} />
-            </div>
-
-            {/* Preferred Provider */}
-            <div>
-              <label style={labelStyle}>
-                <Stethoscope size={12} color="var(--gold)" />
-                Preferred Provider
-              </label>
-              <div style={{ position: "relative" }}>
-                <select
-                  value={form.provider}
-                  onChange={e => setForm(f => ({ ...f, provider: e.target.value }))}
-                  className={inputClass}
-                  style={{
-                    ...inputStyle,
-                    appearance: "none",
-                    paddingRight: "36px",
-                    cursor: "pointer",
+              {/* Medical Conditions */}
+              <div>
+                <label style={labelStyle}><Heart size={11} color="var(--gold)" />Medical Conditions</label>
+                <TagInput
+                  tags={medical.conditions}
+                  inputValue={medical.conditionInput}
+                  onInput={v => setMedical(m => ({ ...m, conditionInput: v }))}
+                  onAdd={() => {
+                    const v = medical.conditionInput.trim();
+                    if (v && !medical.conditions.includes(v)) setMedical(m => ({ ...m, conditions: [...m.conditions, v], conditionInput: "" }));
                   }}
-                  onFocus={focusHandler}
-                  onBlur={blurHandler}
-                >
-                  <option value="">
-                    {specialists.length === 0 ? "No doctors found…" : "No preference"}
-                  </option>
-                  {specialists.map(s => (
-                    <option key={s.id} value={s.id}>
-                      {s.full_name}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown
-                  size={14}
-                  color="var(--text-muted)"
-                  style={{
-                    position: "absolute",
-                    right: 12,
-                    top: "50%",
-                    transform: "translateY(-50%)",
-                    pointerEvents: "none",
-                  }}
+                  onRemove={i => setMedical(m => ({ ...m, conditions: m.conditions.filter((_, idx) => idx !== i) }))}
+                  placeholder="e.g. Hypertension, Diabetes…"
+                  color="#D97706" bg="rgba(217,119,6,0.08)"
                 />
               </div>
-            </div>
 
-            {/* Primary Concern */}
-            <div>
-              <label style={labelStyle}>
-                <Sparkles size={12} color="var(--gold)" />
-                Primary Concern <Required />
-              </label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 2 }}>
-                {concerns.map(c => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setForm(f => ({ ...f, concern: c }))}
-                    style={{
-                      padding: "6px 13px",
-                      borderRadius: "999px",
-                      fontSize: 12,
-                      fontFamily: "Georgia, serif",
-                      cursor: "pointer",
-                      transition: "all 0.18s",
-                      border: form.concern === c
-                        ? "1.5px solid var(--gold)"
-                        : "1.5px solid var(--border)",
-                      background: form.concern === c
-                        ? "rgba(197,160,89,0.12)"
-                        : "var(--surface-warm)",
-                      color: form.concern === c ? "var(--gold)" : "var(--text-muted)",
-                      fontWeight: form.concern === c ? 600 : 400,
-                    }}
-                  >
-                    {c}
-                  </button>
-                ))}
+              {/* Current Medications */}
+              <div>
+                <label style={labelStyle}>Current Medications</label>
+                <textarea value={medical.medications} onChange={e => setMedical(m => ({ ...m, medications: e.target.value }))}
+                  rows={3} placeholder="List current medications, dosages…"
+                  style={{ ...inputBase, resize: "none", lineHeight: 1.5 }} />
               </div>
-              {!form.concern && (
-                <p style={{ fontSize: 11, color: "rgba(138,128,120,0.7)", marginTop: 6 }}>
-                  Select one to continue
-                </p>
-              )}
-            </div>
 
-            {/* Notes */}
-            <div>
-              <label style={labelStyle}>Additional Notes</label>
-              <textarea
-                rows={3}
-                placeholder="Allergies, previous treatments, special requests…"
-                value={form.notes}
-                onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
-                style={{
-                  ...inputStyle,
-                  width: "100%",
-                  padding: "10px 14px",
-                  borderRadius: 12,
-                  fontSize: 13,
-                  resize: "none",
-                  outline: "none",
-                  transition: "all 0.2s",
-                  display: "block",
-                  boxSizing: "border-box",
-                }}
-                onFocus={e => {
-                  e.target.style.borderColor = "var(--gold)";
-                  e.target.style.boxShadow = "0 0 0 3px rgba(197,160,89,0.12)";
-                }}
-                onBlur={e => {
-                  e.target.style.borderColor = "var(--border)";
-                  e.target.style.boxShadow = "none";
-                }}
-              />
-            </div>
-          </div>
+              {/* Previous Treatments */}
+              <div>
+                <label style={labelStyle}>Previous Aesthetic Treatments</label>
+                <textarea value={medical.previousTreatments} onChange={e => setMedical(m => ({ ...m, previousTreatments: e.target.value }))}
+                  rows={3} placeholder="Previous procedures, clinics, outcomes…"
+                  style={{ ...inputBase, resize: "none", lineHeight: 1.5 }} />
+              </div>
 
-          {/* ── Sticky footer ── */}
-          <div
-            style={{
-              padding: "16px 28px 24px",
-              borderTop: "1px solid var(--border)",
-              background: "#FDFCF9",
-              flexShrink: 0,
-            }}
-          >
-            {/* Digital Intake Form toggle */}
-            <label
-              style={{
-                display: "flex",
-                alignItems: "flex-start",
-                gap: 12,
-                padding: "14px 16px",
-                borderRadius: 14,
-                border: form.sendIntake
-                  ? "1.5px solid rgba(197,160,89,0.45)"
-                  : "1.5px solid var(--border)",
-                background: form.sendIntake
-                  ? "rgba(197,160,89,0.06)"
-                  : "var(--surface-warm)",
-                cursor: "pointer",
-                transition: "all 0.2s",
-                marginBottom: 16,
-              }}
-            >
+              {/* Prior Injections toggle */}
+              <label style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer", padding: "12px 14px", borderRadius: "var(--radius-lg)", border: `1px solid ${medical.priorInjections ? "rgba(197,160,89,0.4)" : "var(--border)"}`, background: medical.priorInjections ? "rgba(197,160,89,0.06)" : "var(--bg-subtle)" }}>
+                <div style={{ position: "relative" }}>
+                  <input type="checkbox" checked={medical.priorInjections} onChange={e => setMedical(m => ({ ...m, priorInjections: e.target.checked }))} style={{ position: "absolute", opacity: 0, width: 0, height: 0 }} />
+                  <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${medical.priorInjections ? "var(--gold)" : "var(--border)"}`, background: medical.priorInjections ? "var(--gold)" : "white", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }}>
+                    {medical.priorInjections && <svg width="11" height="9" viewBox="0 0 11 9" fill="none"><path d="M1 4L4 7L10 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                  </div>
+                </div>
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 600, fontFamily: "var(--font-serif)", color: "var(--text-primary)", margin: 0 }}>Had Prior Injectable Treatments</p>
+                  <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>Botox, fillers, or other injectables</p>
+                </div>
+              </label>
+            </div>
+          )}
+
+          {/* ── Footer ── */}
+          <div style={{ padding: "16px 28px 24px", borderTop: "1px solid var(--border)", background: "#FDFCF9", flexShrink: 0 }}>
+
+            {/* Send intake toggle */}
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 14px", borderRadius: "var(--radius-lg)", border: `1px solid ${basic.sendIntake ? "rgba(197,160,89,0.4)" : "var(--border)"}`, background: basic.sendIntake ? "rgba(197,160,89,0.06)" : "var(--bg-subtle)", cursor: "pointer", marginBottom: 14, transition: "all 0.2s" }}>
               <div style={{ position: "relative", flexShrink: 0, marginTop: 1 }}>
-                <input
-                  type="checkbox"
-                  checked={form.sendIntake}
-                  onChange={e => setForm(f => ({ ...f, sendIntake: e.target.checked }))}
-                  style={{ position: "absolute", opacity: 0, width: 0, height: 0 }}
-                />
-                <div
-                  style={{
-                    width: 20,
-                    height: 20,
-                    borderRadius: 6,
-                    border: form.sendIntake
-                      ? "2px solid var(--gold)"
-                      : "2px solid var(--border)",
-                    background: form.sendIntake ? "var(--gold)" : "white",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    transition: "all 0.18s",
-                  }}
-                >
-                  {form.sendIntake && (
-                    <svg width="11" height="9" viewBox="0 0 11 9" fill="none">
-                      <path d="M1 4L4 7L10 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  )}
+                <input type="checkbox" checked={basic.sendIntake} onChange={e => setBasic(b => ({ ...b, sendIntake: e.target.checked }))} style={{ position: "absolute", opacity: 0, width: 0, height: 0 }} />
+                <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${basic.sendIntake ? "var(--gold)" : "var(--border)"}`, background: basic.sendIntake ? "var(--gold)" : "white", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }}>
+                  {basic.sendIntake && <svg width="11" height="9" viewBox="0 0 11 9" fill="none"><path d="M1 4L4 7L10 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>}
                 </div>
               </div>
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <Send size={13} color={form.sendIntake ? "var(--gold)" : "var(--text-muted)"} />
-                  <span
-                    style={{
-                      fontSize: 13,
-                      fontWeight: 600,
-                      fontFamily: "Georgia, serif",
-                      color: form.sendIntake ? "var(--foreground)" : "var(--text-muted)",
-                    }}
-                  >
-                    Send Digital Intake Form
-                  </span>
+                  <Send size={13} color={basic.sendIntake ? "var(--gold)" : "var(--text-muted)"} />
+                  <span style={{ fontSize: 13, fontWeight: 600, fontFamily: "var(--font-serif)", color: basic.sendIntake ? "var(--text-primary)" : "var(--text-muted)" }}>Send Digital Intake Form</span>
                 </div>
-                <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 3, lineHeight: 1.5 }}>
-                  Patient receives a secure link to complete health history, consent forms, and upload a photo ID before their visit.
-                </p>
+                <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 3, lineHeight: 1.5 }}>Patient receives a secure link to complete health history and consent forms.</p>
               </div>
             </label>
 
-            {/* Inline error */}
             {errorMsg && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 8,
-                  padding: "10px 14px",
-                  borderRadius: 10,
-                  background: "rgba(180,60,60,0.07)",
-                  border: "1px solid rgba(180,60,60,0.25)",
-                  marginBottom: 12,
-                }}
-              >
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 14px", borderRadius: 10, background: "rgba(180,60,60,0.07)", border: "1px solid rgba(180,60,60,0.25)", marginBottom: 12 }}>
                 <AlertCircle size={15} color="#B43C3C" style={{ flexShrink: 0, marginTop: 1 }} />
-                <p style={{ fontSize: 12, color: "#B43C3C", margin: 0, lineHeight: 1.5 }}>
-                  {errorMsg}
-                </p>
+                <p style={{ fontSize: 12, color: "#B43C3C", margin: 0, lineHeight: 1.5 }}>{errorMsg}</p>
               </div>
             )}
 
-            {/* Submit button */}
-            <button
-              type="submit"
-              disabled={submitState !== "idle" || !isFormValid}
-              style={{
-                width: "100%",
-                padding: "13px 0",
-                borderRadius: 14,
-                fontSize: 14,
-                fontWeight: 600,
-                fontFamily: "Georgia, serif",
-                border: "none",
-                cursor: submitState !== "idle" || !isFormValid ? "not-allowed" : "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
+            <div style={{ display: "flex", gap: 10 }}>
+              {tab === "medical" && (
+                <button type="button" onClick={() => setTab("basic")} style={{ flex: "0 0 100px", padding: "11px 0", borderRadius: "var(--radius-lg)", fontSize: 13, fontWeight: 600, border: "1px solid var(--border)", background: "var(--bg-subtle)", color: "var(--text-secondary)", cursor: "pointer" }}>
+                  ← Back
+                </button>
+              )}
+              {tab === "basic" && (
+                <button type="button" disabled={!isBasicValid} onClick={() => setTab("medical")} style={{ flex: "0 0 130px", padding: "11px 0", borderRadius: "var(--radius-lg)", fontSize: 13, fontWeight: 600, border: "1px solid rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.08)", color: "var(--gold)", cursor: isBasicValid ? "pointer" : "not-allowed", opacity: isBasicValid ? 1 : 0.5 }}>
+                  Medical Info →
+                </button>
+              )}
+              <button type="submit" disabled={submitState !== "idle" || !isBasicValid} style={{
+                flex: 1, padding: "11px 0", borderRadius: "var(--radius-lg)", fontSize: 14, fontWeight: 600,
+                fontFamily: "var(--font-serif)", border: "none",
+                cursor: submitState !== "idle" || !isBasicValid ? "not-allowed" : "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                background: submitState === "success" ? "linear-gradient(135deg,#6B8A5A,#5A7A48)" : "linear-gradient(135deg,#C5A059,#A8853A)",
+                color: "white", opacity: submitState === "idle" && !isBasicValid ? 0.5 : 1,
                 transition: "all 0.25s",
-                background:
-                  submitState === "success"
-                    ? "linear-gradient(135deg, #6B8A5A, #5A7A48)"
-                    : "linear-gradient(135deg, #C5A059, #A8853A)",
-                color: "white",
-                opacity: submitState === "idle" && !isFormValid ? 0.5 : 1,
-              }}
-            >
-              {submitState === "idle" && (
-                <>
-                  <Sparkles size={15} />
-                  Register Patient
-                  {form.sendIntake && (
-                    <span style={{ opacity: 0.8, fontSize: 12 }}>· Send Intake</span>
-                  )}
-                </>
-              )}
-              {submitState === "loading" && (
-                <>
-                  <Loader2 size={15} style={{ animation: "spin 1s linear infinite" }} />
-                  Saving to Supabase…
-                </>
-              )}
-              {submitState === "success" && (
-                <>
-                  <CheckCircle2 size={15} />
-                  Patient Registered!
-                </>
-              )}
-            </button>
+              }}>
+                {submitState === "idle" && <><Sparkles size={14} /> Register Patient</>}
+                {submitState === "loading" && <><Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> Saving…</>}
+                {submitState === "success" && <><CheckCircle2 size={14} /> Registered!</>}
+              </button>
+            </div>
 
             <p style={{ fontSize: 11, textAlign: "center", color: "var(--text-muted)", marginTop: 10 }}>
-              Record will appear in Patient Records instantly.
+              A unique referral code is auto-generated for this patient.
             </p>
           </div>
         </form>
       </aside>
-
-      <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      `}</style>
     </>,
     document.body
   );
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-const labelStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 5,
-  fontSize: 11,
-  fontWeight: 600,
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-  color: "var(--text-muted)",
-  marginBottom: 7,
-};
-
-function Required() {
-  return <span style={{ color: "var(--gold)", fontSize: 13, lineHeight: 1 }}>*</span>;
-}
-
-function formatPhone(raw: string): string {
-  const digits = raw.replace(/\D/g, "").slice(0, 10);
-  if (!digits) return "";
-  if (digits.length < 4) return `(${digits}`;
-  if (digits.length < 7) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
-  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
