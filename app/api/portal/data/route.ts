@@ -30,8 +30,8 @@ export async function GET(req: NextRequest) {
 
     const { patient_id: patientId, clinic_id: clinicId } = session;
 
-    // Fetch patient + appointments + invoices + wallet
-    const [patientRes, apptRes, invoiceRes, walletRes, loyaltyRes] = await Promise.all([
+    // Fetch patient + appointments + invoices + wallet + loyalty + photos
+    const [patientRes, apptRes, invoiceRes, walletRes, loyaltyRes, photosRes] = await Promise.all([
       supabaseAdmin.from("patients").select("id, full_name, phone, email, date_of_birth, wallet_balance").eq("id", patientId).single(),
       supabaseAdmin.from("appointments")
         .select("id, start_time, end_time, status, service_name, notes, profiles!provider_id(full_name)")
@@ -53,6 +53,13 @@ export async function GET(req: NextRequest) {
         .order("created_at", { ascending: false })
         .limit(20),
       supabaseAdmin.rpc("get_patient_loyalty", { p_patient_id: patientId, p_clinic_id: clinicId }).single(),
+      supabaseAdmin.from("clinical_encounters")
+        .select("id, created_at, photos")
+        .eq("patient_id", patientId)
+        .eq("clinic_id", clinicId)
+        .not("photos", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(10),
     ]);
 
     return NextResponse.json({
@@ -64,6 +71,7 @@ export async function GET(req: NextRequest) {
         balance:      patientRes.data?.wallet_balance ?? 0,
       },
       loyalty: loyaltyRes.data ?? { balance: 0, tier: "Bronze", color: "#CD7F32" },
+      photos:  photosRes.data ?? [],
     });
   } catch (e) {
     console.error("portal/data error:", e);

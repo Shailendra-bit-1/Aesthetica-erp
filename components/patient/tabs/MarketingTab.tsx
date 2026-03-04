@@ -123,7 +123,17 @@ export default function MarketingTab({ patient, clinicId }: Props) {
     if (feedbackRating >= 4) {
       toast.success("Great feedback! Share it on Google.", { description: "Consider asking the patient to leave a Google review.", duration: 5000 });
     } else {
-      toast.warning("Feedback flagged for review", { description: "A staff member will follow up with this patient." });
+      // C10: insert admin notification for negative feedback
+      supabase.from("notifications").insert({
+        clinic_id:   clinicId,
+        type:        "feedback",
+        title:       "Negative feedback received",
+        body:        `${patient.full_name} rated ${feedbackRating}/5${feedbackComment.trim() ? ` — "${feedbackComment.trim().slice(0, 60)}"` : ""}`,
+        entity_type: "patient",
+        action_url:  `/patients/${patient.id}`,
+        is_read:     false,
+      }).then(() => {});
+      toast.warning("Feedback flagged — admin notified", { description: "A notification has been sent for follow-up." });
     }
   };
 

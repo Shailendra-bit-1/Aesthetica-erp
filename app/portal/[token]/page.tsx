@@ -6,7 +6,7 @@ import {
   Sparkles, Calendar, FileText, Wallet, Trophy, LogOut,
   Clock, CheckCircle, XCircle, AlertCircle, ChevronRight,
   CreditCard, ArrowDownCircle, ArrowUpCircle, Star,
-  ClipboardList, ChevronDown, Loader2,
+  ClipboardList, ChevronDown, Loader2, ImageIcon,
 } from "lucide-react";
 
 /* ─── Types ─────────────────────────────────────────────── */
@@ -54,12 +54,19 @@ interface LoyaltyData {
   color: string;
 }
 
+interface EncounterPhotos {
+  id: string;
+  created_at: string;
+  photos: Array<{ url: string; type?: string }> | null;
+}
+
 interface PortalData {
   patient: PortalPatient;
   appointments: PortalAppointment[];
   invoices: PortalInvoice[];
   wallet: { transactions: WalletTransaction[]; balance: number };
   loyalty: LoyaltyData;
+  photos: EncounterPhotos[];
 }
 
 interface FormField {
@@ -126,7 +133,7 @@ export default function PortalDashboard() {
 
   const [data,    setData]    = useState<PortalData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab,     setTab]     = useState<"appointments" | "billing" | "wallet" | "forms">("appointments");
+  const [tab,     setTab]     = useState<"appointments" | "billing" | "wallet" | "forms" | "photos">("appointments");
   const [apptFilter, setApptFilter] = useState<"upcoming" | "past">("upcoming");
 
   // F3: Forms state
@@ -204,7 +211,7 @@ export default function PortalDashboard() {
 
   if (!data) return null;
 
-  const { patient, appointments, invoices, wallet, loyalty } = data;
+  const { patient, appointments, invoices, wallet, loyalty, photos } = data;
   const tierStyle = TIER_STYLES[loyalty.tier] ?? TIER_STYLES.Bronze;
 
   const now = new Date();
@@ -268,17 +275,17 @@ export default function PortalDashboard() {
         </div>
 
         {/* ── Tabs ── */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-          {(["appointments", "billing", "wallet", "forms"] as const).map(t => (
+        <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+          {(["appointments", "billing", "wallet", "forms", "photos"] as const).map(t => (
             <button key={t} onClick={() => { setTab(t); if (t === "forms") fetchForms(); }}
               style={{
-                flex: 1, padding: "9px 4px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600,
+                flex: "1 1 auto", padding: "9px 4px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600,
                 background: tab === t ? "#1a1714" : "#fff",
                 color:      tab === t ? "#fff"    : "#6b7280",
                 boxShadow:  tab === t ? "none"    : "0 1px 4px rgba(0,0,0,0.06)",
                 transition: "all 0.15s",
               }}>
-              {t === "appointments" ? "Appointments" : t === "billing" ? "Billing" : t === "wallet" ? "Wallet & Points" : "Forms"}
+              {t === "appointments" ? "Appts" : t === "billing" ? "Billing" : t === "wallet" ? "Wallet" : t === "photos" ? "Photos" : "Forms"}
             </button>
           ))}
         </div>
@@ -640,6 +647,44 @@ export default function PortalDashboard() {
                           </button>
                         </div>
                       )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── Photos Tab (D9) ─── */}
+        {tab === "photos" && (
+          <div>
+            {photos.length === 0 ? (
+              <div style={{ background: "#fff", borderRadius: 14, padding: 40, textAlign: "center", border: "1px solid #f3f4f6" }}>
+                <ImageIcon size={28} color="#d1d5db" style={{ margin: "0 auto 10px" }} />
+                <p style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 4 }}>No photos shared yet</p>
+                <p style={{ fontSize: 12, color: "#9ca3af" }}>Treatment photos will appear here once your clinic shares them.</p>
+              </div>
+            ) : (
+              <div>
+                {photos.map(enc => {
+                  const photoList = enc.photos ?? [];
+                  if (photoList.length === 0) return null;
+                  return (
+                    <div key={enc.id} style={{ marginBottom: 20 }}>
+                      <p style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                        {fmt(enc.created_at)}
+                      </p>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8 }}>
+                        {photoList.map((photo, idx) => (
+                          <div key={idx} style={{ borderRadius: 12, overflow: "hidden", aspectRatio: "1/1", background: "#f3f4f6", border: "1px solid #e5e7eb" }}>
+                            <img
+                              src={photo.url}
+                              alt={photo.type ?? `Photo ${idx + 1}`}
+                              style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                            />
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   );
                 })}
