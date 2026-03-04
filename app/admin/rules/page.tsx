@@ -312,6 +312,11 @@ const CATEGORY_COLORS: Record<string, { bg: string; color: string; label: string
   lead_management: { bg: "rgba(59,130,246,0.1)",  color: "#2563EB", label: "Lead Mgmt"      },
   billing:         { bg: "rgba(220,38,38,0.1)",   color: "#DC2626", label: "Billing"        },
   staff_alert:     { bg: "rgba(234,179,8,0.1)",   color: "#ca8a04", label: "Staff Alert"    },
+  inventory:       { bg: "rgba(249,115,22,0.1)",  color: "#EA580C", label: "Inventory"      },
+  membership:      { bg: "rgba(139,92,246,0.1)",  color: "#7C3AED", label: "Membership"     },
+  counselling:     { bg: "rgba(20,184,166,0.1)",  color: "#0D9488", label: "Counselling"    },
+  staff_hr:        { bg: "rgba(245,158,11,0.1)",  color: "#D97706", label: "Staff HR"       },
+  intake:          { bg: "rgba(99,102,241,0.1)",  color: "#4F46E5", label: "Intake & Forms" },
 };
 
 const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
@@ -510,6 +515,249 @@ const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
     category: "staff_alert", trigger_event: "appointment.completed", is_featured: false,
     conditions: [{ field_path: "no_booking_after", operator: "eq", value: { v: "true" }, logic_op: "AND" }],
     actions: [{ action_type: "nudge_staff", params: { role: "counsellor", message: "{patient_name} did not rebook after consultation. Please follow up within 24h." }, on_failure: "continue" }],
+  },
+
+  // ── Inventory (bt-026–030) ─────────────────────────────────────────────────
+  {
+    id: "bt-026", name: "Critical Stock Alert",
+    description: "Alert clinic admin and WhatsApp notify when any product reaches critical low stock",
+    category: "inventory", trigger_event: "inventory.low_stock", is_featured: true,
+    conditions: [{ field_path: "product.quantity", operator: "lt", value: { v: "5" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "clinic_admin", message: "CRITICAL: {product_name} has only {quantity} units left. Immediate reorder required!" }, on_failure: "dlq_notify" },
+      { action_type: "send_whatsapp", params: { message: "⚠️ Critical stock alert at {clinic_name}: {product_name} is almost out. Reorder now to avoid treatment delays." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-027", name: "Product Expiry Warning (30d)",
+    description: "Alert clinic admin 30 days before product batch expires",
+    category: "inventory", trigger_event: "inventory.low_stock", is_featured: false,
+    conditions: [{ field_path: "product.days_to_expiry", operator: "lt", value: { v: "30" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "clinic_admin", message: "Expiry warning: {product_name} expires in less than 30 days. Please plan usage or arrange return." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-028", name: "Auto-Reorder Task",
+    description: "Create a reorder task assigned to clinic admin when stock drops below threshold",
+    category: "inventory", trigger_event: "inventory.low_stock", is_featured: false,
+    conditions: [{ field_path: "product.quantity", operator: "lt", value: { v: "10" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "create_task", params: { title: "Reorder low stock items", assigned_role: "clinic_admin", priority: "high", due_days: 2 }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-029", name: "Dead Stock Alert",
+    description: "Notify admin when a product has had no usage for 60+ days",
+    category: "inventory", trigger_event: "inventory.low_stock", is_featured: false,
+    conditions: [{ field_path: "product.days_since_last_use", operator: "gt", value: { v: "60" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "clinic_admin", message: "Dead stock alert: {product_name} has not been used in 60+ days. Consider promoting or returning it." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-030", name: "Stock Replenished — Notify Team",
+    description: "Notify front desk when a previously low-stock item is replenished",
+    category: "inventory", trigger_event: "inventory.low_stock", is_featured: false,
+    conditions: [{ field_path: "product.quantity", operator: "gt", value: { v: "20" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "front_desk", message: "Stock update: {product_name} has been replenished. Available for bookings again." }, on_failure: "continue" },
+    ],
+  },
+
+  // ── Membership (bt-031–035) ────────────────────────────────────────────────
+  {
+    id: "bt-031", name: "New Membership Welcome",
+    description: "Welcome new member with WhatsApp + alert front desk to deliver membership kit",
+    category: "membership", trigger_event: "membership.assigned", is_featured: true,
+    conditions: [],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Welcome to the {clinic_name} family, {patient_name}! 🎉 Your membership is now active. Enjoy priority booking, exclusive discounts, and member-only events. We're thrilled to have you!" }, on_failure: "continue" },
+      { action_type: "nudge_staff", params: { role: "front_desk", message: "New member: {patient_name}. Please prepare the membership welcome kit and update their profile." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-032", name: "Membership Tier Upgrade Congrats",
+    description: "Congratulate patient when they upgrade to a higher membership tier",
+    category: "membership", trigger_event: "membership.assigned", is_featured: false,
+    conditions: [{ field_path: "membership.is_upgrade", operator: "eq", value: { v: "true" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Congratulations {patient_name}! 🌟 You've been upgraded to our premium membership tier at {clinic_name}. Your enhanced benefits are now active. Thank you for your loyalty!" }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-033", name: "Membership Renewal Due (14d)",
+    description: "Send WhatsApp + email renewal reminder 14 days before membership expires",
+    category: "membership", trigger_event: "membership.expiring", is_featured: true,
+    conditions: [{ field_path: "membership.days_until_expiry", operator: "lt", value: { v: "14" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Hi {patient_name}! Your {clinic_name} membership expires in 14 days. Renew now to keep your benefits uninterrupted. Reply RENEW or visit us. 💫" }, on_failure: "continue" },
+      { action_type: "send_email", params: { subject: "Your Membership Renewal is Due — {clinic_name}", body: "Dear {patient_name},\n\nYour membership at {clinic_name} expires in 14 days. Renew early to maintain continuous access to priority booking and member discounts.\n\nWarm regards,\n{clinic_name}" }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-034", name: "Membership Paused Confirmation",
+    description: "Confirm membership pause with WhatsApp and advise on resume process",
+    category: "membership", trigger_event: "membership.expiring", is_featured: false,
+    conditions: [{ field_path: "membership.status", operator: "eq", value: { v: "paused" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Hi {patient_name}, your membership at {clinic_name} has been paused as requested. Your benefits will resume once reactivated. Contact us anytime to restart. 🙏" }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-035", name: "Membership Anniversary Offer",
+    description: "Send a loyalty reward WhatsApp on the member's 1-year anniversary",
+    category: "membership", trigger_event: "membership.assigned", is_featured: false,
+    conditions: [{ field_path: "membership.years_active", operator: "eq", value: { v: "1" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Happy 1-year anniversary {patient_name}! 🎂 To celebrate your loyalty at {clinic_name}, enjoy a complimentary upgrade on your next treatment. You're the reason we shine!" }, on_failure: "continue" },
+    ],
+  },
+
+  // ── Counselling (bt-036–040) ───────────────────────────────────────────────
+  {
+    id: "bt-036", name: "Session Booked — Counsellor Alert",
+    description: "Instantly alert counsellor when a counselling appointment is booked",
+    category: "counselling", trigger_event: "appointment.booked", is_featured: false,
+    conditions: [{ field_path: "appointment.type", operator: "eq", value: { v: "counselling" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "counsellor", message: "Counselling session booked: {patient_name} on {appointment_date}. Please review their history and prepare treatment proposals." }, on_failure: "dlq_notify" },
+    ],
+  },
+  {
+    id: "bt-037", name: "Post-Session WhatsApp (48h)",
+    description: "Send follow-up WhatsApp 48h after counselling session with summary and next steps",
+    category: "counselling", trigger_event: "appointment.completed", is_featured: false,
+    conditions: [{ field_path: "appointment.type", operator: "eq", value: { v: "counselling" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Hi {patient_name}, thank you for your counselling session at {clinic_name}! 💙 We hope you found it helpful. Your personalised treatment plan has been prepared. Reply PLAN to receive it or call us to book your first session." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-038", name: "Non-Converted Lead (7d)",
+    description: "Alert counsellor + send SMS when a lead hasn't converted in 7 days",
+    category: "counselling", trigger_event: "lead.created", is_featured: false,
+    conditions: [{ field_path: "lead.days_since_created", operator: "gt", value: { v: "7" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "counsellor", message: "Lead {patient_name} has not converted in 7 days. Please reach out with a tailored offer." }, on_failure: "continue" },
+      { action_type: "send_sms", params: { message: "Hi {patient_name}, still thinking about it? Book a free consultation at {clinic_name} — our specialists are ready for you. Reply YES!" }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-039", name: "Partial Conversion Follow-Up",
+    description: "Follow up on remaining treatments after partial counselling conversion",
+    category: "counselling", trigger_event: "appointment.completed", is_featured: false,
+    conditions: [{ field_path: "counselling.conversion_status", operator: "eq", value: { v: "partial" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Hi {patient_name}! 👋 You've started your treatment journey at {clinic_name}. We noticed you still have some recommended treatments pending. Book them today for best results! Reply BOOK." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-040", name: "Conversion Milestone Alert",
+    description: "Alert doctor + congratulate patient when a counselled treatment invoice is paid",
+    category: "counselling", trigger_event: "invoice.paid", is_featured: false,
+    conditions: [{ field_path: "invoice.source", operator: "eq", value: { v: "counselling" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "doctor", message: "Conversion milestone: {patient_name} paid for counselled treatment. Please schedule their first session." }, on_failure: "continue" },
+      { action_type: "send_whatsapp", params: { message: "Wonderful news {patient_name}! 🌟 Your treatment journey at {clinic_name} officially begins. Our team will contact you shortly to schedule your first session." }, on_failure: "continue" },
+    ],
+  },
+
+  // ── Staff HR (bt-041–045) ──────────────────────────────────────────────────
+  {
+    id: "bt-041", name: "Leave Request Received",
+    description: "Instantly alert clinic admin when a staff member submits a leave request",
+    category: "staff_hr", trigger_event: "staff.leave_requested", is_featured: true,
+    conditions: [],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "clinic_admin", message: "Leave request: {staff_name} has requested leave from {from_date} to {to_date} ({leave_type}). Please review and approve." }, on_failure: "dlq_notify" },
+    ],
+  },
+  {
+    id: "bt-042", name: "Leave Approved — Cover Arrangement",
+    description: "Alert front desk to arrange cover when a staff leave is approved",
+    category: "staff_hr", trigger_event: "staff.leave_approved", is_featured: false,
+    conditions: [],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "front_desk", message: "Leave approved: {staff_name} will be absent from {from_date} to {to_date}. Please arrange coverage and update the appointment schedule." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-043", name: "Staff Late Arrival Alert",
+    description: "Alert clinic admin when a staff member clocks in 30+ minutes late",
+    category: "staff_hr", trigger_event: "appointment.booked", is_featured: false,
+    conditions: [{ field_path: "attendance.minutes_late", operator: "gt", value: { v: "30" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "clinic_admin", message: "Late arrival: {staff_name} clocked in {minutes_late} minutes late today. Please address if this is recurring." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-044", name: "Absent Without Leave Alert",
+    description: "Alert clinic admin and create task when staff is absent without approved leave",
+    category: "staff_hr", trigger_event: "appointment.booked", is_featured: false,
+    conditions: [{ field_path: "attendance.status", operator: "eq", value: { v: "absent_no_leave" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "clinic_admin", message: "AWOL alert: {staff_name} is absent today without approved leave. Patients may be affected — please take action." }, on_failure: "dlq_notify" },
+      { action_type: "create_task", params: { title: "Follow up on unexcused absence", assigned_role: "clinic_admin", priority: "high", due_days: 1 }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-045", name: "Payroll Run Ready for Approval",
+    description: "Alert clinic admin when a payroll run is generated and awaiting approval",
+    category: "staff_hr", trigger_event: "payroll.run_approved", is_featured: false,
+    conditions: [{ field_path: "payroll.status", operator: "eq", value: { v: "draft" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "clinic_admin", message: "Payroll run for {period_start}–{period_end} is ready for your review and approval. Total: ₹{total_net}." }, on_failure: "dlq_notify" },
+    ],
+  },
+
+  // ── Intake & Forms (bt-046–050) ────────────────────────────────────────────
+  {
+    id: "bt-046", name: "Intake Form Submitted",
+    description: "Alert front desk and doctor when a patient submits their intake form",
+    category: "intake", trigger_event: "form.submitted", is_featured: true,
+    conditions: [{ field_path: "form.type", operator: "eq", value: { v: "intake" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "front_desk", message: "Intake form submitted by {patient_name}. Please review and prepare for their appointment." }, on_failure: "continue" },
+      { action_type: "nudge_staff", params: { role: "doctor", message: "Intake form ready: {patient_name} has submitted their pre-consultation intake. Review before their appointment." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-047", name: "Consent Form Signed",
+    description: "Notify doctor when a patient signs their consent form before treatment",
+    category: "intake", trigger_event: "form.submitted", is_featured: false,
+    conditions: [{ field_path: "form.type", operator: "eq", value: { v: "consent" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "doctor", message: "Consent form signed by {patient_name}. You are cleared to proceed with the treatment." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-048", name: "Intake Incomplete Reminder (24h)",
+    description: "Send WhatsApp with portal link if patient hasn't completed intake 24h after registration",
+    category: "intake", trigger_event: "patient.created", is_featured: false,
+    conditions: [{ field_path: "intake.completed", operator: "eq", value: { v: "false" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Hi {patient_name}! We noticed your intake form at {clinic_name} is incomplete. Please complete it before your visit: {portal_link} — it only takes 2 minutes! 📋" }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-049", name: "New Patient Digital Welcome",
+    description: "Send welcome WhatsApp with portal link + alert front desk for new patient setup",
+    category: "intake", trigger_event: "patient.created", is_featured: true,
+    conditions: [],
+    actions: [
+      { action_type: "send_whatsapp", params: { message: "Welcome to {clinic_name}, {patient_name}! 🌿 We're so excited to have you. Complete your digital intake form before your visit: {portal_link}. Our team will reach out shortly." }, on_failure: "continue" },
+      { action_type: "nudge_staff", params: { role: "front_desk", message: "New patient registered: {patient_name}. Please call to confirm their first appointment and ensure intake form is sent." }, on_failure: "continue" },
+    ],
+  },
+  {
+    id: "bt-050", name: "Post-Intake Counselling Prompt",
+    description: "Prompt counsellor to reach out after patient submits intake with high-interest treatments",
+    category: "intake", trigger_event: "form.submitted", is_featured: false,
+    conditions: [{ field_path: "form.type", operator: "eq", value: { v: "intake" }, logic_op: "AND" }],
+    actions: [
+      { action_type: "nudge_staff", params: { role: "counsellor", message: "New intake from {patient_name}. They've indicated interest in {primary_concern}. Please schedule a counselling session." }, on_failure: "continue" },
+    ],
   },
 ];
 
