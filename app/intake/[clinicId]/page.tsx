@@ -80,6 +80,7 @@ function IntakePageInner() {
   const searchParams = useSearchParams();
   const clinicId     = params.clinicId as string;
   const formId       = searchParams.get("form");
+  const refCode      = searchParams.get("ref");
 
   // Remote data
   const [clinic,     setClinic]     = useState<ClinicInfo | null>(null);
@@ -103,6 +104,10 @@ function IntakePageInner() {
   // Dynamic form state (B2/B3 fix)
   const [formDef,       setFormDef]       = useState<FormDefinition | null>(null);
   const [dynamicValues, setDynamicValues] = useState<Record<string, string | string[] | boolean>>({});
+
+  // N12: Custom field definitions
+  const [customFieldDefs, setCustomFieldDefs] = useState<Array<{ id: string; field_key: string; field_label: string; field_type: string; options: string[] | null; validation: { required?: boolean } | null }>>([]);
+  const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
 
   // Submit state
   const [submitting, setSubmitting] = useState(false);
@@ -128,6 +133,19 @@ function IntakePageInner() {
   }, [clinicId]);
 
   useEffect(() => { fetchClinic(); }, [fetchClinic]);
+
+  // N12: Fetch clinic's custom field definitions for patients
+  useEffect(() => {
+    if (!clinicId) return;
+    fetch(`/api/intake/clinic/${clinicId}`)
+      .then(() => {}) // already handled by fetchClinic
+      .catch(() => {});
+    // Fetch custom fields directly from public API
+    fetch(`/api/intake/custom-fields?clinicId=${clinicId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (Array.isArray(data?.fields)) setCustomFieldDefs(data.fields); })
+      .catch(() => {});
+  }, [clinicId]);
 
   // Fetch dynamic form definition if ?form= param present (B2/B3 fix)
   useEffect(() => {
@@ -203,6 +221,8 @@ function IntakePageInner() {
           lastInjectionDate:      showInjectionHistory && hadBotoxBefore ? lastInjectionDate      : undefined,
           injectionComplications: showInjectionHistory && hadBotoxBefore ? injectionComplications : undefined,
           notes: notes.trim() || undefined,
+          customFields: Object.keys(customFieldValues).length > 0 ? customFieldValues : undefined,
+          referralCode: refCode || undefined,
         };
       }
 
@@ -643,6 +663,39 @@ function IntakePageInner() {
 
               </> /* end default form else */
               )} {/* end formDef ternary */}
+
+              {/* N12: Custom fields from clinic config */}
+              {!formDef && customFieldDefs.length > 0 && (
+                <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(197,160,89,0.12)" }}>
+                  <p style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#9CA3AF", marginBottom: 12 }}>
+                    Additional Information
+                  </p>
+                  {customFieldDefs.map(cf => (
+                    <div key={cf.id} style={{ marginBottom: 14 }}>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#4b5563", marginBottom: 6 }}>
+                        {cf.field_label}{cf.validation?.required ? " *" : ""}
+                      </label>
+                      {cf.field_type === "select" && cf.options ? (
+                        <select value={customFieldValues[cf.field_key] ?? ""}
+                          onChange={e => setCustomFieldValues(v => ({ ...v, [cf.field_key]: e.target.value }))}
+                          style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", fontSize: 14, background: "#fff", color: "#1a1714", outline: "none" }}>
+                          <option value="">Select…</option>
+                          {cf.options.map(o => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      ) : cf.field_type === "textarea" ? (
+                        <textarea rows={3} value={customFieldValues[cf.field_key] ?? ""}
+                          onChange={e => setCustomFieldValues(v => ({ ...v, [cf.field_key]: e.target.value }))}
+                          style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", fontSize: 14, background: "#fff", color: "#1a1714", outline: "none", resize: "none", boxSizing: "border-box" }} />
+                      ) : (
+                        <input type={cf.field_type === "number" ? "number" : "text"}
+                          value={customFieldValues[cf.field_key] ?? ""}
+                          onChange={e => setCustomFieldValues(v => ({ ...v, [cf.field_key]: e.target.value }))}
+                          style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", fontSize: 14, background: "#fff", color: "#1a1714", outline: "none", boxSizing: "border-box" }} />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
 
             </div>
 

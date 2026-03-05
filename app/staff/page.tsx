@@ -6,8 +6,9 @@ import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
 import {
   UserCheck2, ChevronLeft, ChevronRight, Download,
-  Plus, X, Check, Clock, AlertCircle, BarChart3, TrendingUp, IndianRupee,
+  Plus, X, Check, Clock, AlertCircle, BarChart3, TrendingUp, IndianRupee, UserPlus, Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 
 type AttendanceStatus = "present" | "absent" | "half_day" | "late" | "on_leave";
 type LeaveType = "casual" | "sick" | "earned" | "unpaid" | "other";
@@ -96,6 +97,9 @@ export default function StaffHRPage() {
   const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
   const [leaveDrawer, setLeaveDrawer] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [inviteDrawer, setInviteDrawer] = useState(false);
+  const [inviteForm, setInviteForm] = useState({ name: "", email: "", role: "front_desk" as string });
+  const [inviting, setInviting] = useState(false);
   const [leaveForm, setLeaveForm] = useState({
     staff_id: "", leave_type: "casual" as LeaveType, from_date: "", to_date: "", reason: "",
   });
@@ -103,6 +107,26 @@ export default function StaffHRPage() {
 
   const clinicId = activeClinicId || profile?.clinic_id;
   const isAdmin = profile?.role === "clinic_admin" || profile?.role === "chain_admin" || profile?.role === "superadmin";
+
+  const inviteStaff = async () => {
+    if (!clinicId || !inviteForm.name || !inviteForm.email) return;
+    setInviting(true);
+    try {
+      const res = await fetch("/api/admin/invite-staff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: inviteForm.name, email: inviteForm.email, role: inviteForm.role, clinicId }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Failed to invite");
+      toast.success(`Invite sent to ${inviteForm.email}`);
+      setInviteDrawer(false);
+      setInviteForm({ name: "", email: "", role: "front_desk" });
+      fetchStaff();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Invite failed");
+    } finally { setInviting(false); }
+  };
 
   const fetchStaff = useCallback(async () => {
     if (!clinicId) return;
@@ -278,7 +302,16 @@ export default function StaffHRPage() {
         {/* DIRECTORY TAB */}
         {tab === "directory" && (
           <div>
-            <h2 className="text-lg font-semibold mb-5" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Staff Directory</h2>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Staff Directory</h2>
+              {isAdmin && (
+                <button onClick={() => setInviteDrawer(true)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold"
+                  style={{ background: "var(--gold)", color: "#fff", border: "none", cursor: "pointer", fontFamily: "Georgia, serif" }}>
+                  <UserPlus size={14} /> Invite Staff
+                </button>
+              )}
+            </div>
             {loading ? (
               <div className="grid grid-cols-4 gap-4">
                 {[1,2,3,4].map(n => <div key={n} className="h-40 rounded-xl animate-pulse" style={{ background: "rgba(197,160,89,0.06)" }} />)}
@@ -722,6 +755,56 @@ export default function StaffHRPage() {
           </div>
         </div>
       )}
+
+      {/* INVITE STAFF DRAWER */}
+      {inviteDrawer && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "flex-end", justifyContent: "center", background: "rgba(0,0,0,0.5)" }}>
+          <div style={{ background: "#fff", borderRadius: "16px 16px 0 0", width: "100%", maxWidth: 480, border: "1px solid rgba(197,160,89,0.2)", boxShadow: "0 -8px 40px rgba(0,0,0,0.15)" }}>
+            <div className="flex justify-between items-center px-6 py-5" style={{ borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
+              <h3 className="text-lg font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Invite New Staff</h3>
+              <button onClick={() => setInviteDrawer(false)} className="p-2 rounded-lg hover:bg-gray-100"><X size={18} /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Full Name *</label>
+                <input value={inviteForm.name} onChange={e => setInviteForm(f => ({ ...f, name: e.target.value }))}
+                  placeholder="e.g. Dr. Priya Sharma" className="w-full px-3 py-2 rounded-lg border outline-none text-sm"
+                  style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Email Address *</label>
+                <input type="email" value={inviteForm.email} onChange={e => setInviteForm(f => ({ ...f, email: e.target.value }))}
+                  placeholder="priya@clinic.com" className="w-full px-3 py-2 rounded-lg border outline-none text-sm"
+                  style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Role *</label>
+                <select value={inviteForm.role} onChange={e => setInviteForm(f => ({ ...f, role: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border outline-none text-sm bg-white"
+                  style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                  <option value="doctor">Doctor</option>
+                  <option value="therapist">Therapist</option>
+                  <option value="counsellor">Counsellor</option>
+                  <option value="front_desk">Front Desk</option>
+                  <option value="clinic_admin">Clinic Admin</option>
+                </select>
+              </div>
+              <p className="text-xs" style={{ color: "#9ca3af" }}>
+                Staff will receive a password-setup email at the address above.
+              </p>
+            </div>
+            <div className="px-6 py-4 flex gap-3" style={{ borderTop: "1px solid rgba(197,160,89,0.15)" }}>
+              <button onClick={() => setInviteDrawer(false)} className="flex-1 px-4 py-2 rounded-lg text-sm border" style={{ borderColor: "rgba(197,160,89,0.2)", color: "#6b7280" }}>Cancel</button>
+              <button onClick={inviteStaff} disabled={inviting || !inviteForm.name || !inviteForm.email}
+                className="flex-2 flex items-center justify-center gap-2 px-6 py-2 rounded-lg text-sm font-semibold text-white disabled:opacity-50"
+                style={{ background: "var(--gold)", flex: 2 }}>
+                {inviting ? <><Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} /> Sending…</> : <><UserPlus size={13} /> Send Invite</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
     </div>
   );
 }

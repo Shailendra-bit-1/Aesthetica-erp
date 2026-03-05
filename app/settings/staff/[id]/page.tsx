@@ -20,6 +20,10 @@ import {
   TrendingUp,
   DollarSign,
   Star,
+  Banknote,
+  Plus,
+  X,
+  Check,
 } from "lucide-react";
 import {
   ROLE_PERMISSIONS,
@@ -387,6 +391,312 @@ function EarningsTab({ staffId }: { staffId: string }) {
   );
 }
 
+// ── Compensation Tab (N1) ─────────────────────────────────────────────────────
+
+interface AllowanceRow { key: string; label: string; amount: number; }
+
+function CompensationTab({ staffId }: { staffId: string }) {
+  const [basicSalary,  setBasicSalary]  = useState("");
+  const [allowances,   setAllowances]   = useState<AllowanceRow[]>([]);
+  const [deductions,   setDeductions]   = useState<AllowanceRow[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [saving,       setSaving]       = useState(false);
+  const [newAllowKey,  setNewAllowKey]  = useState("");
+  const [newAllowAmt,  setNewAllowAmt]  = useState("");
+  const [newDeductKey, setNewDeductKey] = useState("");
+  const [newDeductAmt, setNewDeductAmt] = useState("");
+
+  useEffect(() => {
+    supabase.from("profiles").select("basic_salary, allowances, deductions").eq("id", staffId).maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          const d = data as any;
+          setBasicSalary(String(d.basic_salary ?? 0));
+          setAllowances(Object.entries(d.allowances ?? {}).map(([key, amount]) => ({ key, label: key, amount: amount as number })));
+          setDeductions(Object.entries(d.deductions ?? {}).map(([key, amount]) => ({ key, label: key, amount: amount as number })));
+        }
+        setLoading(false);
+      });
+  }, [staffId]);
+
+  const toJsonb = (rows: AllowanceRow[]) => rows.reduce<Record<string,number>>((acc, r) => { acc[r.key] = r.amount; return acc; }, {});
+
+  const handleSave = async () => {
+    setSaving(true);
+    const { error } = await supabase.from("profiles").update({
+      basic_salary: parseFloat(basicSalary) || 0,
+      allowances:   toJsonb(allowances),
+      deductions:   toJsonb(deductions),
+    }).eq("id", staffId);
+    setSaving(false);
+    if (error) { toast.error("Failed to save compensation"); return; }
+    toast.success("Compensation saved");
+  };
+
+  const gross = (parseFloat(basicSalary) || 0) + allowances.reduce((s, r) => s + r.amount, 0);
+  const net   = gross - deductions.reduce((s, r) => s + r.amount, 0);
+
+  if (loading) return <div style={{ textAlign: "center", padding: 40 }}><Loader2 size={20} color="#C5A059" style={{ animation: "spin 1s linear infinite" }} /></div>;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Basic salary */}
+      <div className="luxury-card rounded-2xl p-5" style={{ background: "var(--surface)" }}>
+        <p style={{ fontFamily: "Georgia, serif", fontWeight: 600, fontSize: 14, color: "var(--foreground)", marginBottom: 12 }}>Basic Salary</p>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 18, color: "#C5A059" }}>₹</span>
+          <input type="number" value={basicSalary} onChange={e => setBasicSalary(e.target.value)}
+            placeholder="0" style={{ flex: 1, padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.3)", fontSize: 14, outline: "none", background: "var(--surface-warm)" }} />
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>/ month</span>
+        </div>
+      </div>
+
+      {/* Allowances */}
+      <div className="luxury-card rounded-2xl p-5" style={{ background: "var(--surface)" }}>
+        <p style={{ fontFamily: "Georgia, serif", fontWeight: 600, fontSize: 14, color: "var(--foreground)", marginBottom: 12 }}>Allowances</p>
+        {allowances.map((a, i) => (
+          <div key={a.key} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <input value={a.label} onChange={e => setAllowances(prev => prev.map((r,j) => j===i ? {...r, key: e.target.value, label: e.target.value} : r))}
+              placeholder="e.g. HRA" style={{ flex: 2, padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, outline: "none", background: "var(--surface-warm)" }} />
+            <input type="number" value={a.amount} onChange={e => setAllowances(prev => prev.map((r,j) => j===i ? {...r, amount: parseFloat(e.target.value)||0} : r))}
+              placeholder="0" style={{ flex: 1, padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, outline: "none", background: "var(--surface-warm)" }} />
+            <button onClick={() => setAllowances(prev => prev.filter((_,j) => j !== i))} style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid #F3E8E8", background: "rgba(220,38,38,0.06)", color: "#DC2626", cursor: "pointer" }}><X size={13} /></button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <input value={newAllowKey} onChange={e => setNewAllowKey(e.target.value)} placeholder="Allowance name"
+            style={{ flex: 2, padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, outline: "none", background: "var(--surface-warm)" }} />
+          <input type="number" value={newAllowAmt} onChange={e => setNewAllowAmt(e.target.value)} placeholder="Amount"
+            style={{ flex: 1, padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, outline: "none", background: "var(--surface-warm)" }} />
+          <button onClick={() => { if (!newAllowKey || !newAllowAmt) return; setAllowances(prev => [...prev, { key: newAllowKey, label: newAllowKey, amount: parseFloat(newAllowAmt)||0 }]); setNewAllowKey(""); setNewAllowAmt(""); }}
+            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.08)", color: "#C5A059", cursor: "pointer", fontSize: 12 }}>
+            <Plus size={13} />
+          </button>
+        </div>
+      </div>
+
+      {/* Deductions */}
+      <div className="luxury-card rounded-2xl p-5" style={{ background: "var(--surface)" }}>
+        <p style={{ fontFamily: "Georgia, serif", fontWeight: 600, fontSize: 14, color: "var(--foreground)", marginBottom: 12 }}>Deductions</p>
+        {deductions.map((d, i) => (
+          <div key={d.key} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <input value={d.label} onChange={e => setDeductions(prev => prev.map((r,j) => j===i ? {...r, key: e.target.value, label: e.target.value} : r))}
+              placeholder="e.g. PF" style={{ flex: 2, padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, outline: "none", background: "var(--surface-warm)" }} />
+            <input type="number" value={d.amount} onChange={e => setDeductions(prev => prev.map((r,j) => j===i ? {...r, amount: parseFloat(e.target.value)||0} : r))}
+              placeholder="0" style={{ flex: 1, padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, outline: "none", background: "var(--surface-warm)" }} />
+            <button onClick={() => setDeductions(prev => prev.filter((_,j) => j !== i))} style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid #F3E8E8", background: "rgba(220,38,38,0.06)", color: "#DC2626", cursor: "pointer" }}><X size={13} /></button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <input value={newDeductKey} onChange={e => setNewDeductKey(e.target.value)} placeholder="Deduction name"
+            style={{ flex: 2, padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, outline: "none", background: "var(--surface-warm)" }} />
+          <input type="number" value={newDeductAmt} onChange={e => setNewDeductAmt(e.target.value)} placeholder="Amount"
+            style={{ flex: 1, padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, outline: "none", background: "var(--surface-warm)" }} />
+          <button onClick={() => { if (!newDeductKey || !newDeductAmt) return; setDeductions(prev => [...prev, { key: newDeductKey, label: newDeductKey, amount: parseFloat(newDeductAmt)||0 }]); setNewDeductKey(""); setNewDeductAmt(""); }}
+            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.08)", color: "#C5A059", cursor: "pointer", fontSize: 12 }}>
+            <Plus size={13} />
+          </button>
+        </div>
+      </div>
+
+      {/* Summary */}
+      <div className="luxury-card rounded-2xl p-5" style={{ background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.2)" }}>
+        <p style={{ fontFamily: "Georgia, serif", fontWeight: 600, fontSize: 14, color: "var(--foreground)", marginBottom: 10 }}>Monthly Summary</p>
+        {[
+          { label: "Basic Salary",  value: parseFloat(basicSalary) || 0, color: "#1a1714" },
+          { label: "+ Allowances",  value: allowances.reduce((s,r) => s+r.amount,0), color: "#16a34a" },
+          { label: "Gross CTC",     value: gross, color: "#C5A059", bold: true },
+          { label: "- Deductions",  value: deductions.reduce((s,r) => s+r.amount,0), color: "#DC2626" },
+          { label: "Net Take-Home", value: net, color: "#2563eb", bold: true },
+        ].map(row => (
+          <div key={row.label} style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ fontSize: 13, color: "var(--text-muted)" }}>{row.label}</span>
+            <span style={{ fontSize: 13, fontWeight: row.bold ? 700 : 500, color: row.color, fontFamily: "Georgia, serif" }}>₹{row.value.toLocaleString("en-IN")}</span>
+          </div>
+        ))}
+      </div>
+
+      <button onClick={handleSave} disabled={saving}
+        style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "12px 24px", borderRadius: 12, border: "none", background: "#C5A059", color: "#fff", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: saving ? 0.7 : 1 }}>
+        {saving ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Check size={14} />}
+        {saving ? "Saving…" : "Save Compensation"}
+      </button>
+    </div>
+  );
+}
+
+// ── Commission Rates Tab ───────────────────────────────────────────────────────
+
+interface CommissionRate {
+  id: string;
+  service_id: string | null;
+  rate_pct: number;
+  service_name?: string;
+}
+
+function CommissionRatesTab({ staffId, clinicId }: { staffId: string; clinicId: string }) {
+  const [rates, setRates]       = useState<CommissionRate[]>([]);
+  const [services, setServices] = useState<{ id: string; name: string }[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [saving, setSaving]     = useState(false);
+  const [defaultRate, setDefaultRate] = useState("");
+  const [newSvcId, setNewSvcId] = useState("");
+  const [newRate, setNewRate]   = useState("");
+
+  const fmtInr = (n: number) =>
+    new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
+  void fmtInr;
+
+  useEffect(() => {
+    async function load() {
+      const [{ data: rateData }, { data: svcData }] = await Promise.all([
+        supabase
+          .from("provider_commission_rates")
+          .select("id, service_id, rate_pct")
+          .eq("provider_id", staffId)
+          .eq("clinic_id", clinicId),
+        supabase
+          .from("services")
+          .select("id, name")
+          .eq("clinic_id", clinicId)
+          .eq("is_active", true)
+          .order("name"),
+      ]);
+      setServices(svcData ?? []);
+      const mapped = (rateData ?? []).map((r: CommissionRate) => ({
+        ...r,
+        service_name: svcData?.find(s => s.id === r.service_id)?.name,
+      }));
+      setRates(mapped);
+      const def = mapped.find(r => r.service_id === null);
+      if (def) setDefaultRate(String(def.rate_pct));
+      setLoading(false);
+    }
+    load();
+  }, [staffId, clinicId]);
+
+  const saveDefault = async () => {
+    const pct = parseFloat(defaultRate);
+    if (isNaN(pct) || pct < 0 || pct > 100) { toast.error("Enter a valid percentage (0–100)"); return; }
+    setSaving(true);
+    const existing = rates.find(r => r.service_id === null);
+    if (existing) {
+      await supabase.from("provider_commission_rates").update({ rate_pct: pct }).eq("id", existing.id);
+    } else {
+      await supabase.from("provider_commission_rates").insert({
+        clinic_id: clinicId, provider_id: staffId, service_id: null, rate_pct: pct,
+        effective_from: new Date().toISOString().split("T")[0],
+      });
+    }
+    setRates(prev => {
+      const without = prev.filter(r => r.service_id !== null);
+      return [{ id: existing?.id ?? "", service_id: null, rate_pct: pct }, ...without];
+    });
+    toast.success("Default commission rate saved");
+    setSaving(false);
+  };
+
+  const addOverride = async () => {
+    const pct = parseFloat(newRate);
+    if (!newSvcId || isNaN(pct)) { toast.error("Select a service and enter a rate"); return; }
+    if (rates.find(r => r.service_id === newSvcId)) { toast.error("Override already exists for this service"); return; }
+    const { data, error } = await supabase.from("provider_commission_rates").insert({
+      clinic_id: clinicId, provider_id: staffId, service_id: newSvcId, rate_pct: pct,
+      effective_from: new Date().toISOString().split("T")[0],
+    }).select().single();
+    if (error) { toast.error(error.message); return; }
+    const svcName = services.find(s => s.id === newSvcId)?.name;
+    setRates(prev => [...prev, { ...data, service_name: svcName }]);
+    setNewSvcId(""); setNewRate("");
+    toast.success("Service override added");
+  };
+
+  const deleteOverride = async (id: string) => {
+    await supabase.from("provider_commission_rates").delete().eq("id", id);
+    setRates(prev => prev.filter(r => r.id !== id));
+    toast.success("Override removed");
+  };
+
+  if (loading) return (
+    <div style={{ display: "flex", justifyContent: "center", padding: "40px 0" }}>
+      <Loader2 size={22} color="#C5A059" style={{ animation: "spin 1s linear infinite" }} />
+    </div>
+  );
+
+  const defaultEntry = rates.find(r => r.service_id === null);
+  const overrides    = rates.filter(r => r.service_id !== null);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Default rate card */}
+      <div style={{ padding: "20px 24px", borderRadius: 16, background: "#fff", border: "1px solid rgba(197,160,89,0.2)" }}>
+        <p style={{ fontFamily: "Georgia, serif", fontSize: 15, fontWeight: 600, color: "#1A1A1A", marginBottom: 4 }}>Default Commission Rate</p>
+        <p style={{ fontSize: 11, color: "#8A8078", marginBottom: 16 }}>Applied to all sessions unless a per-service override is set</p>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            type="number" min={0} max={100} step={0.5}
+            value={defaultRate}
+            onChange={e => setDefaultRate(e.target.value)}
+            placeholder="e.g. 10"
+            style={{ width: 120, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.35)", fontSize: 14, outline: "none" }}
+          />
+          <span style={{ fontSize: 14, color: "#6b7280" }}>%</span>
+          <button onClick={saveDefault} disabled={saving}
+            style={{ padding: "8px 18px", borderRadius: 8, background: "var(--gold)", color: "#fff", border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+            {saving ? <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} /> : <Check size={13} />}
+            Save
+          </button>
+          {defaultEntry && <span style={{ fontSize: 12, color: "#9CA3AF" }}>Current: {defaultEntry.rate_pct}%</span>}
+        </div>
+      </div>
+
+      {/* Per-service overrides */}
+      <div style={{ padding: "20px 24px", borderRadius: 16, background: "#fff", border: "1px solid rgba(197,160,89,0.2)" }}>
+        <p style={{ fontFamily: "Georgia, serif", fontSize: 15, fontWeight: 600, color: "#1A1A1A", marginBottom: 4 }}>Per-Service Overrides</p>
+        <p style={{ fontSize: 11, color: "#8A8078", marginBottom: 16 }}>Override the default rate for specific services</p>
+
+        {/* Add override row */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          <select value={newSvcId} onChange={e => setNewSvcId(e.target.value)}
+            style={{ flex: 1, minWidth: 160, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.35)", fontSize: 13, outline: "none", background: "#fff" }}>
+            <option value="">Select service…</option>
+            {services.filter(s => !overrides.find(o => o.service_id === s.id)).map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+          <input type="number" min={0} max={100} step={0.5} value={newRate} onChange={e => setNewRate(e.target.value)}
+            placeholder="Rate %"
+            style={{ width: 90, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.35)", fontSize: 13, outline: "none" }} />
+          <button onClick={addOverride}
+            style={{ padding: "8px 14px", borderRadius: 8, background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.3)", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            Add
+          </button>
+        </div>
+
+        {overrides.length === 0 ? (
+          <p style={{ fontSize: 12, color: "#9CA3AF", textAlign: "center", padding: "16px 0" }}>No per-service overrides</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {overrides.map(o => (
+              <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 10, background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.12)" }}>
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1A1A", margin: 0 }}>{o.service_name ?? o.service_id}</p>
+                  <p style={{ fontSize: 11, color: "#8A8078", margin: "2px 0 0" }}>{o.rate_pct}% commission</p>
+                </div>
+                <button onClick={() => deleteOverride(o.id)}
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                  <X size={14} color="#9CA3AF" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <style>{`@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
+    </div>
+  );
+}
+
 export default function StaffPermissionsPage() {
   const params = useParams();
   const staffId = params.id as string;
@@ -414,7 +724,8 @@ export default function StaffPermissionsPage() {
   // savedPerms = what's currently persisted — used to diff for audit log
   const [savedPerms, setSavedPerms] = useState<StaffPermissions>(FULL_PERMISSIONS);
   const [roleDefaults, setRoleDefaults] = useState<StaffPermissions>(FULL_PERMISSIONS);
-  const [activeTab, setActiveTab] = useState<"permissions" | "earnings">("permissions");
+  const [activeTab, setActiveTab] = useState<"permissions" | "earnings" | "commission_rates" | "compensation">("permissions");
+  const [staffClinicId, setStaffClinicId] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -438,11 +749,12 @@ export default function StaffPermissionsPage() {
       // Load staff profile
       const { data: prof } = await supabase
         .from("profiles")
-        .select("id, role, full_name, email")
+        .select("id, role, full_name, email, clinic_id")
         .eq("id", staffId)
         .single();
 
       setProfile(prof ?? { id: staffId, role: "staff", full_name: null, email: null });
+      if (prof?.clinic_id) setStaffClinicId(prof.clinic_id);
 
       const role = prof?.role as StaffRole | null;
       const defaults =
@@ -710,8 +1022,10 @@ export default function StaffPermissionsPage() {
             {/* ── Tab bar ── */}
             <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: "1px solid #F0EBE2" }}>
               {([
-                { key: "permissions", label: "Permissions",  icon: <Shield size={13} /> },
-                { key: "earnings",    label: "Earnings",     icon: <TrendingUp size={13} /> },
+                { key: "permissions",     label: "Permissions",    icon: <Shield size={13} /> },
+                { key: "earnings",        label: "Earnings",       icon: <TrendingUp size={13} /> },
+                { key: "commission_rates",label: "Commission Rates",icon: <DollarSign size={13} /> },
+                { key: "compensation",    label: "Compensation",   icon: <Banknote size={13} /> },
               ] as const).map(t => (
                 <button
                   key={t.key}
@@ -733,6 +1047,16 @@ export default function StaffPermissionsPage() {
 
             {/* ── Earnings Tab ── */}
             {activeTab === "earnings" && <EarningsTab staffId={staffId} />}
+
+            {/* ── Commission Rates Tab ── */}
+            {activeTab === "commission_rates" && staffClinicId && (
+              <CommissionRatesTab staffId={staffId} clinicId={staffClinicId} />
+            )}
+
+            {/* ── Compensation Tab (N1) ── */}
+            {activeTab === "compensation" && (
+              <CompensationTab staffId={staffId} />
+            )}
 
             {/* ── System Override (superadmin only) ── */}
             {activeTab === "permissions" && isSuperAdmin && (

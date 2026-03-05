@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import {
-  Pill, MessageCircle, User, Calendar, Loader2, Clipboard, ChevronDown, ChevronUp,
+  Pill, MessageCircle, User, Calendar, Loader2, Clipboard, ChevronDown, ChevronUp, Printer,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
@@ -141,6 +141,69 @@ export default function PrescriptionsTab({ patient, clinicId, privacyMode }: Pro
     return encodeURIComponent(
       `Hello ${patient.full_name},\n\nHere are your prescriptions from your visit on ${dateStr}${provider}:\n\n${lines.join("\n\n")}\n\nPlease take medications as directed. Contact us if you have any concerns.\n\n— ${clinicId ? "Aesthetica Clinic" : "Your Clinic"}`
     );
+  }
+
+  function printPrescription(group: EncounterGroup) {
+    const dateStr = new Date(group.encounterDate).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+    const html = `<!DOCTYPE html><html><head><title>Prescription</title>
+    <style>
+      body{font-family:Georgia,serif;padding:40px;color:#1a1714;max-width:680px;margin:0 auto}
+      .header{border-bottom:2px solid #C5A059;padding-bottom:16px;margin-bottom:20px}
+      h1{font-size:22px;color:#C5A059;margin:0 0 4px}
+      .meta{font-size:13px;color:#6b7280;margin:0}
+      .section-label{font-size:10px;font-weight:bold;text-transform:uppercase;letter-spacing:0.1em;color:#9ca3af;margin:16px 0 8px}
+      .patient-box{background:#f9f7f2;border:1px solid #e5e0d8;border-radius:8px;padding:12px 16px;margin-bottom:20px;font-size:13px}
+      table{width:100%;border-collapse:collapse;margin-top:8px}
+      th{text-align:left;padding:8px 12px;background:#f9f7f2;border-bottom:2px solid #C5A059;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280}
+      td{padding:10px 12px;border-bottom:1px solid #e5e0d8;font-size:13px;vertical-align:top}
+      .rx-name{font-weight:700;font-family:Georgia,serif}
+      .signature{margin-top:40px;display:flex;justify-content:flex-end}
+      .signature-box{border-top:1px solid #1a1714;width:200px;padding-top:8px;text-align:center;font-size:11px;color:#6b7280}
+      .footer{margin-top:24px;font-size:10px;color:#9ca3af;border-top:1px solid #e5e0d8;padding-top:12px}
+      @media print{body{padding:20px}}
+    </style></head><body>
+    <div class="header">
+      <h1>Prescription</h1>
+      <p class="meta">Date: ${dateStr}${group.providerName ? ` &nbsp;·&nbsp; Dr. ${group.providerName}` : ""}</p>
+    </div>
+    <div class="patient-box">
+      <strong>Patient:</strong> ${patient.full_name}
+      ${patient.date_of_birth ? ` &nbsp;·&nbsp; <strong>DOB:</strong> ${new Date(patient.date_of_birth).toLocaleDateString("en-IN")}` : ""}
+    </div>
+    <p class="section-label">Medications</p>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Medication</th>
+          <th>Dosage</th>
+          <th>Frequency</th>
+          <th>Duration</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${group.prescriptions.map((rx, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td class="rx-name">${rx.medication_name}</td>
+            <td>${rx.dosage || "—"}</td>
+            <td>${rx.frequency || "—"}</td>
+            <td>${rx.duration || "—"}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+    <div class="signature">
+      <div class="signature-box">
+        ${group.providerName ? `Dr. ${group.providerName}` : "Doctor's Signature"}
+      </div>
+    </div>
+    <div class="footer">
+      This prescription is valid for 30 days from the date of issue. Please take medications as directed.
+    </div>
+    </body></html>`;
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(html); w.document.close(); w.print(); }
   }
 
   async function shareOnWhatsApp(group: EncounterGroup) {
@@ -285,6 +348,19 @@ export default function PrescriptionsTab({ patient, clinicId, privacyMode }: Pro
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                {/* Print button */}
+                <button
+                  onClick={e => { e.stopPropagation(); printPrescription(group); }}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    padding: "6px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600,
+                    background: "rgba(197,160,89,0.08)", color: "#7A5518",
+                    border: "1px solid rgba(197,160,89,0.25)", cursor: "pointer",
+                  }}
+                >
+                  <Printer size={11} />
+                  Print
+                </button>
                 {/* WhatsApp share button */}
                 {!privacyMode && patient.phone && (
                   <button

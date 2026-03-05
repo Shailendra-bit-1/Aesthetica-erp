@@ -7,7 +7,7 @@ import {
   Banknote, Smartphone, Building2, Wallet, Shield,
   User, FileText, Eye, Trash2, RefreshCw,
   IndianRupee, BadgeCheck, ArrowUpRight, ChevronRight,
-  AlertTriangle, Package, Sparkles,
+  AlertTriangle, Package, Sparkles, Gift,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -18,7 +18,7 @@ import { logAction } from "@/lib/audit";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type InvoiceStatus = "pending" | "partial" | "paid" | "overdue" | "void";
-type PaymentMode   = "cash" | "card" | "upi" | "bank_transfer" | "wallet" | "insurance";
+type PaymentMode   = "cash" | "card" | "upi" | "bank_transfer" | "wallet" | "insurance" | "gift_card";
 
 interface Invoice {
   id:              string;
@@ -58,14 +58,20 @@ interface InvoicePayment {
 }
 
 interface InvoiceItem {
-  id?:           string;
-  description:   string;
-  service_id:    string | null;
-  quantity:      number;
-  unit_price:    number;
-  discount_pct:  number;
-  gst_pct:       number;
-  line_total:    number;
+  id?:                  string;
+  description:          string;
+  service_id:           string | null;
+  inventory_product_id?: string | null;
+  item_type?:           "service" | "product";
+  quantity:             number;
+  unit_price:           number;
+  discount_pct:         number;
+  gst_pct:              number;
+  line_total:           number;
+}
+
+interface ProductOption {
+  id: string; name: string; selling_price: number | null;
 }
 
 interface PatientOption { id: string; full_name: string; phone: string | null; }
@@ -88,11 +94,12 @@ const PAYMENT_MODES: { value: PaymentMode; label: string; Icon: React.ElementTyp
   { value: "bank_transfer", label: "Bank Transfer", Icon: Building2  },
   { value: "wallet",        label: "Wallet",        Icon: Wallet     },
   { value: "insurance",     label: "Insurance",     Icon: Shield     },
+  { value: "gift_card",     label: "Gift Card",     Icon: Gift       },
 ];
 
 const PM_ICON: Record<PaymentMode, React.ElementType> = {
   cash: Banknote, card: CreditCard, upi: Smartphone,
-  bank_transfer: Building2, wallet: Wallet, insurance: Shield,
+  bank_transfer: Building2, wallet: Wallet, insurance: Shield, gift_card: Gift,
 };
 
 const GST_OPTIONS = [0, 5, 12, 18, 28];
@@ -145,6 +152,8 @@ export default function BillingPage() {
   const [loadingDetail,  setLoadingDetail]  = useState(false);
   const [payInv,         setPayInv]         = useState<Invoice | null>(null);
   const [showNew,        setShowNew]        = useState(false);
+  const [showWalletTopup,  setShowWalletTopup]  = useState(false);
+  const [showGiftCards,    setShowGiftCards]    = useState(false);
 
   // ── Fetch ──
 
@@ -267,6 +276,46 @@ export default function BillingPage() {
     URL.revokeObjectURL(url);
   };
 
+  // P1: GSTR-1 monthly summary export
+  const handleGstrExport = async () => {
+    if (!activeClinicId) return;
+    // Fetch paid invoices with line items for the filtered period
+    const from = new Date(); from.setDate(1); from.setHours(0,0,0,0);
+    const { data: clinicRow } = await supabase.from("clinics").select("name, gst_number").eq("id", activeClinicId).maybeSingle();
+    const { data: invData } = await supabase.from("pending_invoices")
+      .select("id, invoice_number, patient_name, total_amount, gst_pct, created_at, paid_at")
+      .eq("clinic_id", activeClinicId).eq("status", "paid")
+      .gte("paid_at", from.toISOString()).order("paid_at");
+
+    // Group by GST rate
+    const grouped: Record<number, { count: number; taxable: number; cgst: number; sgst: number }> = {};
+    (invData ?? []).forEach((inv: any) => {
+      const rate = inv.gst_pct ?? 0;
+      const taxable = (inv.total_amount ?? 0) / (1 + rate / 100);
+      const tax = inv.total_amount - taxable;
+      if (!grouped[rate]) grouped[rate] = { count: 0, taxable: 0, cgst: 0, sgst: 0 };
+      grouped[rate].count++;
+      grouped[rate].taxable += taxable;
+      grouped[rate].cgst    += tax / 2;
+      grouped[rate].sgst    += tax / 2;
+    });
+
+    const clinicName = (clinicRow as any)?.name ?? "Clinic";
+    const gstin      = (clinicRow as any)?.gst_number ?? "";
+    const period     = from.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+    const hdrs = ["Clinic", "GSTIN", "Period", "GST Rate %", "No. of Invoices", "Taxable Amount", "CGST", "SGST", "Total Tax"];
+    const rows = Object.entries(grouped).map(([rate, vals]) => [
+      clinicName, gstin, period, rate, vals.count,
+      vals.taxable.toFixed(2), vals.cgst.toFixed(2), vals.sgst.toFixed(2),
+      (vals.cgst + vals.sgst).toFixed(2),
+    ]);
+    const csv = [hdrs, ...rows].map(r => r.map(v => `"${v}"`).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const a   = document.createElement("a"); a.href = url;
+    a.download = `GSTR1-${clinicName.replace(/\s+/g,"-")}-${period.replace(/\s+/g,"-")}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+
   // B8: 2-panel layout — selected invoice for right panel
   const [panelInv, setPanelInv] = useState<Invoice | null>(null);
 
@@ -287,13 +336,29 @@ export default function BillingPage() {
               {new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
             </p>
           </div>
-          <button
-            onClick={() => setShowNew(true)}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
-            style={{ background: "var(--gold)", color: "#fff" }}
-          >
-            <Plus size={16} /> New Invoice
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowWalletTopup(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
+              style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.3)" }}
+            >
+              <Wallet size={16} /> Top Up Wallet
+            </button>
+            <button
+              onClick={() => setShowGiftCards(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
+              style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.3)" }}
+            >
+              <Gift size={16} /> Gift Cards
+            </button>
+            <button
+              onClick={() => setShowNew(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
+              style={{ background: "var(--gold)", color: "#fff" }}
+            >
+              <Plus size={16} /> New Invoice
+            </button>
+          </div>
         </div>
 
         {/* ── Stats row ── */}
@@ -376,6 +441,13 @@ export default function BillingPage() {
             >
               <Download size={12} /> Export CSV
             </button>
+            <button
+              onClick={handleGstrExport}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium"
+              style={{ background: "rgba(37,99,235,0.08)", color: "#2563eb", border: "1px solid rgba(37,99,235,0.2)" }}
+            >
+              <FileText size={12} /> GSTR-1
+            </button>
           </div>
 
           {/* Table */}
@@ -434,6 +506,19 @@ export default function BillingPage() {
           clinicId={activeClinicId!}
           onClose={() => setShowNew(false)}
           onSuccess={() => { setShowNew(false); fetchInvoices(); }}
+        />
+      )}
+      {showWalletTopup && activeClinicId && (
+        <WalletTopupModal
+          clinicId={activeClinicId}
+          onClose={() => setShowWalletTopup(false)}
+          onSuccess={() => { setShowWalletTopup(false); toast.success("Wallet topped up!"); }}
+        />
+      )}
+      {showGiftCards && activeClinicId && (
+        <GiftCardsModal
+          clinicId={activeClinicId}
+          onClose={() => setShowGiftCards(false)}
         />
       )}
     </div>
@@ -828,8 +913,20 @@ function InvoiceDetailModal({ invoice: inv, payments, items, loading, isAdmin, o
 }) {
   const [voidMode,   setVoidMode]   = useState(false);
   const [voidReason, setVoidReason] = useState("");
+  const [clinicGstin, setClinicGstin] = useState<string | null>(null);
+  const [clinicPrintName, setClinicPrintName] = useState<string>("Aesthetica Clinic");
   const cfg    = STATUS_CFG[inv.status];
   const canPay = ["pending","partial","overdue"].includes(inv.status);
+
+  // M10: fetch clinic GSTIN + name for print header
+  useEffect(() => {
+    if (!inv.clinic_id) return;
+    supabase.from("clinics").select("name, gst_number").eq("id", inv.clinic_id).maybeSingle()
+      .then(({ data }) => {
+        if (data?.gst_number) setClinicGstin(data.gst_number);
+        if (data?.name) setClinicPrintName(data.name);
+      });
+  }, [inv.clinic_id]);
 
   const handlePrint = () => {
     const el = document.getElementById("inv-print-body");
@@ -855,8 +952,9 @@ function InvoiceDetailModal({ invoice: inv, payments, items, loading, isAdmin, o
         .badge { display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 11px; font-weight: 600; border: 1px solid; }
         @media print { button { display: none; } }
       </style></head><body>
-      <h1>AESTHETICA</h1>
-      <div class="sub">Clinic Suite — Tax Invoice</div>
+      <h1>${clinicPrintName.toUpperCase()}</h1>
+      ${clinicGstin ? `<div class="sub">GSTIN: ${clinicGstin}</div>` : ""}
+      <div class="sub">Tax Invoice</div>
       ${el.innerHTML}
       </body></html>`);
     w.document.close();
@@ -1116,6 +1214,16 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
   const [tipAmount, setTipAmount] = useState("0"); // B9: Tip at checkout
   const [saving,    setSaving]    = useState(false);
 
+  // N5: Split payment
+  const [splitEnabled, setSplitEnabled] = useState(false);
+  const [amount2,      setAmount2]      = useState("0");
+  const [mode2,        setMode2]        = useState<PaymentMode>("upi");
+
+  // Gift card
+  const [gcCode,       setGcCode]       = useState("");
+  const [gcCard,       setGcCard]       = useState<{ id: string; remaining_value: number } | null>(null);
+  const [gcChecking,   setGcChecking]   = useState(false);
+
   // C4: Loyalty points redemption
   const [loyaltyPts,  setLoyaltyPts]  = useState(0);
   const [redeemPts,   setRedeemPts]   = useState(0);
@@ -1143,6 +1251,12 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
   const handleSave = async () => {
     const pay = parseFloat(amount);
     if (!pay || pay <= 0) { toast.error("Enter a valid amount"); return; }
+    const pay2 = splitEnabled ? parseFloat(amount2) || 0 : 0;
+    if (splitEnabled && pay2 <= 0) { toast.error("Enter a valid amount for the second payment"); return; }
+    if (splitEnabled && Math.abs(pay + pay2 - due) > 0.01) {
+      toast.error(`Split amounts must add up to ₹${due.toFixed(2)}`);
+      return;
+    }
     setSaving(true);
     try {
       // C4: Redeem loyalty points first (before payment)
@@ -1156,6 +1270,19 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
         if (re) throw new Error(re.message);
       }
 
+      // N5: If split enabled, also record second payment
+      if (splitEnabled && pay2 > 0) {
+        await supabase.rpc("record_payment", {
+          p_invoice_id:      inv.id,
+          p_clinic_id:       clinicId,
+          p_amount:          pay2,
+          p_payment_mode:    mode2,
+          p_transaction_ref: null,
+          p_notes:           "Split payment (part 2)",
+          p_recorded_by:     null,
+        });
+      }
+
       // C-3 fix: single atomic RPC — inserts payment + recomputes invoice status
       const { data: newStatus, error: pe } = await supabase.rpc("record_payment", {
         p_invoice_id:      inv.id,
@@ -1167,6 +1294,23 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
         p_recorded_by:     null,
       });
       if (pe) throw pe;
+
+      // Deduct gift card balance if used
+      if (mode === "gift_card" && gcCard) {
+        const newRemaining = Math.max(0, gcCard.remaining_value - pay);
+        await supabase.from("gift_cards").update({
+          remaining_value: newRemaining,
+          status: newRemaining <= 0 ? "redeemed" : "active",
+          redeemed_by_patient_id: inv.patient_id ?? null,
+        }).eq("id", gcCard.id);
+        // Link payment row to gift card
+        await supabase.from("invoice_payments")
+          .update({ gift_card_id: gcCard.id })
+          .eq("invoice_id", inv.id)
+          .eq("payment_mode", "gift_card")
+          .order("created_at", { ascending: false })
+          .limit(1);
+      }
 
       // B9: Save tip amount if any
       if (tip > 0) {
@@ -1269,6 +1413,92 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
               ))}
             </div>
           </div>
+
+          {/* N5: Split payment toggle */}
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Split Payment</p>
+              <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>Collect via two payment modes</p>
+            </div>
+            <button onClick={() => { setSplitEnabled(v => !v); if (splitEnabled) { setAmount2("0"); } else { setAmount(((due / 2)).toFixed(2)); setAmount2(((due / 2)).toFixed(2)); } }}
+              style={{ padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                border: splitEnabled ? "1px solid rgba(197,160,89,0.5)" : "1px solid var(--border)",
+                background: splitEnabled ? "rgba(197,160,89,0.12)" : "var(--input-bg)",
+                color: splitEnabled ? "var(--gold)" : "var(--text-muted)" }}>
+              {splitEnabled ? "On" : "Off"}
+            </button>
+          </div>
+
+          {/* N5: Second payment mode row */}
+          {splitEnabled && (
+            <div style={{ padding: "14px 16px", borderRadius: 12, background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.2)" }}>
+              <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--text-muted)" }}>
+                Second Payment Mode
+              </p>
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                {PAYMENT_MODES.filter(pm => pm.value !== "wallet").map(pm => (
+                  <button key={pm.value} onClick={() => setMode2(pm.value)}
+                    className="flex flex-col items-center gap-1 py-2 rounded-xl text-xs font-semibold"
+                    style={{
+                      background: mode2 === pm.value ? "rgba(197,160,89,0.15)" : "var(--input-bg)",
+                      color: mode2 === pm.value ? "var(--gold)" : "var(--text-muted)",
+                      border: mode2 === pm.value ? "1px solid rgba(197,160,89,0.4)" : "1px solid var(--border)",
+                    }}>
+                    <pm.Icon size={14} />{pm.label}
+                  </button>
+                ))}
+              </div>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold" style={{ color: "var(--gold)" }}>₹</span>
+                <input type="number" value={amount2}
+                  onChange={e => { setAmount2(e.target.value); setAmount((due - (parseFloat(e.target.value) || 0)).toFixed(2)); }}
+                  className="w-full pl-7 pr-3 py-2.5 rounded-xl text-sm outline-none"
+                  style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+              </div>
+              {parseFloat(amount2) > 0 && (
+                <p className="text-xs mt-1.5" style={{ color: "#9CA3AF" }}>
+                  Split: ₹{parseFloat(amount).toFixed(2)} ({mode}) + ₹{parseFloat(amount2).toFixed(2)} ({mode2})
+                  {Math.abs(parseFloat(amount) + parseFloat(amount2) - due) > 0.01 && (
+                    <span style={{ color: "#DC2626" }}> — must total ₹{due.toFixed(2)}</span>
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Gift card code input */}
+          {mode === "gift_card" && (
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: "var(--text-muted)" }}>Gift Card Code *</label>
+              <div className="flex gap-2">
+                <input value={gcCode} onChange={e => { setGcCode(e.target.value.toUpperCase()); setGcCard(null); }}
+                  placeholder="e.g. GC-ABCD12" className="flex-1 px-3 py-2.5 rounded-xl text-sm outline-none font-mono"
+                  style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+                <button onClick={async () => {
+                  if (!gcCode) return;
+                  setGcChecking(true);
+                  const { data } = await supabase.from("gift_cards").select("id, remaining_value, status")
+                    .eq("code", gcCode).eq("clinic_id", clinicId).eq("status", "active").maybeSingle();
+                  setGcChecking(false);
+                  if (!data) { toast.error("Gift card not found or already used"); setGcCard(null); }
+                  else {
+                    setGcCard({ id: data.id, remaining_value: (data as any).remaining_value });
+                    setAmount(Math.min(due, (data as any).remaining_value).toFixed(2));
+                    toast.success(`Valid — ₹${(data as any).remaining_value.toLocaleString("en-IN")} remaining`);
+                  }
+                }} disabled={gcChecking}
+                  className="px-3 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60"
+                  style={{ background: "var(--gold)", color: "#fff" }}>
+                  {gcChecking ? "…" : "Check"}
+                </button>
+              </div>
+              {gcCard && (
+                <p className="text-xs mt-1.5" style={{ color: "#16a34a" }}>
+                  ✓ Valid — ₹{gcCard.remaining_value.toLocaleString("en-IN")} available
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Transaction ref */}
           {["card","upi","bank_transfer"].includes(mode) && (
@@ -1410,6 +1640,309 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
   );
 }
 
+// ── N2: Wallet Top-up Modal ───────────────────────────────────────────────────
+
+function WalletTopupModal({ clinicId, onClose, onSuccess }: {
+  clinicId: string; onClose: () => void; onSuccess: () => void;
+}) {
+  const [patients,  setPatients]  = useState<PatientOption[]>([]);
+  const [patSearch, setPatSearch] = useState("");
+  const [selPat,    setSelPat]    = useState<PatientOption | null>(null);
+  const [showPats,  setShowPats]  = useState(false);
+  const [amount,    setAmount]    = useState("");
+  const [reason,    setReason]    = useState("");
+  const [saving,    setSaving]    = useState(false);
+
+  useEffect(() => {
+    supabase.from("patients").select("id, full_name, phone").eq("clinic_id", clinicId).limit(200)
+      .then(({ data }) => setPatients(data ?? []));
+  }, [clinicId]);
+
+  const filteredPats = patSearch.length >= 1
+    ? patients.filter(p => p.full_name.toLowerCase().includes(patSearch.toLowerCase()))
+    : [];
+
+  const handleSave = async () => {
+    if (!selPat || !amount) { toast.error("Select a patient and enter an amount"); return; }
+    const amt = parseFloat(amount);
+    if (isNaN(amt) || amt <= 0) { toast.error("Enter a valid amount"); return; }
+    setSaving(true);
+    try {
+      const { error } = await supabase.rpc("add_wallet_credit", {
+        p_patient_id: selPat.id,
+        p_clinic_id:  clinicId,
+        p_amount:     amt,
+        p_reason:     reason || "Manual top-up from billing",
+        p_reference_id:   null,
+        p_reference_type: null,
+      });
+      if (error) throw error;
+      onSuccess();
+    } catch (e: any) {
+      toast.error(e.message ?? "Failed to top up wallet");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div className="w-full max-w-sm rounded-2xl flex flex-col" style={{ background: "var(--card-bg)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: "var(--border)" }}>
+          <div className="flex items-center gap-2">
+            <Wallet size={16} style={{ color: "var(--gold)" }} />
+            <p className="font-semibold" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>Top Up Wallet</p>
+          </div>
+          <button onClick={onClose} style={{ color: "var(--text-muted)" }}><X size={16} /></button>
+        </div>
+        <div className="px-5 py-5 space-y-4">
+          {/* Patient */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: "var(--text-muted)" }}>Patient *</label>
+            {selPat ? (
+              <div className="flex items-center justify-between px-3 py-2.5 rounded-xl"
+                style={{ background: "rgba(197,160,89,0.06)", border: "1px solid rgba(197,160,89,0.2)" }}>
+                <p className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{selPat.full_name}</p>
+                <button onClick={() => { setSelPat(null); setPatSearch(""); }} style={{ color: "var(--text-muted)" }}><X size={13} /></button>
+              </div>
+            ) : (
+              <div className="relative">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+                <input value={patSearch} onChange={e => { setPatSearch(e.target.value); setShowPats(true); }} onFocus={() => setShowPats(true)}
+                  placeholder="Search patient…" className="w-full pl-8 pr-3 py-2 rounded-xl text-sm outline-none"
+                  style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+                {showPats && filteredPats.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 z-20 mt-1 rounded-xl shadow-xl max-h-40 overflow-y-auto"
+                    style={{ background: "var(--card-bg)", border: "1px solid var(--border)" }}>
+                    {filteredPats.slice(0, 6).map(p => (
+                      <button key={p.id} onClick={() => { setSelPat(p); setPatSearch(""); setShowPats(false); }}
+                        className="w-full text-left px-3 py-2 text-sm" style={{ color: "var(--foreground)", borderBottom: "1px solid var(--border)" }}>
+                        {p.full_name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          {/* Amount */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: "var(--text-muted)" }}>Amount ₹ *</label>
+            <input type="number" min={1} value={amount} onChange={e => setAmount(e.target.value)}
+              placeholder="e.g. 1000"
+              className="w-full px-3 py-2 rounded-xl text-sm outline-none"
+              style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+          </div>
+          {/* Reason */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: "var(--text-muted)" }}>Reason (optional)</label>
+            <input value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. Package advance"
+              className="w-full px-3 py-2 rounded-xl text-sm outline-none"
+              style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+          </div>
+        </div>
+        <div className="flex gap-3 px-5 py-4 border-t" style={{ borderColor: "var(--border)" }}>
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl text-sm font-semibold"
+            style={{ background: "var(--input-bg)", color: "var(--foreground)", border: "1px solid var(--border)" }}>Cancel</button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60"
+            style={{ background: "var(--gold)", color: "#fff" }}>
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Wallet size={13} />}
+            {saving ? "Topping up…" : "Top Up"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── N2-1: Gift Cards Modal ────────────────────────────────────────────────────
+
+interface GiftCard {
+  id: string;
+  code: string;
+  original_value: number;
+  remaining_value: number;
+  status: string;
+  expires_at: string | null;
+  issued_to?: { full_name: string } | null;
+}
+
+function GiftCardsModal({ clinicId, onClose }: { clinicId: string; onClose: () => void }) {
+  const [cards,        setCards]        = useState<GiftCard[]>([]);
+  const [patients,     setPatients]     = useState<PatientOption[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [showIssue,    setShowIssue]    = useState(false);
+  const [patSearch,    setPatSearch]    = useState("");
+  const [showPats,     setShowPats]     = useState(false);
+  const [selPat,       setSelPat]       = useState<PatientOption | null>(null);
+  const [value,        setValue]        = useState("");
+  const [expiresAt,    setExpiresAt]    = useState("");
+  const [saving,       setSaving]       = useState(false);
+
+  const fetchCards = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from("gift_cards")
+      .select("id, code, original_value, remaining_value, status, expires_at, issued_to_patient_id, patients:issued_to_patient_id(full_name)")
+      .eq("clinic_id", clinicId).order("created_at", { ascending: false });
+    setCards((data ?? []).map((c: any) => ({ ...c, issued_to: Array.isArray(c.patients) ? c.patients[0] : c.patients })));
+    setLoading(false);
+  }, [clinicId]);
+
+  useEffect(() => { fetchCards(); }, [fetchCards]);
+  useEffect(() => {
+    supabase.from("patients").select("id, full_name, phone").eq("clinic_id", clinicId).limit(200)
+      .then(({ data }) => setPatients(data ?? []));
+  }, [clinicId]);
+
+  const filteredPats = patSearch.length >= 1
+    ? patients.filter(p => p.full_name.toLowerCase().includes(patSearch.toLowerCase()))
+    : [];
+
+  const genCode = () => `GC-${Date.now().toString(36).toUpperCase().slice(-6)}`;
+
+  const handleIssue = async () => {
+    const amt = parseFloat(value);
+    if (isNaN(amt) || amt <= 0) { toast.error("Enter a valid amount"); return; }
+    setSaving(true);
+    try {
+      const { error } = await supabase.from("gift_cards").insert({
+        clinic_id:            clinicId,
+        code:                 genCode(),
+        original_value:       amt,
+        remaining_value:      amt,
+        issued_to_patient_id: selPat?.id ?? null,
+        expires_at:           expiresAt || null,
+        status:               "active",
+      });
+      if (error) throw error;
+      toast.success("Gift card issued!");
+      setShowIssue(false); setValue(""); setExpiresAt(""); setSelPat(null); setPatSearch("");
+      fetchCards();
+    } catch (e: any) { toast.error(e.message ?? "Failed to issue gift card"); }
+    finally { setSaving(false); }
+  };
+
+  const voidCard = async (id: string) => {
+    await supabase.from("gift_cards").update({ status: "void" }).eq("id", id);
+    fetchCards();
+  };
+
+  const statusColor: Record<string, string> = { active: "#16a34a", redeemed: "#6B7280", expired: "#E8935A", void: "#DC2626" };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div className="w-full max-w-lg rounded-2xl flex flex-col max-h-[90vh]" style={{ background: "var(--card-bg)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: "var(--border)" }}>
+          <div className="flex items-center gap-2">
+            <Gift size={16} style={{ color: "var(--gold)" }} />
+            <p className="font-semibold" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>Gift Cards</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowIssue(s => !s)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold"
+              style={{ background: "var(--gold)", color: "#fff" }}>
+              <Plus size={12} /> Issue New
+            </button>
+            <button onClick={onClose} style={{ color: "var(--text-muted)" }}><X size={16} /></button>
+          </div>
+        </div>
+
+        {/* Issue form */}
+        {showIssue && (
+          <div className="px-5 py-4 border-b space-y-3" style={{ borderColor: "var(--border)", background: "rgba(197,160,89,0.04)" }}>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold mb-1" style={{ color: "var(--text-muted)" }}>Value (₹) *</label>
+                <input type="number" value={value} onChange={e => setValue(e.target.value)} placeholder="e.g. 1000"
+                  className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                  style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold mb-1" style={{ color: "var(--text-muted)" }}>Expires (optional)</label>
+                <input type="date" value={expiresAt} onChange={e => setExpiresAt(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                  style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold mb-1" style={{ color: "var(--text-muted)" }}>Issue to Patient (optional)</label>
+              {selPat ? (
+                <div className="flex items-center justify-between px-3 py-2 rounded-lg"
+                  style={{ background: "rgba(197,160,89,0.06)", border: "1px solid rgba(197,160,89,0.2)" }}>
+                  <span className="text-sm" style={{ color: "var(--foreground)" }}>{selPat.full_name}</span>
+                  <button onClick={() => { setSelPat(null); setPatSearch(""); }} style={{ color: "var(--text-muted)" }}><X size={12} /></button>
+                </div>
+              ) : (
+                <div className="relative">
+                  <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
+                  <input value={patSearch} onChange={e => { setPatSearch(e.target.value); setShowPats(true); }} onFocus={() => setShowPats(true)}
+                    placeholder="Search patient…" className="w-full pl-7 pr-3 py-2 rounded-lg text-sm outline-none"
+                    style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+                  {showPats && filteredPats.length > 0 && (
+                    <div className="absolute top-full left-0 right-0 z-20 mt-1 rounded-xl shadow-xl max-h-36 overflow-y-auto"
+                      style={{ background: "var(--card-bg)", border: "1px solid var(--border)" }}>
+                      {filteredPats.map(p => (
+                        <button key={p.id} className="w-full px-4 py-2.5 text-left hover:bg-gold/5 flex items-center gap-2 text-sm"
+                          onClick={() => { setSelPat(p); setShowPats(false); setPatSearch(""); }}>
+                          <User size={12} style={{ color: "var(--text-muted)" }} />
+                          <span style={{ color: "var(--foreground)" }}>{p.full_name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => setShowIssue(false)} className="px-4 py-2 rounded-lg text-sm"
+                style={{ background: "var(--input-bg)", color: "var(--text-muted)", border: "1px solid var(--border)" }}>Cancel</button>
+              <button onClick={handleIssue} disabled={saving}
+                className="px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5 disabled:opacity-60"
+                style={{ background: "var(--gold)", color: "#fff" }}>
+                {saving ? <Loader2 size={12} className="animate-spin" /> : <Gift size={12} />}
+                {saving ? "Issuing…" : "Issue Gift Card"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Cards list */}
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {loading ? (
+            <div className="text-center py-8 text-sm" style={{ color: "var(--text-muted)" }}>Loading…</div>
+          ) : cards.length === 0 ? (
+            <div className="text-center py-8 text-sm" style={{ color: "var(--text-muted)" }}>No gift cards yet. Issue one to get started.</div>
+          ) : (
+            <div className="space-y-2">
+              {cards.map(c => (
+                <div key={c.id} className="flex items-center justify-between px-4 py-3 rounded-xl"
+                  style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-mono font-semibold" style={{ color: "var(--foreground)" }}>{c.code}</span>
+                      <span className="text-xs px-1.5 py-0.5 rounded-full font-medium" style={{ background: `${statusColor[c.status]}18`, color: statusColor[c.status] }}>{c.status}</span>
+                    </div>
+                    <div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+                      ₹{c.remaining_value.toLocaleString("en-IN")} / ₹{c.original_value.toLocaleString("en-IN")}
+                      {c.issued_to && ` · ${c.issued_to.full_name}`}
+                      {c.expires_at && ` · exp ${new Date(c.expires_at).toLocaleDateString("en-IN")}`}
+                    </div>
+                  </div>
+                  {c.status === "active" && (
+                    <button onClick={() => voidCard(c.id)} className="text-xs px-2.5 py-1.5 rounded-lg"
+                      style={{ background: "rgba(220,38,38,0.08)", color: "#DC2626", border: "1px solid rgba(220,38,38,0.2)" }}>
+                      Void
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── New Invoice Drawer ────────────────────────────────────────────────────────
 
 function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
@@ -1419,6 +1952,7 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
 }) {
   const [patients, setPatients] = useState<PatientOption[]>([]);
   const [services, setServices] = useState<ServiceOption[]>([]);
+  const [products, setProducts] = useState<ProductOption[]>([]);
   const [patSearch, setPatSearch]     = useState("");
   const [showPats,  setShowPats]      = useState(false);
   const [selPat,    setSelPat]        = useState<PatientOption | null>(null);
@@ -1432,12 +1966,14 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
 
   useEffect(() => {
     (async () => {
-      const [{ data: pats }, { data: svcs }] = await Promise.all([
+      const [{ data: pats }, { data: svcs }, { data: prods }] = await Promise.all([
         supabase.from("patients").select("id, full_name, phone").eq("clinic_id", clinicId).limit(200),
         supabase.from("services").select("id, name, selling_price, category").eq("clinic_id", clinicId).eq("is_active", true),
+        supabase.from("inventory_products").select("id, name, selling_price").eq("clinic_id", clinicId).eq("is_active", true).order("name"),
       ]);
       setPatients(pats ?? []);
       setServices(svcs ?? []);
+      setProducts((prods ?? []).filter((p: ProductOption) => p.selling_price != null));
     })();
   }, [clinicId]);
 
@@ -1483,13 +2019,23 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
     (arr[idx] as any)[field] = val;
     if (field === "service_id" && val) {
       const svc = services.find(s => s.id === val);
-      if (svc) { arr[idx].description = svc.name; arr[idx].unit_price = svc.selling_price; }
+      if (svc) { arr[idx].description = svc.name; arr[idx].unit_price = svc.selling_price; arr[idx].inventory_product_id = null; }
+    }
+    if (field === "inventory_product_id" && val) {
+      const prod = products.find(p => p.id === val);
+      if (prod) { arr[idx].description = prod.name; arr[idx].unit_price = prod.selling_price ?? 0; arr[idx].service_id = null; }
+    }
+    if (field === "item_type") {
+      arr[idx].service_id = null;
+      arr[idx].inventory_product_id = null;
+      arr[idx].description = "";
+      arr[idx].unit_price = 0;
     }
     arr[idx].line_total = calcLineTotal(arr[idx]);
     setItems(arr);
   };
 
-  const addItem    = () => setItems([...items, { description: "", service_id: null, quantity: 1, unit_price: 0, discount_pct: 0, gst_pct: 18, line_total: 0 }]);
+  const addItem    = () => setItems([...items, { description: "", service_id: null, inventory_product_id: null, item_type: "service", quantity: 1, unit_price: 0, discount_pct: 0, gst_pct: 18, line_total: 0 }]);
   const removeItem = (i: number) => setItems(items.filter((_, idx) => idx !== i));
 
   const subtotal   = items.reduce((s, it) => s + it.unit_price * it.quantity * (1 - it.discount_pct / 100), 0);
@@ -1522,16 +2068,33 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
         p_invoice_type:  "ad_hoc",
         p_notes:         notes || null,
         p_items: JSON.stringify(validItems.map(it => ({
-          service_id:   it.service_id ?? null,
-          description:  it.description,
-          quantity:     it.quantity,
-          unit_price:   it.unit_price,
-          discount_pct: it.discount_pct,
-          gst_pct:      it.gst_pct,
+          service_id:           it.service_id ?? null,
+          inventory_product_id: it.inventory_product_id ?? null,
+          description:          it.description,
+          quantity:             it.quantity,
+          unit_price:           it.unit_price,
+          discount_pct:         it.discount_pct,
+          gst_pct:              it.gst_pct,
         }))),
       });
       if (ie) throw ie;
       const inv = result as { invoice_id: string } | null;
+
+      // M3: create inventory_movements for product line items
+      const productItems = validItems.filter(it => it.item_type === "product" && it.inventory_product_id);
+      if (productItems.length > 0) {
+        await supabase.from("inventory_movements").insert(
+          productItems.map(it => ({
+            clinic_id:          clinicId,
+            product_id:         it.inventory_product_id,
+            movement_type:      "sale",
+            quantity:           it.quantity,
+            selling_price:      it.unit_price,
+            patient_id:         selPat?.id ?? null,
+            notes:              `Invoice ${inv?.invoice_id ?? ""}`,
+          }))
+        );
+      }
 
       await logAction({ action: "create_invoice", targetId: inv?.invoice_id, targetName: svcNames });
       toast.success("Invoice created!");
@@ -1644,6 +2207,7 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
                   key={i}
                   item={it}
                   services={services}
+                  products={products}
                   onChange={(field, val) => updateItem(i, field, val)}
                   onRemove={() => removeItem(i)}
                   canRemove={items.length > 1}
@@ -1707,27 +2271,53 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
 
 // ── Line Item Row ─────────────────────────────────────────────────────────────
 
-function LineItemRow({ item, services, onChange, onRemove, canRemove }: {
-  item:      InvoiceItem;
-  services:  ServiceOption[];
-  onChange:  (field: keyof InvoiceItem, val: unknown) => void;
-  onRemove:  () => void;
-  canRemove: boolean;
+function LineItemRow({ item, services, products = [], onChange, onRemove, canRemove }: {
+  item:       InvoiceItem;
+  services:   ServiceOption[];
+  products?:  ProductOption[];
+  onChange:   (field: keyof InvoiceItem, val: unknown) => void;
+  onRemove:   () => void;
+  canRemove:  boolean;
 }) {
+  const isProduct = item.item_type === "product";
   return (
     <div className="rounded-xl p-3 space-y-2.5" style={{ background: "var(--input-bg)", border: "1px solid var(--border)" }}>
-      {/* Service picker */}
+      {/* M3: Type toggle + picker */}
       <div className="flex gap-2">
-        <select
-          value={item.service_id ?? ""}
-          onChange={e => onChange("service_id", e.target.value || null)}
-          className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
-          style={{ background: "var(--card-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
-          <option value="">Custom / Ad-hoc description</option>
-          {services.map(s => (
-            <option key={s.id} value={s.id}>{s.name} — ₹{s.selling_price}</option>
+        <div className="flex rounded-lg overflow-hidden flex-shrink-0" style={{ border: "1px solid var(--border)" }}>
+          {(["service", "product"] as const).map(t => (
+            <button key={t} onClick={() => onChange("item_type", t)}
+              className="px-2.5 py-1.5 text-xs font-semibold capitalize"
+              style={{
+                background: (item.item_type ?? "service") === t ? "var(--gold)" : "var(--card-bg)",
+                color: (item.item_type ?? "service") === t ? "#fff" : "var(--text-muted)",
+                border: "none",
+              }}>{t}</button>
           ))}
-        </select>
+        </div>
+        {isProduct ? (
+          <select
+            value={item.inventory_product_id ?? ""}
+            onChange={e => onChange("inventory_product_id", e.target.value || null)}
+            className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
+            style={{ background: "var(--card-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
+            <option value="">Select product…</option>
+            {products.map(p => (
+              <option key={p.id} value={p.id}>{p.name} — ₹{p.selling_price}</option>
+            ))}
+          </select>
+        ) : (
+          <select
+            value={item.service_id ?? ""}
+            onChange={e => onChange("service_id", e.target.value || null)}
+            className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
+            style={{ background: "var(--card-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
+            <option value="">Custom / Ad-hoc description</option>
+            {services.map(s => (
+              <option key={s.id} value={s.id}>{s.name} — ₹{s.selling_price}</option>
+            ))}
+          </select>
+        )}
         {canRemove && (
           <button onClick={onRemove} className="p-2 rounded-lg flex-shrink-0"
             style={{ color: "#B43C3C" }}><X size={14} /></button>

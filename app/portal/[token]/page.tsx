@@ -6,7 +6,7 @@ import {
   Sparkles, Calendar, FileText, Wallet, Trophy, LogOut,
   Clock, CheckCircle, XCircle, AlertCircle, ChevronRight,
   CreditCard, ArrowDownCircle, ArrowUpCircle, Star,
-  ClipboardList, ChevronDown, Loader2, ImageIcon,
+  ClipboardList, ChevronDown, Loader2, ImageIcon, Gift, Share2, Copy,
 } from "lucide-react";
 
 /* ─── Types ─────────────────────────────────────────────── */
@@ -60,6 +60,12 @@ interface EncounterPhotos {
   photos: Array<{ url: string; type?: string }> | null;
 }
 
+interface ReferralData {
+  code: string | null;
+  uses_count: number;
+  reward_wallet_amount: number;
+}
+
 interface PortalData {
   patient: PortalPatient;
   appointments: PortalAppointment[];
@@ -67,6 +73,7 @@ interface PortalData {
   wallet: { transactions: WalletTransaction[]; balance: number };
   loyalty: LoyaltyData;
   photos: EncounterPhotos[];
+  referral: ReferralData;
 }
 
 interface FormField {
@@ -133,7 +140,8 @@ export default function PortalDashboard() {
 
   const [data,    setData]    = useState<PortalData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab,     setTab]     = useState<"appointments" | "billing" | "wallet" | "forms" | "photos">("appointments");
+  const [tab,     setTab]     = useState<"appointments" | "billing" | "wallet" | "forms" | "photos" | "referral">("appointments");
+  const [copied,  setCopied]  = useState(false);
   const [apptFilter, setApptFilter] = useState<"upcoming" | "past">("upcoming");
 
   // F3: Forms state
@@ -211,7 +219,7 @@ export default function PortalDashboard() {
 
   if (!data) return null;
 
-  const { patient, appointments, invoices, wallet, loyalty, photos } = data;
+  const { patient, appointments, invoices, wallet, loyalty, photos, referral } = data;
   const tierStyle = TIER_STYLES[loyalty.tier] ?? TIER_STYLES.Bronze;
 
   const now = new Date();
@@ -276,7 +284,7 @@ export default function PortalDashboard() {
 
         {/* ── Tabs ── */}
         <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-          {(["appointments", "billing", "wallet", "forms", "photos"] as const).map(t => (
+          {(["appointments", "billing", "wallet", "forms", "photos", "referral"] as const).map(t => (
             <button key={t} onClick={() => { setTab(t); if (t === "forms") fetchForms(); }}
               style={{
                 flex: "1 1 auto", padding: "9px 4px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600,
@@ -689,6 +697,56 @@ export default function PortalDashboard() {
                   );
                 })}
               </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── Referral Tab (N2-2) ─── */}
+        {tab === "referral" && (
+          <div style={{ background: "#fff", borderRadius: 14, padding: 24, border: "1px solid rgba(197,160,89,0.2)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+              <div style={{ background: "rgba(197,160,89,0.12)", borderRadius: 10, padding: 8 }}>
+                <Gift size={20} color="#C5A059" />
+              </div>
+              <div>
+                <h3 style={{ fontFamily: "Georgia, serif", fontSize: 16, fontWeight: 700, color: "#1a1714", margin: 0 }}>Refer a Friend</h3>
+                <p style={{ fontSize: 12, color: "#6b7280", margin: "2px 0 0" }}>Share your code — you both get rewarded!</p>
+              </div>
+            </div>
+
+            {referral.code ? (
+              <>
+                <div style={{ background: "#faf9f7", borderRadius: 12, padding: "16px 20px", border: "1px solid rgba(197,160,89,0.2)", marginBottom: 16 }}>
+                  <p style={{ fontSize: 11, color: "#9ca3af", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Your Referral Code</p>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span style={{ fontFamily: "Georgia, serif", fontSize: 28, fontWeight: 700, color: "#C5A059", letterSpacing: "0.06em" }}>{referral.code}</span>
+                    <button onClick={() => { navigator.clipboard.writeText(referral.code!); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                      style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, background: copied ? "rgba(22,163,74,0.1)" : "rgba(197,160,89,0.1)", border: `1px solid ${copied ? "rgba(22,163,74,0.3)" : "rgba(197,160,89,0.3)"}`, cursor: "pointer", fontSize: 12, fontWeight: 600, color: copied ? "#16a34a" : "#C5A059" }}>
+                      {copied ? <CheckCircle size={13} /> : <Copy size={13} />}
+                      {copied ? "Copied!" : "Copy"}
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+                  <div style={{ background: "#faf9f7", borderRadius: 10, padding: "12px 14px", border: "1px solid #f3f4f6", textAlign: "center" }}>
+                    <p style={{ fontSize: 22, fontWeight: 700, color: "#1a1714", fontFamily: "Georgia, serif" }}>{referral.uses_count}</p>
+                    <p style={{ fontSize: 11, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em" }}>Referrals</p>
+                  </div>
+                  <div style={{ background: "#faf9f7", borderRadius: 10, padding: "12px 14px", border: "1px solid #f3f4f6", textAlign: "center" }}>
+                    <p style={{ fontSize: 22, fontWeight: 700, color: "#C5A059", fontFamily: "Georgia, serif" }}>₹{referral.reward_wallet_amount}</p>
+                    <p style={{ fontSize: 11, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em" }}>Per Referral</p>
+                  </div>
+                </div>
+
+                <a href={`https://wa.me/?text=${encodeURIComponent(`Hey! I've been visiting Aesthetica Clinic and love it. Use my code ${referral.code} when you register to get ₹${referral.reward_wallet_amount} wallet credit! 🌟`)}`}
+                  target="_blank" rel="noopener noreferrer"
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "12px 20px", borderRadius: 12, background: "#25D366", color: "#fff", textDecoration: "none", fontWeight: 600, fontSize: 13 }}>
+                  <Share2 size={15} /> Share via WhatsApp
+                </a>
+              </>
+            ) : (
+              <p style={{ fontSize: 13, color: "#6b7280", textAlign: "center", padding: "20px 0" }}>Referral code being generated. Please refresh the page.</p>
             )}
           </div>
         )}

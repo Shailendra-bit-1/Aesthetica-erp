@@ -27,20 +27,20 @@ interface Message {
   sent_by: string | null;
 }
 
-// ── D2: Keyword routing ────────────────────────────────────────────────────
-const KEYWORD_RESPONSES: Record<string, string> = {
-  book:    "Hi! To book an appointment, please visit: [booking_link] or call us at [clinic_phone].",
-  cancel:  "Sorry to hear that! Please reply with your appointment date to cancel, or call us directly.",
-  balance: "Your current wallet balance is [wallet_balance]. Visit [portal_link] to view details.",
+// ── D2: Keyword routing ─ templates with placeholders ───────────────────────
+const KEYWORD_TEMPLATES: Record<string, string> = {
+  book:    "Hi! To book an appointment, please visit: {booking_link} or call us at {clinic_phone}.",
+  cancel:  "Sorry to hear that! Please reply with your appointment date to cancel, or call us directly at {clinic_phone}.",
+  balance: "Your current wallet balance is {wallet_balance}. Visit {portal_link} to view details.",
   confirm: "Great! Your appointment is confirmed. We look forward to seeing you!",
   yes:     "Thank you for confirming! See you at your appointment.",
   no:      "We understand. Would you like to reschedule? Reply 'book' to see available slots.",
-  help:    "How can we help? Reply: BOOK (new appointment), CANCEL (cancel appointment), BALANCE (wallet), CONFIRM (confirm appointment).",
+  help:    "How can we help? Reply: BOOK (new appointment), CANCEL (cancel), BALANCE (wallet), CONFIRM (confirm). Call us: {clinic_phone}",
 };
 
 const detectKeywords = (text: string): string[] => {
   const lower = text.toLowerCase().trim();
-  return Object.keys(KEYWORD_RESPONSES).filter(kw => lower === kw || lower.startsWith(kw + " ") || lower.endsWith(" " + kw));
+  return Object.keys(KEYWORD_TEMPLATES).filter(kw => lower === kw || lower.startsWith(kw + " ") || lower.endsWith(" " + kw));
 };
 
 const STATUS_CFG = {
@@ -62,7 +62,26 @@ export default function WhatsAppInbox() {
   const [reply,         setReply]         = useState("");
   const [sending,       setSending]       = useState(false);
   const [kwSuggestion,  setKwSuggestion]  = useState<string | null>(null);
+  const [clinicPhone,   setClinicPhone]   = useState("");
+  const [activeWalletBalance, setActiveWalletBalance] = useState<number | null>(null);
   const msgEndRef = useRef<HTMLDivElement>(null);
+
+  // Resolve placeholders with real values
+  function resolvePlaceholders(tpl: string): string {
+    const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
+    const convPhone = activeConv?.wa_phone ?? "";
+    const portalLink = `${baseUrl}/portal?phone=${convPhone}`;
+    const bookingLink = `${baseUrl}/intake/${clinicId ?? ""}`;
+    return tpl
+      .replace(/\{clinic_phone\}/g, clinicPhone || "our clinic")
+      .replace(/\{booking_link\}/g, bookingLink)
+      .replace(/\{portal_link\}/g, portalLink)
+      .replace(/\{wallet_balance\}/g, activeWalletBalance !== null ? `₹${activeWalletBalance.toLocaleString("en-IN")}` : "N/A");
+  }
+
+  const KEYWORD_RESPONSES: Record<string, string> = Object.fromEntries(
+    Object.entries(KEYWORD_TEMPLATES).map(([k, v]) => [k, resolvePlaceholders(v)])
+  );
 
   const fetchConversations = useCallback(async () => {
     if (!clinicId) return;
@@ -93,6 +112,23 @@ export default function WhatsAppInbox() {
       setKwSuggestion(null);
     }
   }, []);
+
+  // Load clinic phone on mount
+  useEffect(() => {
+    if (!clinicId) return;
+    supabase.from("clinics").select("phone").eq("id", clinicId).maybeSingle()
+      .then(({ data }) => { if (data?.phone) setClinicPhone(data.phone); });
+  }, [clinicId]);
+
+  // Load patient wallet when conversation changes
+  useEffect(() => {
+    if (!activeConv?.patients) { setActiveWalletBalance(null); return; }
+    supabase.from("patients").select("wallet_balance")
+      .eq("clinic_id", clinicId ?? "")
+      .filter("phone", "eq", activeConv.wa_phone)
+      .maybeSingle()
+      .then(({ data }) => setActiveWalletBalance(data?.wallet_balance ?? null));
+  }, [activeConv, clinicId]);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
 

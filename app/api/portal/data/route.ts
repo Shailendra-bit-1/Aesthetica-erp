@@ -30,9 +30,9 @@ export async function GET(req: NextRequest) {
 
     const { patient_id: patientId, clinic_id: clinicId } = session;
 
-    // Fetch patient + appointments + invoices + wallet + loyalty + photos
-    const [patientRes, apptRes, invoiceRes, walletRes, loyaltyRes, photosRes] = await Promise.all([
-      supabaseAdmin.from("patients").select("id, full_name, phone, email, date_of_birth, wallet_balance").eq("id", patientId).single(),
+    // Fetch patient + appointments + invoices + wallet + loyalty + photos + referral code
+    const [patientRes, apptRes, invoiceRes, walletRes, loyaltyRes, photosRes, refCodeRes] = await Promise.all([
+      supabaseAdmin.from("patients").select("id, full_name, phone, email, date_of_birth, wallet_balance, referral_code").eq("id", patientId).single(),
       supabaseAdmin.from("appointments")
         .select("id, start_time, end_time, status, service_name, notes, profiles!provider_id(full_name)")
         .eq("patient_id", patientId)
@@ -60,7 +60,26 @@ export async function GET(req: NextRequest) {
         .not("photos", "is", null)
         .order("created_at", { ascending: false })
         .limit(10),
+      supabaseAdmin.from("referral_codes")
+        .select("code, uses_count, reward_wallet_amount")
+        .eq("patient_id", patientId)
+        .eq("clinic_id", clinicId)
+        .maybeSingle(),
     ]);
+
+    // Auto-create referral code if none exists
+    let referralCode = refCodeRes.data?.code ?? null;
+    if (!referralCode) {
+      const shortName = (patientRes.data?.full_name ?? "PAT").replace(/\s+/g,"").slice(0,4).toUpperCase();
+      const newCode = `${shortName}${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+      const { data: newRef } = await supabaseAdmin.from("referral_codes").insert({
+        clinic_id:            clinicId,
+        patient_id:           patientId,
+        code:                 newCode,
+        reward_wallet_amount: 250,
+      }).select("code").maybeSingle();
+      referralCode = newRef?.code ?? null;
+    }
 
     return NextResponse.json({
       patient:      patientRes.data,
@@ -70,8 +89,13 @@ export async function GET(req: NextRequest) {
         transactions: walletRes.data ?? [],
         balance:      patientRes.data?.wallet_balance ?? 0,
       },
-      loyalty: loyaltyRes.data ?? { balance: 0, tier: "Bronze", color: "#CD7F32" },
-      photos:  photosRes.data ?? [],
+      loyalty:      loyaltyRes.data ?? { balance: 0, tier: "Bronze", color: "#CD7F32" },
+      photos:       photosRes.data ?? [],
+      referral: {
+        code:                referralCode,
+        uses_count:          refCodeRes.data?.uses_count ?? 0,
+        reward_wallet_amount: refCodeRes.data?.reward_wallet_amount ?? 250,
+      },
     });
   } catch (e) {
     console.error("portal/data error:", e);

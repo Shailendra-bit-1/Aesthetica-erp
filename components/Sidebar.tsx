@@ -35,6 +35,7 @@ import {
   Banknote,
   MessageCirclePlus,
   FlaskConical,
+  Stethoscope,
 } from "lucide-react";
 import clsx from "clsx";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -75,6 +76,7 @@ const ADMIN_ITEMS = [
   { label: "Payroll",            href: "/payroll",                   icon: Banknote,          superadminOnly: false },
   { label: "Beta Feedback",      href: "/admin/beta-feedback",       icon: MessageCirclePlus, superadminOnly: false },
   { label: "Simulator",          href: "/admin/simulator",           icon: FlaskConical,      superadminOnly: false },
+  { label: "Conditions & Protocols", href: "/admin/conditions",      icon: Stethoscope,       superadminOnly: false },
 ] as const;
 
 const BOTTOM_ITEMS = [

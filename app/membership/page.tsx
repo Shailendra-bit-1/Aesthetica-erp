@@ -266,6 +266,26 @@ export default function MembershipPage() {
     }
   };
 
+  const renewMembership = async (m: PatientMembership) => {
+    if (!clinicId) return;
+    const durationType = m.membership_plans?.duration_type;
+    const d = new Date();
+    if (durationType === "monthly")   d.setMonth(d.getMonth() + 1);
+    else if (durationType === "quarterly") d.setMonth(d.getMonth() + 3);
+    else if (durationType === "annual")    d.setFullYear(d.getFullYear() + 1);
+    const expires_at = durationType === "lifetime" ? null : d.toISOString().split("T")[0];
+    const { error } = await supabase.rpc("assign_membership_safe", {
+      p_patient_id: m.patient_id,
+      p_plan_id:    m.plan_id,
+      p_clinic_id:  clinicId,
+      p_auto_renew: m.auto_renew,
+      p_started_at: new Date().toISOString().split("T")[0],
+      p_expires_at: expires_at,
+    });
+    if (error) { alert(error.message); return; }
+    fetchMemberships();
+  };
+
   const cancelMembership = async (id: string) => {
     if (!confirm("Cancel this membership?")) return;
     await supabase.from("patient_memberships").update({ status: "cancelled" }).eq("id", id);
@@ -450,6 +470,12 @@ export default function MembershipPage() {
                           <div className="flex gap-1">
                             {m.status === "active" && (
                               <button onClick={() => pauseMembership(m.id)} className="p-1.5 rounded hover:bg-yellow-50 transition-colors" title="Pause"><Pause size={12} style={{ color: "#ca8a04" }} /></button>
+                            )}
+                            {(m.status === "expired" || m.status === "cancelled") && (
+                              <button onClick={() => renewMembership(m)}
+                                className="px-2.5 py-1 rounded text-xs font-semibold transition-colors"
+                                style={{ background: "rgba(34,197,94,0.1)", color: "#16a34a", border: "1px solid rgba(34,197,94,0.25)" }}
+                                title="Renew">Renew</button>
                             )}
                             <button onClick={() => cancelMembership(m.id)} className="p-1.5 rounded hover:bg-red-50 transition-colors" title="Cancel"><X size={12} style={{ color: "#ef4444" }} /></button>
                           </div>

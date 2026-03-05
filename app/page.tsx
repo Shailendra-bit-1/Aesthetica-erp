@@ -72,6 +72,7 @@ interface ClinicRevenue {
   id: string;
   name: string;
   revenue: number;
+  appointments: number;
 }
 
 interface InventoryAlert {
@@ -161,8 +162,14 @@ export default function OverviewPage() {
   const [demoOpening,   setDemoOpening]   = useState(false);
   const [demoClearing,  setDemoClearing]  = useState<string | null>(null);
 
-  // Monthly revenue target — fetched from clinics.monthly_revenue_target (GAP-C4 fix)
-  const [monthlyTarget, setMonthlyTarget] = useState(0);
+  // Monthly revenue target — fetched from clinics
+  const [monthlyTarget,        setMonthlyTarget]        = useState(0);
+  const [monthlyServiceTarget, setMonthlyServiceTarget] = useState(0);
+  const [monthlyProductTarget, setMonthlyProductTarget] = useState(0);
+  const [showTargetEdit,       setShowTargetEdit]       = useState(false);
+  const [editServiceTgt,       setEditServiceTgt]       = useState("");
+  const [editProductTgt,       setEditProductTgt]       = useState("");
+  const [savingTarget,         setSavingTarget]         = useState(false);
 
   // ── Dashboard config load + helpers ────────────────────────────────────────
   useEffect(() => {
@@ -251,7 +258,7 @@ export default function OverviewPage() {
         : Promise.resolve({ data: [] }),
       // GAP-C4: Per-clinic monthly revenue target
       activeClinicId
-        ? supabase.from("clinics").select("monthly_revenue_target").eq("id", activeClinicId).maybeSingle()
+        ? supabase.from("clinics").select("monthly_revenue_target,monthly_service_target,monthly_product_target").eq("id", activeClinicId).maybeSingle()
         : Promise.resolve({ data: null }),
     ]);
 
@@ -264,8 +271,13 @@ export default function OverviewPage() {
     const apptList = (allApptRes.data ?? []) as Appointment[];
     const completedToday = apptList.filter(a => a.status === "completed").length;
 
-    const target = (clinicTargetRes.data as { monthly_revenue_target?: number | null } | null)?.monthly_revenue_target ?? 0;
+    const clinicRow = clinicTargetRes.data as { monthly_revenue_target?: number | null; monthly_service_target?: number | null; monthly_product_target?: number | null } | null;
+    const target = clinicRow?.monthly_revenue_target ?? 0;
+    const svcTarget = clinicRow?.monthly_service_target ?? 0;
+    const prdTarget = clinicRow?.monthly_product_target ?? 0;
     setMonthlyTarget(target);
+    setMonthlyServiceTarget(svcTarget);
+    setMonthlyProductTarget(prdTarget);
     setKpi({
       todayRevenue:      todayRev,
       monthlyCollection: monthRev,
@@ -283,15 +295,19 @@ export default function OverviewPage() {
     // Branch revenue (chain/superadmin)
     if (isChainAdmin && branchRes.data && branchRes.data.length > 0) {
       const clinicIds = (branchRes.data as { id: string; name: string }[]).map(c => c.id);
-      const revPerClinic = await Promise.all(
-        clinicIds.map(cid =>
+      const [revPerClinic, apptPerClinic] = await Promise.all([
+        Promise.all(clinicIds.map(cid =>
           supabase.from("pending_invoices").select("total_amount").eq("clinic_id", cid).eq("status","paid").gte("created_at", monthStart())
-        )
-      );
+        )),
+        Promise.all(clinicIds.map(cid =>
+          supabase.from("appointments").select("id", { count: "exact", head: true }).eq("clinic_id", cid).gte("start_time", monthStart())
+        )),
+      ]);
       const bRevs: ClinicRevenue[] = (branchRes.data as { id: string; name: string }[]).map((c, i) => ({
-        id:      c.id,
-        name:    c.name,
-        revenue: (revPerClinic[i].data ?? []).reduce((s: number, r: { total_amount?: number | null }) => s + (r.total_amount ?? 0), 0),
+        id:           c.id,
+        name:         c.name,
+        revenue:      (revPerClinic[i].data ?? []).reduce((s: number, r: { total_amount?: number | null }) => s + (r.total_amount ?? 0), 0),
+        appointments: apptPerClinic[i].count ?? 0,
       }));
       setBranchRevs(bRevs.sort((a, b) => b.revenue - a.revenue));
     }
@@ -367,6 +383,29 @@ export default function OverviewPage() {
   }
 
   const targetPct = kpi ? Math.min(100, Math.round((kpi.monthlyCollection / kpi.monthlyTarget) * 100)) : 0;
+
+  // Placeholder service/product revenue split (computed from invoice line items in future — for now use total)
+  const svcRevenue = kpi?.monthlyCollection ?? 0; // full collection shown under service bar until line-item split is wired
+  const prdRevenue = 0;
+  const svcPct = monthlyServiceTarget > 0 ? Math.min(100, Math.round((svcRevenue / monthlyServiceTarget) * 100)) : 0;
+  const prdPct = monthlyProductTarget > 0 ? Math.min(100, Math.round((prdRevenue / monthlyProductTarget) * 100)) : 0;
+
+  const saveTargets = async () => {
+    if (!activeClinicId) return;
+    setSavingTarget(true);
+    const svc = parseFloat(editServiceTgt) || 0;
+    const prd = parseFloat(editProductTgt) || 0;
+    await supabase.from("clinics").update({
+      monthly_service_target: svc,
+      monthly_product_target:  prd,
+      monthly_revenue_target:  svc + prd,
+    }).eq("id", activeClinicId);
+    setMonthlyServiceTarget(svc);
+    setMonthlyProductTarget(prd);
+    setMonthlyTarget(svc + prd);
+    setSavingTarget(false);
+    setShowTargetEdit(false);
+  };
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────────
   useKeyboardShortcuts({ onNewPatient: () => setShowNewPat(true) });
@@ -648,9 +687,17 @@ export default function OverviewPage() {
                   Monthly Target
                 </h3>
               </div>
-              <button onClick={fetchAll} className="opacity-50 hover:opacity-100 transition-opacity">
-                <RefreshCw size={13} style={{ color: "var(--text-muted)" }} />
-              </button>
+              <div className="flex items-center gap-2">
+                {isAdmin && (
+                  <button onClick={() => { setEditServiceTgt(String(monthlyServiceTarget)); setEditProductTgt(String(monthlyProductTarget)); setShowTargetEdit(true); }}
+                    className="opacity-50 hover:opacity-100 transition-opacity" title="Edit targets">
+                    <Pencil size={12} style={{ color: "var(--text-muted)" }} />
+                  </button>
+                )}
+                <button onClick={fetchAll} className="opacity-50 hover:opacity-100 transition-opacity">
+                  <RefreshCw size={13} style={{ color: "var(--text-muted)" }} />
+                </button>
+              </div>
             </div>
 
             {loading ? (
@@ -659,34 +706,55 @@ export default function OverviewPage() {
               </div>
             ) : (
               <div className="space-y-4">
+                {/* Overall % */}
                 <div>
                   <div className="flex justify-between items-end mb-2">
                     <span className="text-2xl font-bold" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>
                       {targetPct}%
                     </span>
-                    <span className="text-xs" style={{ color: "var(--text-muted)" }}>achieved</span>
+                    <span className="text-xs" style={{ color: "var(--text-muted)" }}>overall</span>
                   </div>
-                  {/* Progress bar */}
-                  <div className="h-3 rounded-full overflow-hidden" style={{ background: "rgba(197,160,89,0.12)" }}>
-                    <div
-                      className="h-full rounded-full transition-all duration-700"
+                  <div className="h-2 rounded-full overflow-hidden" style={{ background: "rgba(197,160,89,0.12)" }}>
+                    <div className="h-full rounded-full transition-all duration-700"
                       style={{
                         width: `${targetPct}%`,
-                        background: targetPct >= 80
-                          ? "linear-gradient(90deg, #C5A059, #8B9E7A)"
-                          : targetPct >= 50
-                            ? "linear-gradient(90deg, #C5A059, #E8935A)"
-                            : "linear-gradient(90deg, #E8935A, #B45050)",
+                        background: targetPct >= 80 ? "linear-gradient(90deg, #C5A059, #8B9E7A)" : targetPct >= 50 ? "linear-gradient(90deg, #C5A059, #E8935A)" : "linear-gradient(90deg, #E8935A, #B45050)",
                       }}
                     />
                   </div>
                 </div>
 
+                {/* Service target bar */}
+                {monthlyServiceTarget > 0 && (
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-xs" style={{ color: "var(--text-muted)" }}>Services</span>
+                      <span className="text-xs font-medium" style={{ color: "var(--foreground)" }}>{fmt(svcRevenue)} / {fmt(monthlyServiceTarget)}</span>
+                    </div>
+                    <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(139,158,122,0.15)" }}>
+                      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${svcPct}%`, background: "#8B9E7A" }} />
+                    </div>
+                  </div>
+                )}
+
+                {/* Product target bar */}
+                {monthlyProductTarget > 0 && (
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-xs" style={{ color: "var(--text-muted)" }}>Products</span>
+                      <span className="text-xs font-medium" style={{ color: "var(--foreground)" }}>{fmt(prdRevenue)} / {fmt(monthlyProductTarget)}</span>
+                    </div>
+                    <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(124,58,237,0.12)" }}>
+                      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${prdPct}%`, background: "#7c3aed" }} />
+                    </div>
+                  </div>
+                )}
+
                 <div className="space-y-2 pt-1">
                   {[
                     { label: "Collected",  value: fmt(kpi?.monthlyCollection ?? 0), color: "#8B9E7A" },
-                    { label: "Target",     value: fmt(kpi?.monthlyTarget ?? 0),    color: "#C5A059" },
-                    { label: "Remaining",  value: fmt(Math.max(0, (kpi?.monthlyTarget ?? 0) - (kpi?.monthlyCollection ?? 0))), color: "#E8935A" },
+                    { label: "Target",     value: fmt(monthlyTarget),               color: "#C5A059" },
+                    { label: "Remaining",  value: fmt(Math.max(0, monthlyTarget - (kpi?.monthlyCollection ?? 0))), color: "#E8935A" },
                   ].map(row => (
                     <div key={row.label} className="flex justify-between items-center">
                       <div className="flex items-center gap-2">
@@ -744,7 +812,12 @@ export default function OverviewPage() {
                     <div key={b.id}>
                       <div className="flex justify-between items-center mb-1">
                         <span className="text-xs font-medium truncate max-w-[140px]" style={{ color: "var(--foreground)" }}>{b.name}</span>
-                        <span className="text-xs font-semibold" style={{ color: i === 0 ? "var(--gold)" : "var(--text-muted)" }}>{fmt(b.revenue)}</span>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                            <Calendar size={10} className="inline mr-0.5" />{b.appointments} appts
+                          </span>
+                          <span className="text-xs font-semibold" style={{ color: i === 0 ? "var(--gold)" : "var(--text-muted)" }}>{fmt(b.revenue)}</span>
+                        </div>
                       </div>
                       <div className="h-2 rounded-full overflow-hidden" style={{ background: "rgba(197,160,89,0.1)" }}>
                         <div className="h-full rounded-full transition-all duration-500"
@@ -1086,6 +1159,42 @@ export default function OverviewPage() {
 
       {/* New Patient Modal */}
       <NewPatientModal isOpen={showNewPat} onClose={() => setShowNewPat(false)} />
+
+      {/* N-0: Target edit modal */}
+      {showTargetEdit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.45)" }}>
+          <div className="rounded-2xl p-6 w-full max-w-sm shadow-2xl" style={{ background: "var(--surface)", border: "1px solid rgba(197,160,89,0.2)" }}>
+            <h3 className="text-base font-semibold mb-4" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>Edit Monthly Targets</h3>
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-muted)" }}>Service Revenue Target (₹)</label>
+                <input type="number" value={editServiceTgt} onChange={e => setEditServiceTgt(e.target.value)}
+                  className="w-full rounded-lg px-3 py-2 text-sm outline-none"
+                  style={{ background: "var(--surface-warm)", border: "1px solid rgba(197,160,89,0.3)", color: "var(--foreground)" }} />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-muted)" }}>Product Sales Target (₹)</label>
+                <input type="number" value={editProductTgt} onChange={e => setEditProductTgt(e.target.value)}
+                  className="w-full rounded-lg px-3 py-2 text-sm outline-none"
+                  style={{ background: "var(--surface-warm)", border: "1px solid rgba(197,160,89,0.3)", color: "var(--foreground)" }} />
+              </div>
+              <div className="text-xs px-3 py-2 rounded-lg" style={{ background: "rgba(197,160,89,0.08)", color: "var(--text-muted)" }}>
+                Overall total: ₹{((parseFloat(editServiceTgt) || 0) + (parseFloat(editProductTgt) || 0)).toLocaleString("en-IN")}
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setShowTargetEdit(false)} className="flex-1 py-2 rounded-lg text-sm"
+                style={{ background: "var(--surface-warm)", color: "var(--text-muted)", border: "1px solid var(--border)" }}>
+                Cancel
+              </button>
+              <button onClick={saveTargets} disabled={savingTarget} className="flex-1 py-2 rounded-lg text-sm font-medium"
+                style={{ background: "var(--gold)", color: "#fff" }}>
+                {savingTarget ? "Saving…" : "Save Targets"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dashboard Customize Drawer */}
       <Drawer

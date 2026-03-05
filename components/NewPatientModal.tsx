@@ -149,6 +149,7 @@ export default function NewPatientModal({ isOpen, onClose }: Props) {
   const [errorMsg,      setErrorMsg]      = useState<string | null>(null);
   const [providers,     setProviders]     = useState<{ id: string; full_name: string }[]>([]);
   const [dupPatient,    setDupPatient]    = useState<{ id: string; full_name: string; phone: string } | null>(null);
+  const [createdPatientId, setCreatedPatientId] = useState<string | null>(null);
   const firstRef = useRef<HTMLInputElement>(null);
 
   // Derive clinicId (use activeClinicId or profile.clinic_id)
@@ -277,13 +278,14 @@ export default function NewPatientModal({ isOpen, onClose }: Props) {
         });
     }
 
+    setCreatedPatientId(patientId);
     setSubmitState("success");
     toast.success(`${basic.fullName} registered`, {
       description: basic.sendIntake ? "Patient added · Intake form link ready." : "Patient added to records.",
       icon: <Sparkles size={15} color="#C5A059" />,
       duration: 4000,
     });
-    setTimeout(() => { onClose(); router.push(`/patients/${patientId}`); }, 800);
+    setTimeout(() => { onClose(); router.push(`/patients/${patientId}`); }, 3000);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -626,9 +628,35 @@ export default function NewPatientModal({ isOpen, onClose }: Props) {
               </button>
             </div>
 
+            {/* N7: Post-registration quick actions */}
+            {submitState === "success" && createdPatientId && (
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button type="button"
+                  onClick={() => {
+                    const url = `${typeof window !== "undefined" ? window.location.origin : ""}/portal?phone=${basic.phone.replace(/\D/g, "")}`;
+                    navigator.clipboard.writeText(url).then(() => toast.success("Portal link copied!"));
+                  }}
+                  style={{ flex: 1, padding: "9px 0", borderRadius: "var(--radius-lg)", fontSize: 12, fontWeight: 600, border: "1px solid rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.07)", color: "var(--gold)", cursor: "pointer" }}>
+                  Copy Portal Link
+                </button>
+                <button type="button"
+                  onClick={() => {
+                    const origin = typeof window !== "undefined" ? window.location.origin : "";
+                    const intakeUrl = `${origin}/intake/${clinicId}`;
+                    const msg = `Hello ${basic.fullName}! Please complete your intake form: ${intakeUrl}`;
+                    window.open(`https://wa.me/91${basic.phone.replace(/\D/g, "")}?text=${encodeURIComponent(msg)}`, "_blank");
+                  }}
+                  style={{ flex: 1, padding: "9px 0", borderRadius: "var(--radius-lg)", fontSize: 12, fontWeight: 600, border: "1px solid rgba(37,211,102,0.4)", background: "rgba(37,211,102,0.07)", color: "#16a34a", cursor: "pointer" }}>
+                  Send Intake via WA
+                </button>
+              </div>
+            )}
+
+            {submitState !== "success" && (
             <p style={{ fontSize: 11, textAlign: "center", color: "var(--text-muted)", marginTop: 10 }}>
               A unique referral code is auto-generated for this patient.
             </p>
+            )}
           </div>
         </form>
       </aside>

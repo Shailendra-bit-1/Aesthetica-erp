@@ -270,6 +270,11 @@ function SchedulerPageInner() {
   }
 
   async function handleQuickAction(apptId: string, status: AppointmentStatus) {
+    // M5: "completed" must go through full checkout modal (credit + commission)
+    if (status === "completed") {
+      const appt = appointments.find(a => a.id === apptId);
+      if (appt) { setSelectedAppt(appt); return; }
+    }
     const { error } = await supabase.from("appointments")
       .update({ status, updated_at: new Date().toISOString() })
       .eq("id", apptId);
@@ -1060,10 +1065,11 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
   const masked = (isVip || isHni) && privacyMode;
   const displayName = masked ? (isVip ? "VIP Patient" : "HNI Patient") : a.patient_name;
 
-  const [updating,     setUpdating]     = useState(false);
-  const [credits,      setCredits]      = useState<PatientCredit[]>([]);
-  const [loadingCreds, setLoadingCreds] = useState(false);
-  const [selectedCred, setSelectedCred] = useState<string | "none">("none");
+  const [updating,      setUpdating]     = useState(false);
+  const [credits,       setCredits]      = useState<PatientCredit[]>([]);
+  const [loadingCreds,  setLoadingCreds] = useState(false);
+  const [selectedCred,  setSelectedCred] = useState<string | "none">("none");
+  const [patientPhone,  setPatientPhone] = useState<string | null>(null);
   const [showConsume,  setShowConsume]  = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [showCancel,   setShowCancel]   = useState(false);
@@ -1116,6 +1122,13 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
       setRescheduling(false);
     }
   }
+
+  // Fetch patient phone on mount
+  useEffect(() => {
+    if (!a.patient_id) return;
+    supabase.from("patients").select("phone").eq("id", a.patient_id).maybeSingle()
+      .then(({ data }) => setPatientPhone(data?.phone ?? null));
+  }, [a.patient_id]);
 
   // Fetch patient credits on mount
   useEffect(() => {
@@ -1371,6 +1384,18 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
             <DetailRow icon={<Clock size={14} />}    label="Time"
               value={`${fmtTime(start)} – ${fmtTime(end)} (${durMins} min)`} />
             {a.room && <DetailRow icon={<MapPin size={14} />} label="Room" value={a.room} />}
+            {patientPhone && !masked && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <DetailRow icon={<Send size={14} />} label="Phone" value={patientPhone} />
+                <a
+                  href={`https://wa.me/91${patientPhone.replace(/\D/g,"")}`}
+                  target="_blank" rel="noreferrer"
+                  style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: "rgba(37,211,102,0.1)", color: "#128C7E", border: "1px solid rgba(37,211,102,0.3)", textDecoration: "none", whiteSpace: "nowrap" }}
+                >
+                  WA
+                </a>
+              </div>
+            )}
           </div>
           {a.notes && (
             <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(197,160,89,0.05)", border: "1px solid rgba(197,160,89,0.15)", marginBottom: 14 }}>
@@ -1859,6 +1884,16 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
 
       const extraMsg = extraRows.length > 0 ? ` + ${extraRows.length} extra service${extraRows.length > 1 ? "s" : ""}` : "";
       toast.success(`Appointment booked for ${selectedPatient.full_name}${extraMsg}`);
+      // N6: send intake form link
+      if (sendIntake && selectedPatient) {
+        const intakeUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/intake/${activeClinicId}`;
+        const phone = (selectedPatient as { phone?: string | null }).phone?.replace(/\D/g, "") ?? "";
+        if (phone) {
+          window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(`Hi! Please fill your intake form before your visit: ${intakeUrl}`)}`, "_blank");
+        } else {
+          toast.info(`Intake link: ${intakeUrl}`, { duration: 8000 });
+        }
+      }
       onSaved();
     } catch (e) {
       toast.error("Failed to book appointment");
@@ -2169,13 +2204,35 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
             {conflict && (
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px", borderRadius: 10, background: settings?.enable_double_booking ? "rgba(212,160,23,0.08)" : "rgba(180,60,60,0.07)", border: `1px solid ${settings?.enable_double_booking ? "rgba(212,160,23,0.35)" : "rgba(180,60,60,0.3)"}` }}>
                 <AlertTriangle size={14} style={{ color: settings?.enable_double_booking ? "#D4A017" : "#B43C3C", flexShrink: 0, marginTop: 1 }} />
-                <div>
+                <div style={{ flex: 1 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: settings?.enable_double_booking ? "#D4A017" : "#B43C3C", margin: 0 }}>
                     {settings?.enable_double_booking ? "Warning: Double Booking" : "Booking Conflict"}
                   </p>
                   <p style={{ fontSize: 11, color: settings?.enable_double_booking ? "#D4A017" : "#B43C3C", margin: 0, opacity: 0.8 }}>{conflict}</p>
                   {!settings?.enable_double_booking && (
-                    <p style={{ fontSize: 11, color: "#9C9584", margin: "4px 0 0" }}>Double booking is OFF. Contact admin to override.</p>
+                    <>
+                      <p style={{ fontSize: 11, color: "#9C9584", margin: "4px 0 0" }}>Double booking is OFF. Add patient to the waitlist instead.</p>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!selectedPatient || !activeClinicId) return;
+                          const { error } = await supabase.from("scheduler_waitlist").insert({
+                            clinic_id:      activeClinicId,
+                            patient_id:     selectedPatient.id,
+                            service_id:     serviceId || null,
+                            preferred_date: date || null,
+                            notes:          notes || null,
+                            status:         "waiting",
+                            added_by:       profile?.id ?? null,
+                          });
+                          if (error) { toast.error("Could not add to waitlist"); }
+                          else { toast.success(`${selectedPatient.full_name} added to waitlist`); onClose(); }
+                        }}
+                        style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600, border: "1px solid rgba(180,60,60,0.35)", background: "rgba(180,60,60,0.08)", color: "#B43C3C", cursor: "pointer" }}
+                      >
+                        Add to Waitlist
+                      </button>
+                    </>
                   )}
                 </div>
               </div>

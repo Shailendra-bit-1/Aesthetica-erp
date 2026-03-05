@@ -18,6 +18,7 @@ export async function POST(req: NextRequest) {
       lastInjectionDate,
       injectionComplications,
       notes,
+      referralCode,
     } = body as {
       clinicId: string;
       fullName: string;
@@ -29,6 +30,7 @@ export async function POST(req: NextRequest) {
       lastInjectionDate?: string;
       injectionComplications?: string;
       notes?: string;
+      referralCode?: string;
     };
 
     if (!clinicId || !fullName || !phone || !concerns?.length) {
@@ -99,6 +101,44 @@ export async function POST(req: NextRequest) {
     // Log server-side but still return success to the patient.
     if (historyError) {
       console.error("[intake/submit] patient_medical_history insert failed:", historyError.message);
+    }
+
+    // ── Step 4 (N2-2): Referral reward — credit referrer's wallet ─────────────
+    if (referralCode) {
+      try {
+        const { data: refCodeRow } = await supabase
+          .from("referral_codes")
+          .select("id, patient_id, reward_wallet_amount, uses_count")
+          .eq("code", referralCode.toUpperCase())
+          .eq("clinic_id", clinicId)
+          .maybeSingle();
+
+        if (refCodeRow) {
+          // Insert referral event
+          await supabase.from("referral_events").insert({
+            clinic_id:           clinicId,
+            referral_code_id:    refCodeRow.id,
+            referred_patient_id: patient.id,
+            reward_amount:       refCodeRow.reward_wallet_amount,
+          });
+          // Credit referrer's wallet
+          await supabase.rpc("add_wallet_credit", {
+            p_patient_id:     refCodeRow.patient_id,
+            p_clinic_id:      clinicId,
+            p_amount:         refCodeRow.reward_wallet_amount,
+            p_reason:         `Referral reward — ${fullName} registered`,
+            p_reference_id:   patient.id,
+            p_reference_type: "referral",
+          });
+          // Increment uses_count
+          await supabase.from("referral_codes")
+            .update({ uses_count: refCodeRow.uses_count + 1 })
+            .eq("id", refCodeRow.id);
+        }
+      } catch (refErr) {
+        // Non-fatal — don't fail intake if referral processing fails
+        console.error("[intake/submit] referral reward failed:", refErr);
+      }
     }
 
     return NextResponse.json({ success: true, patientId: patient.id });

@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { ROLE_PERMISSIONS, type StaffRole } from "@/lib/permissions";
 
-async function getSuperadminSession() {
+async function getAdminSession() {
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -20,16 +20,16 @@ async function getSuperadminSession() {
   if (!user) return null;
   const { data: profile } = await supabase
     .from("profiles")
-    .select("role")
+    .select("role, clinic_id")
     .eq("id", user.id)
     .maybeSingle();
-  if (profile?.role !== "superadmin") return null;
-  return user;
+  const allowed = ["superadmin", "chain_admin", "clinic_admin"];
+  if (!profile?.role || !allowed.includes(profile.role)) return null;
+  return { user, role: profile.role, clinic_id: profile.clinic_id };
 }
 
 export async function POST(request: NextRequest) {
-  // Auth guard: superadmin only
-  const caller = await getSuperadminSession();
+  const caller = await getAdminSession();
   if (!caller) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
@@ -42,12 +42,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { name, email, role, clinicId } = (await request.json()) as {
+  const body = (await request.json()) as {
     name: string;
     email: string;
     role: StaffRole;
     clinicId?: string;
   };
+  const { name, email, role } = body;
+  // clinic_admin can only invite to their own clinic
+  const clinicId = caller.role === "clinic_admin" ? (caller.clinic_id ?? body.clinicId) : body.clinicId;
 
   if (!name || !email || !role) {
     return NextResponse.json(

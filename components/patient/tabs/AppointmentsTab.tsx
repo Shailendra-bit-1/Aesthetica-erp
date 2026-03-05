@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Calendar, Clock, User, CheckCircle2, XCircle, AlertCircle, MinusCircle, ExternalLink } from "lucide-react";
+import { Calendar, Clock, User, CheckCircle2, XCircle, AlertCircle, MinusCircle, ExternalLink, RefreshCw } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { Patient, fmtDate, fmtDateTime } from "../types";
 
@@ -155,10 +155,20 @@ export default function AppointmentsTab({ patient, clinicId }: Props) {
                       </div>
                     )}
                   </div>
-                  {/* Status badge */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 999, background: cfg.bg, border: `1px solid ${cfg.border}`, flexShrink: 0 }}>
-                    <Icon size={11} color={cfg.text} />
-                    <span style={{ fontSize: 11, fontWeight: 600, color: cfg.text }}>{cfg.label}</span>
+                  {/* Status badge + follow-up */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 999, background: cfg.bg, border: `1px solid ${cfg.border}` }}>
+                      <Icon size={11} color={cfg.text} />
+                      <span style={{ fontSize: 11, fontWeight: 600, color: cfg.text }}>{cfg.label}</span>
+                    </div>
+                    {appt.status === "completed" && (
+                      <a
+                        href={`/scheduler?patient=${patient.id}&service=${encodeURIComponent(appt.service_name)}`}
+                        style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", color: "#C5A059", textDecoration: "none" }}
+                      >
+                        <RefreshCw size={9} /> Follow-up
+                      </a>
+                    )}
                   </div>
                 </div>
                 {/* Full date line */}

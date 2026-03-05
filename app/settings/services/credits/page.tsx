@@ -80,6 +80,7 @@ interface Commission {
   commission_amount: number;
   status: "pending" | "paid";
   created_at: string;
+  paid_at: string | null;
 }
 
 const fmt = (n: number) =>
@@ -756,6 +757,23 @@ function CommissionsTab({ commissions, loading, onRefresh, isAdmin }: {
     onRefresh();
   }
 
+  function exportCsv() {
+    const rows = [
+      ["Provider", "Patient", "Service", "Sale Amount", "Commission %", "Commission Amount", "Status", "Date", "Paid At"],
+      ...commissions.map(c => [
+        c.provider_name, c.patient_name ?? "", c.service_name,
+        c.sale_amount, c.commission_pct, c.commission_amount,
+        c.status, new Date(c.created_at).toLocaleDateString("en-IN"),
+        c.paid_at ? new Date(c.paid_at).toLocaleDateString("en-IN") : "",
+      ]),
+    ];
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    a.download = `commissions_${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+  }
+
   if (loading) return <CenteredLoader />;
   if (commissions.length === 0) return <EmptyState icon={<TrendingUp size={32} />} text="No commissions yet" sub="Commissions are auto-calculated when a session is consumed" />;
 
@@ -773,6 +791,10 @@ function CommissionsTab({ commissions, loading, onRefresh, isAdmin }: {
               <p style={{ fontSize: 12, color: "#9C9584", margin: 0 }}>{pending.length} commission(s) due across {[...new Set(pending.map(c => c.provider_name))].length} staff member(s)</p>
             </div>
           </div>
+          <button onClick={exportCsv}
+            style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.35)", background: "rgba(197,160,89,0.08)", color: "#C5A059", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            Export CSV
+          </button>
         </div>
       )}
 

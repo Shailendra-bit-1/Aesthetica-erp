@@ -7,7 +7,7 @@ import { useClinic } from "@/contexts/ClinicContext";
 import { logAction } from "@/lib/audit";
 import {
   Users, Search, ChevronRight, Sparkles, Phone, Mail, Calendar, Eye, EyeOff,
-  AlertTriangle, Stethoscope, Building2, UserPlus,
+  AlertTriangle, Stethoscope, Building2, UserPlus, SlidersHorizontal, X,
 } from "lucide-react";
 import TopBar from "@/components/TopBar";
 import NewPatientModal from "@/components/NewPatientModal";
@@ -66,6 +66,9 @@ export default function PatientsPage() {
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
   const [filterTab,   setFilterTab]   = useState<"all" | "allergy">("all");
   const [modalOpen,   setModalOpen]   = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const [filterConcern,  setFilterConcern]  = useState("");
+  const [filterRegistered, setFilterRegistered] = useState<"" | "30d" | "90d" | "180d">("");
 
   // Fetch patients
   useEffect(() => {
@@ -122,17 +125,31 @@ export default function PatientsPage() {
   // Keyboard shortcut: N → New Patient
   useKeyboardShortcuts({ onNewPatient: () => setModalOpen(true) });
 
+  // Unique concerns for filter dropdown
+  const allConcerns = useMemo(() => {
+    const seen = new Set<string>();
+    patients.forEach(p => p.primary_concern?.[0] && seen.add(p.primary_concern[0]));
+    return Array.from(seen).sort();
+  }, [patients]);
+
   // Filter + search
-  const filtered = useMemo(() => patients.filter(p => {
-    if (filterTab === "allergy" && !(p.allergies?.filter(Boolean).length)) return false;
-    if (!query) return true;
-    const q = query.toLowerCase();
-    return (
-      p.full_name.toLowerCase().includes(q) ||
-      (p.email ?? "").toLowerCase().includes(q) ||
-      p.phone.includes(q)
-    );
-  }), [patients, query, filterTab]);
+  const filtered = useMemo(() => {
+    const cutoff = filterRegistered
+      ? new Date(Date.now() - parseInt(filterRegistered) * 86400000).toISOString()
+      : null;
+    return patients.filter(p => {
+      if (filterTab === "allergy" && !(p.allergies?.filter(Boolean).length)) return false;
+      if (filterConcern && p.primary_concern?.[0] !== filterConcern) return false;
+      if (cutoff && p.created_at < cutoff) return false;
+      if (!query) return true;
+      const q = query.toLowerCase();
+      return (
+        p.full_name.toLowerCase().includes(q) ||
+        (p.email ?? "").toLowerCase().includes(q) ||
+        p.phone.includes(q)
+      );
+    });
+  }, [patients, query, filterTab, filterConcern, filterRegistered]);
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
@@ -233,8 +250,8 @@ export default function PatientsPage() {
               ))}
             </div>
 
-            {/* Filter tabs */}
-            <div className="flex items-center gap-2">
+            {/* Filter tabs + advanced filter button */}
+            <div className="flex items-center gap-2 flex-wrap">
               {([
                 { key: "all",     label: `All (${patients.length})`               },
                 { key: "allergy", label: `⚠ Allergy Flags (${stats.allergies})`  },
@@ -252,7 +269,53 @@ export default function PatientsPage() {
                   {t.label}
                 </button>
               ))}
+              <button onClick={() => setShowFilters(v => !v)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ml-auto"
+                style={{
+                  background: (showFilters || filterConcern || filterRegistered) ? "rgba(197,160,89,0.15)" : "white",
+                  border: `1px solid ${(filterConcern || filterRegistered) ? "rgba(197,160,89,0.5)" : "rgba(197,160,89,0.2)"}`,
+                  color: (filterConcern || filterRegistered) ? "#8B6914" : "#9C9584",
+                }}>
+                <SlidersHorizontal size={11} />
+                Filters{(filterConcern || filterRegistered) ? " •" : ""}
+              </button>
             </div>
+
+            {/* M13: Advanced filter panel */}
+            {showFilters && (
+              <div className="flex flex-wrap gap-3 px-4 py-3 rounded-xl" style={{ background: "rgba(197,160,89,0.05)", border: "1px solid rgba(197,160,89,0.15)" }}>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium" style={{ color: "#9C9584" }}>Primary Concern</label>
+                  <select value={filterConcern} onChange={e => setFilterConcern(e.target.value)}
+                    className="px-2.5 py-1.5 rounded-lg text-xs outline-none"
+                    style={{ border: "1px solid rgba(197,160,89,0.3)", background: "#fff", color: "#1C1917", minWidth: 140 }}>
+                    <option value="">All concerns</option>
+                    {allConcerns.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-medium" style={{ color: "#9C9584" }}>Registered</label>
+                  <select value={filterRegistered} onChange={e => setFilterRegistered(e.target.value as "" | "30d" | "90d" | "180d")}
+                    className="px-2.5 py-1.5 rounded-lg text-xs outline-none"
+                    style={{ border: "1px solid rgba(197,160,89,0.3)", background: "#fff", color: "#1C1917", minWidth: 120 }}>
+                    <option value="">Any time</option>
+                    <option value="30d">Last 30 days</option>
+                    <option value="90d">Last 90 days</option>
+                    <option value="180d">Last 180 days</option>
+                  </select>
+                </div>
+                {(filterConcern || filterRegistered) && (
+                  <button onClick={() => { setFilterConcern(""); setFilterRegistered(""); }}
+                    className="self-end flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium"
+                    style={{ border: "1px solid rgba(220,38,38,0.25)", background: "rgba(220,38,38,0.05)", color: "#B43C3C" }}>
+                    <X size={10} /> Clear
+                  </button>
+                )}
+                <span className="self-end ml-auto text-xs" style={{ color: "#9C9584" }}>
+                  Showing {filtered.length} of {patients.length}
+                </span>
+              </div>
+            )}
 
             {/* Table */}
             <div className="card" style={{ padding: 0, overflow: "hidden" }}>

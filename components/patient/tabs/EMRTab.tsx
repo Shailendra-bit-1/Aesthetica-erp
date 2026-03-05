@@ -6,7 +6,7 @@ import {
   Plus, X, Clipboard, FileText, Camera, Upload, Loader2,
   CheckCircle2, Stethoscope, DollarSign, ChevronDown, ChevronUp,
   AlertTriangle, Syringe, ShieldCheck, Activity, Star, Image,
-  MessageCircle, Printer, Mail, Save,
+  MessageCircle, Printer, Mail, Save, BookOpen,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -357,8 +357,37 @@ function SOAPDrawer({ patient, clinicId, onClose }: { patient: Patient; clinicId
     uid: string; productName: string; lotNumber: string;
     expiryDate: string; unitsUsed: string; injectionSite: string;
   }[]>([]);
+  const [showTemplates,  setShowTemplates]  = useState(false);
+  const [templates,      setTemplates]      = useState<{ id: string; name: string; fields: Record<string, string> }[]>([]);
   const fileRef  = useRef<HTMLInputElement>(null);
   const cptTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadTemplates = useCallback(async () => {
+    if (templates.length > 0) return; // already loaded
+    const { data } = await supabase.from("form_definitions")
+      .select("id, name: name, fields")
+      .eq("form_type", "soap")
+      .eq("is_active", true)
+      .order("name");
+    setTemplates(
+      (data ?? []).map((t: any) => ({
+        id: t.id,
+        name: t.name,
+        fields: t.fields as Record<string, string>,
+      }))
+    );
+  }, [templates.length]);
+
+  function applyTemplate(tpl: { fields: Record<string, string> }) {
+    setSoap(s => ({
+      subjective: tpl.fields.subjective ? (s.subjective ? `${s.subjective}\n${tpl.fields.subjective}` : tpl.fields.subjective) : s.subjective,
+      objective:  tpl.fields.objective  ? (s.objective  ? `${s.objective}\n${tpl.fields.objective}`  : tpl.fields.objective)  : s.objective,
+      assessment: tpl.fields.assessment ? (s.assessment ? `${s.assessment}\n${tpl.fields.assessment}` : tpl.fields.assessment) : s.assessment,
+      plan:       tpl.fields.plan       ? (s.plan       ? `${s.plan}\n${tpl.fields.plan}`             : tpl.fields.plan)       : s.plan,
+    }));
+    setShowTemplates(false);
+    toast.success("Template loaded");
+  }
 
   function onCptInput(val: string) {
     setCptQuery(val);
@@ -446,9 +475,29 @@ function SOAPDrawer({ patient, clinicId, onClose }: { patient: Patient; clinicId
                 <p style={{ fontSize: 12, color: "#9C9584", margin: 0 }}>{patient.full_name} · {fmtDate(new Date().toISOString())}</p>
               </div>
             </div>
-            <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <X size={15} color="#9C9584" />
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
+              <button
+                onClick={() => { setShowTemplates(v => !v); loadTemplates(); }}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#7A5C14" }}
+              >
+                <BookOpen size={13} color="#C5A059" /> Load Template
+              </button>
+              {showTemplates && (
+                <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: "white", borderRadius: 12, border: "1px solid rgba(197,160,89,0.2)", boxShadow: "0 10px 36px rgba(28,25,23,0.14)", zIndex: 300, minWidth: 220, maxHeight: 280, overflowY: "auto" }}>
+                  {templates.length === 0 ? (
+                    <p style={{ padding: "14px 16px", fontSize: 12, color: "#9C9584", margin: 0 }}>No SOAP templates found</p>
+                  ) : templates.map(t => (
+                    <button key={t.id} onClick={() => applyTemplate(t)}
+                      style={{ width: "100%", textAlign: "left", padding: "10px 16px", border: "none", borderBottom: "1px solid rgba(197,160,89,0.07)", background: "transparent", cursor: "pointer", fontSize: 13, color: "#1C1917", fontFamily: "Georgia, serif" }}>
+                      {t.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <X size={15} color="#9C9584" />
+              </button>
+            </div>
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 16 }}>
             {SOAP_TABS.map(tab => {

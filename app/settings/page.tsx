@@ -457,24 +457,29 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
   const [name,          setName]          = useState("");
   const [loc,           setLoc]           = useState("");
   const [email,         setEmail]         = useState("");
-  const [monthlyTarget, setMonthlyTarget] = useState("");
-  const [loading,       setLoading]       = useState(true);
-  const [saving,        setSaving]        = useState(false);
+  const [monthlyTarget,        setMonthlyTarget]        = useState("");
+  const [monthlyServiceTarget, setMonthlyServiceTarget] = useState("");
+  const [monthlyProductTarget, setMonthlyProductTarget] = useState("");
+  const [loading,              setLoading]              = useState(true);
+  const [saving,               setSaving]               = useState(false);
 
   useEffect(() => {
     if (!clinicId) { setLoading(false); return; }
     supabase
       .from("clinics")
-      .select("id, name, location, admin_email, subscription_status, chain_id, monthly_revenue_target")
+      .select("id, name, location, admin_email, subscription_status, chain_id, monthly_revenue_target, monthly_service_target, monthly_product_target")
       .eq("id", clinicId)
       .maybeSingle()
       .then(({ data }) => {
         if (data) {
+          const d = data as typeof data & { monthly_service_target?: number | null; monthly_product_target?: number | null };
           setClinic(data as ClinicRow);
           setName(data.name ?? "");
           setLoc(data.location ?? "");
           setEmail(data.admin_email ?? "");
           setMonthlyTarget(String(data.monthly_revenue_target ?? ""));
+          setMonthlyServiceTarget(String(d.monthly_service_target ?? ""));
+          setMonthlyProductTarget(String(d.monthly_product_target ?? ""));
         }
         setLoading(false);
       });
@@ -489,7 +494,9 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
         name: name.trim(),
         location: loc.trim() || null,
         admin_email: email.trim() || null,
-        monthly_revenue_target: monthlyTarget ? parseFloat(monthlyTarget) : 0,
+        monthly_service_target: monthlyServiceTarget ? parseFloat(monthlyServiceTarget) : 0,
+        monthly_product_target:  monthlyProductTarget ? parseFloat(monthlyProductTarget) : 0,
+        monthly_revenue_target:  (monthlyServiceTarget ? parseFloat(monthlyServiceTarget) : 0) + (monthlyProductTarget ? parseFloat(monthlyProductTarget) : 0) || (monthlyTarget ? parseFloat(monthlyTarget) : 0),
       })
       .eq("id", clinicId);
     setSaving(false);
@@ -552,15 +559,24 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
               <Input value={email} onChange={setEmail} placeholder="admin@yourclinicdomain.com" type="email" icon={Mail} />
             </div>
             <div>
-              <FieldLabel>Monthly Revenue Target (₹)</FieldLabel>
+              <FieldLabel>Service Revenue Target (₹)</FieldLabel>
               <Input
-                value={monthlyTarget}
-                onChange={setMonthlyTarget}
-                placeholder="e.g. 500000"
+                value={monthlyServiceTarget}
+                onChange={setMonthlyServiceTarget}
+                placeholder="e.g. 400000"
+                type="number"
+              />
+            </div>
+            <div>
+              <FieldLabel>Product Sales Target (₹)</FieldLabel>
+              <Input
+                value={monthlyProductTarget}
+                onChange={setMonthlyProductTarget}
+                placeholder="e.g. 100000"
                 type="number"
               />
               <p style={{ fontSize: 11, color: "#9C9584", marginTop: 4 }}>
-                Used for the progress bar on the dashboard. Set to 0 to hide the target.
+                Combined total is used for the dashboard progress bar.
               </p>
             </div>
           </div>

@@ -9,7 +9,9 @@ import CustomFieldsSection from "@/components/CustomFieldsSection";
 import {
   Plus, X, Calendar, TrendingUp, Clock, Check, Printer,
   MessageCircle, Mail, Save, Images, ChevronLeft, ChevronRight,
+  FileText, Loader2,
 } from "lucide-react";
+import { toast } from "sonner";
 
 type PackageType = "single_service" | "custom_package";
 type ConversionStatus = "pending" | "converted" | "partial" | "declined";
@@ -555,6 +557,7 @@ export default function CounsellingPage() {
   const [doctorPanelOpen, setDoctorPanelOpen]     = useState(false);
   const [proformaOpen, setProformaOpen]           = useState(false);
   const [clinicName, setClinicName]               = useState("Aesthetica Clinic");
+  const [converting, setConverting]               = useState(false);
 
   const fetchSessions = useCallback(async () => {
     if (!clinicId) return;
@@ -734,6 +737,45 @@ export default function CounsellingPage() {
     if (selectedSession?.id === id) setSelectedSession(prev => prev ? { ...prev, conversion_status: status } : null);
   };
 
+  const convertToInvoice = async () => {
+    if (!selectedSession || !clinicId) return;
+    setConverting(true);
+    try {
+      const treatments = selectedSession.treatments_discussed ?? [];
+      const { error } = await supabase.rpc("create_invoice_with_items", {
+        p_clinic_id:     clinicId,
+        p_patient_id:    selectedSession.patient_id,
+        p_patient_name:  selectedSession.patients.full_name,
+        p_provider_id:   selectedSession.counsellor_id ?? null,
+        p_provider_name: selectedSession.profiles?.full_name ?? "",
+        p_due_date:      null,
+        p_gst_pct:       0,
+        p_invoice_type:  "service",
+        p_notes:         `Converted from counselling — ${new Date(selectedSession.session_date).toLocaleDateString("en-IN")}`,
+        p_items: JSON.stringify(treatments.map(t => ({
+          service_id:   t.service_id ?? null,
+          description:  `${t.service_name} × ${t.sessions ?? 1} sessions`,
+          quantity:     t.sessions ?? 1,
+          unit_price:   t.mrp || 0,
+          discount_pct: t.discount_pct || 0,
+          gst_pct:      0,
+        }))),
+      });
+      if (error) throw error;
+      await supabase.from("counselling_sessions")
+        .update({ conversion_status: "converted" })
+        .eq("id", selectedSession.id);
+      setSelectedSession(prev => prev ? { ...prev, conversion_status: "converted" } : null);
+      fetchSessions();
+      toast.success("Invoice created — open Billing to view");
+    } catch (e) {
+      console.error("Convert to invoice failed:", e);
+      toast.error("Failed to create invoice");
+    } finally {
+      setConverting(false);
+    }
+  };
+
   const includeInSession = (dt: DoctorTreatment) => {
     if (!selectedSession) return;
     setForm(f => ({
@@ -801,6 +843,21 @@ export default function CounsellingPage() {
                 style={{ background: "var(--gold)" }}>
                 <Plus size={15} /> New Session
               </button>
+            </div>
+
+            {/* N11: Funnel stats */}
+            <div className="grid grid-cols-4 gap-4 mb-5">
+              {[
+                { label: "Total Sessions",  value: sessions.length, color: "#C5A059" },
+                { label: "Converted",       value: sessions.filter(s => s.conversion_status === "converted").length, color: "#16a34a" },
+                { label: "Conversion Rate", value: sessions.length > 0 ? `${Math.round(sessions.filter(s => s.conversion_status === "converted").length / sessions.length * 100)}%` : "—", color: "#2563eb" },
+                { label: "Avg Proposal",    value: sessions.length > 0 ? `₹${Math.round(sessions.reduce((acc, s) => acc + (s.total_proposed || 0), 0) / sessions.length).toLocaleString("en-IN")}` : "—", color: "#7c3aed" },
+              ].map(({ label, value, color }) => (
+                <div key={label} style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)", borderRadius: 12, padding: "14px 16px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+                  <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "Georgia, serif", color }}>{value}</div>
+                  <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.07em", color: "#9CA3AF", fontWeight: 600, marginTop: 2 }}>{label}</div>
+                </div>
+              ))}
             </div>
 
             <div className="flex gap-5">
@@ -935,6 +992,16 @@ export default function CounsellingPage() {
                         style={{ background: "var(--gold)", color: "#fff" }}>
                         <Printer size={12} /> Proforma Invoice
                       </button>
+
+                      {/* M7: Convert to Invoice */}
+                      {(selectedSession.conversion_status === "pending" || selectedSession.conversion_status === "partial") && (
+                        <button onClick={convertToInvoice} disabled={converting}
+                          className="w-full mt-2 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium"
+                          style={{ background: "rgba(34,197,94,0.1)", color: "#16a34a", border: "1px solid rgba(34,197,94,0.3)" }}>
+                          {converting ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />}
+                          {converting ? "Converting…" : "Convert to Invoice"}
+                        </button>
+                      )}
                     </div>
 
                     {/* Doctor-Proposed Treatments Panel */}
