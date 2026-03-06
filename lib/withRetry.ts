@@ -71,7 +71,7 @@ interface SupabaseResult<T> {
  * Retries up to `maxAttempts` times on transient errors.
  */
 export async function withSupabaseRetry<T>(
-  fn: () => Promise<SupabaseResult<T>>,
+  fn: () => PromiseLike<SupabaseResult<T>>,
   maxAttempts = 3
 ): Promise<SupabaseResult<T>> {
   let lastResult: SupabaseResult<T> = { data: null, error: null };
