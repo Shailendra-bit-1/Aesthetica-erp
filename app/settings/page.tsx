@@ -4,12 +4,12 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import {
   User, Building2, Layers, Bell, Zap, LayoutGrid,
-  Save, Lock, Mail, MapPin, Globe, MessageSquare,
+  Save, Lock, Mail, MapPin, Globe, MessageSquare, MessageCircle,
   Shield, ShieldCheck, Users, ScrollText, Receipt, Scissors, Crown,
   Calendar, Camera, Package, BarChart3, Network,
   ChevronRight, Check, Loader2, AlertCircle,
   Sparkles, LogOut, Smartphone, Sliders, Plus, X, Pencil, Trash2,
-  Target, Key, Copy,
+  Target, Key, Copy, Image,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -457,32 +457,72 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
   const [name,          setName]          = useState("");
   const [loc,           setLoc]           = useState("");
   const [email,         setEmail]         = useState("");
+  const [gstNumber,     setGstNumber]     = useState("");
+  const [whatsappNum,   setWhatsappNum]   = useState("");
+  const [logoUrl,       setLogoUrl]       = useState("");
   const [monthlyTarget,        setMonthlyTarget]        = useState("");
   const [monthlyServiceTarget, setMonthlyServiceTarget] = useState("");
   const [monthlyProductTarget, setMonthlyProductTarget] = useState("");
   const [loading,              setLoading]              = useState(true);
   const [saving,               setSaving]               = useState(false);
+  // Scheduler config (GAP-53)
+  const [slotDuration,   setSlotDuration]   = useState("30");
+  const [bufferMinutes,  setBufferMinutes]  = useState("0");
+  const [doubleBooking,  setDoubleBooking]  = useState(false);
+  const [savingScheduler,setSavingScheduler]= useState(false);
+  // Leave allocations (GAP-61)
+  const [leaveCasual,    setLeaveCasual]    = useState("12");
+  const [leaveSick,      setLeaveSick]      = useState("10");
+  const [leaveEarned,    setLeaveEarned]    = useState("15");
+  const [savingLeave,    setSavingLeave]    = useState(false);
 
   useEffect(() => {
     if (!clinicId) { setLoading(false); return; }
-    supabase
-      .from("clinics")
-      .select("id, name, location, admin_email, subscription_status, chain_id, monthly_revenue_target, monthly_service_target, monthly_product_target")
-      .eq("id", clinicId)
-      .maybeSingle()
-      .then(({ data }) => {
-        if (data) {
-          const d = data as typeof data & { monthly_service_target?: number | null; monthly_product_target?: number | null };
-          setClinic(data as ClinicRow);
-          setName(data.name ?? "");
-          setLoc(data.location ?? "");
-          setEmail(data.admin_email ?? "");
-          setMonthlyTarget(String(data.monthly_revenue_target ?? ""));
-          setMonthlyServiceTarget(String(d.monthly_service_target ?? ""));
-          setMonthlyProductTarget(String(d.monthly_product_target ?? ""));
-        }
-        setLoading(false);
-      });
+    Promise.all([
+      supabase
+        .from("clinics")
+        .select("id, name, location, admin_email, subscription_status, chain_id, monthly_revenue_target, monthly_service_target, monthly_product_target, gst_number, whatsapp_number, logo_url")
+        .eq("id", clinicId)
+        .maybeSingle(),
+      supabase
+        .from("scheduler_settings")
+        .select("slot_duration_minutes, buffer_minutes, allow_double_booking")
+        .eq("clinic_id", clinicId)
+        .maybeSingle(),
+      supabase
+        .from("system_settings")
+        .select("value")
+        .eq("clinic_id", clinicId)
+        .eq("key", "leave_allocations")
+        .maybeSingle(),
+    ]).then(([{ data }, { data: ss }, { data: ls }]) => {
+      if (data) {
+        const d = data as typeof data & { monthly_service_target?: number | null; monthly_product_target?: number | null; gst_number?: string | null; whatsapp_number?: string | null; logo_url?: string | null };
+        setClinic(data as ClinicRow);
+        setName(data.name ?? "");
+        setLoc(data.location ?? "");
+        setEmail(data.admin_email ?? "");
+        setGstNumber(d.gst_number ?? "");
+        setWhatsappNum(d.whatsapp_number ?? "");
+        setLogoUrl(d.logo_url ?? "");
+        setMonthlyTarget(String(data.monthly_revenue_target ?? ""));
+        setMonthlyServiceTarget(String(d.monthly_service_target ?? ""));
+        setMonthlyProductTarget(String(d.monthly_product_target ?? ""));
+      }
+      if (ss) {
+        const s = ss as { slot_duration_minutes?: number; buffer_minutes?: number; allow_double_booking?: boolean };
+        if (s.slot_duration_minutes) setSlotDuration(String(s.slot_duration_minutes));
+        if (s.buffer_minutes != null) setBufferMinutes(String(s.buffer_minutes));
+        if (s.allow_double_booking != null) setDoubleBooking(s.allow_double_booking);
+      }
+      if (ls) {
+        const alloc = ls.value as { casual?: number; sick?: number; earned?: number } | null;
+        if (alloc?.casual != null) setLeaveCasual(String(alloc.casual));
+        if (alloc?.sick != null)   setLeaveSick(String(alloc.sick));
+        if (alloc?.earned != null) setLeaveEarned(String(alloc.earned));
+      }
+      setLoading(false);
+    });
   }, [clinicId]);
 
   async function handleSave() {
@@ -494,6 +534,9 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
         name: name.trim(),
         location: loc.trim() || null,
         admin_email: email.trim() || null,
+        gst_number: gstNumber.trim() || null,
+        whatsapp_number: whatsappNum.trim() || null,
+        logo_url: logoUrl.trim() || null,
         monthly_service_target: monthlyServiceTarget ? parseFloat(monthlyServiceTarget) : 0,
         monthly_product_target:  monthlyProductTarget ? parseFloat(monthlyProductTarget) : 0,
         monthly_revenue_target:  (monthlyServiceTarget ? parseFloat(monthlyServiceTarget) : 0) + (monthlyProductTarget ? parseFloat(monthlyProductTarget) : 0) || (monthlyTarget ? parseFloat(monthlyTarget) : 0),
@@ -503,6 +546,36 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
     if (error) { toast.error("Failed to save clinic profile"); return; }
     logAction({ action: "update_clinic_profile", targetId: clinicId, targetName: name.trim() });
     toast.success("Clinic profile saved");
+  }
+
+  async function handleSaveScheduler() {
+    if (!clinicId) return;
+    setSavingScheduler(true);
+    const { error } = await supabase
+      .from("scheduler_settings")
+      .upsert({
+        clinic_id:             clinicId,
+        slot_duration_minutes: parseInt(slotDuration),
+        buffer_minutes:        parseInt(bufferMinutes),
+        allow_double_booking:  doubleBooking,
+      }, { onConflict: "clinic_id" });
+    setSavingScheduler(false);
+    if (error) { toast.error("Failed to save scheduler settings"); return; }
+    logAction({ action: "update_scheduler_settings", targetId: clinicId, targetName: name.trim() });
+    toast.success("Scheduler settings saved");
+  }
+
+  async function handleSaveLeave() {
+    if (!clinicId) return;
+    setSavingLeave(true);
+    const value = { casual: parseInt(leaveCasual) || 12, sick: parseInt(leaveSick) || 10, earned: parseInt(leaveEarned) || 15 };
+    const { error } = await supabase
+      .from("system_settings")
+      .upsert({ clinic_id: clinicId, scope: "clinic", key: "leave_allocations", value }, { onConflict: "clinic_id,key" });
+    setSavingLeave(false);
+    if (error) { toast.error("Failed to save leave allocations"); return; }
+    logAction({ action: "update_leave_allocations", targetId: clinicId, targetName: name.trim() });
+    toast.success("Leave allocations saved");
   }
 
   if (!clinicId) {
@@ -559,6 +632,25 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
               <Input value={email} onChange={setEmail} placeholder="admin@yourclinicdomain.com" type="email" icon={Mail} />
             </div>
             <div>
+              <FieldLabel>GSTIN (GST Number)</FieldLabel>
+              <Input value={gstNumber} onChange={setGstNumber} placeholder="22AAAAA0000A1Z5" icon={Receipt} />
+            </div>
+            <div>
+              <FieldLabel>WhatsApp Number (for WA deeplinks)</FieldLabel>
+              <Input value={whatsappNum} onChange={setWhatsappNum} placeholder="91XXXXXXXXXX" icon={MessageCircle} />
+            </div>
+            {/* GAP-52: Logo URL */}
+            <div>
+              <FieldLabel>Clinic Logo URL</FieldLabel>
+              <Input value={logoUrl} onChange={setLogoUrl} placeholder="https://..." icon={Image} />
+              {logoUrl.trim() && (
+                <div style={{ marginTop: 8 }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={logoUrl} alt="Clinic logo preview" style={{ height: 40, borderRadius: 6, objectFit: "contain", border: "1px solid rgba(197,160,89,0.2)" }} onError={e => (e.currentTarget.style.display = "none")} />
+                </div>
+              )}
+            </div>
+            <div>
               <FieldLabel>Service Revenue Target (₹)</FieldLabel>
               <Input
                 value={monthlyServiceTarget}
@@ -583,6 +675,85 @@ function ClinicProfileTab({ clinicId }: { clinicId: string | null }) {
 
           <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
             <SaveButton saving={saving} onClick={handleSave} />
+          </div>
+        </Card>
+
+        {/* Scheduler config (GAP-53) */}
+        <Card>
+          <p style={{ fontSize: 13, fontWeight: 600, color: "#5C5447", fontFamily: "Georgia, serif", margin: "0 0 16px" }}>
+            Scheduler Configuration
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div>
+              <FieldLabel>Default Slot Duration</FieldLabel>
+              <select
+                value={slotDuration}
+                onChange={e => setSlotDuration(e.target.value)}
+                style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, color: "#1C1917", fontFamily: "Georgia, serif" }}
+              >
+                {[["30","30 minutes"],["45","45 minutes"],["60","60 minutes"],["90","90 minutes"]].map(([v,l]) => (
+                  <option key={v} value={v}>{l}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <FieldLabel>Buffer Between Appointments</FieldLabel>
+              <select
+                value={bufferMinutes}
+                onChange={e => setBufferMinutes(e.target.value)}
+                style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, color: "#1C1917", fontFamily: "Georgia, serif" }}
+              >
+                {[["0","No buffer"],["5","5 minutes"],["10","10 minutes"],["15","15 minutes"]].map(([v,l]) => (
+                  <option key={v} value={v}>{l}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button
+                onClick={() => setDoubleBooking(!doubleBooking)}
+                style={{ width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer", position: "relative", transition: "background 0.2s", background: doubleBooking ? "#C5A059" : "rgba(197,160,89,0.2)" }}
+              >
+                <span style={{ position: "absolute", top: 3, left: doubleBooking ? 21 : 3, width: 16, height: 16, borderRadius: "50%", background: "white", transition: "left 0.2s" }} />
+              </button>
+              <div>
+                <p style={{ fontSize: 13, fontWeight: 600, color: "#1C1917", margin: 0 }}>Allow Double Booking</p>
+                <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>Allow multiple appointments at the same provider timeslot</p>
+              </div>
+            </div>
+          </div>
+          <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end" }}>
+            <SaveButton saving={savingScheduler} onClick={handleSaveScheduler} />
+          </div>
+        </Card>
+
+        {/* Leave allocations (GAP-61) */}
+        <Card>
+          <p style={{ fontSize: 13, fontWeight: 600, color: "#5C5447", fontFamily: "Georgia, serif", margin: "0 0 16px" }}>
+            Annual Leave Allocations
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+            {([
+              { key: "casual", label: "Casual Leave", value: leaveCasual, set: setLeaveCasual },
+              { key: "sick",   label: "Sick Leave",   value: leaveSick,   set: setLeaveSick   },
+              { key: "earned", label: "Earned Leave",  value: leaveEarned, set: setLeaveEarned },
+            ] as { key: string; label: string; value: string; set: (v: string) => void }[]).map(row => (
+              <div key={row.key}>
+                <FieldLabel>{row.label} (days)</FieldLabel>
+                <input
+                  type="number"
+                  min={0}
+                  value={row.value}
+                  onChange={e => row.set(e.target.value)}
+                  style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, color: "#1C1917", fontFamily: "Georgia, serif" }}
+                />
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: "#9C9584", margin: "10px 0 0" }}>
+            These apply to all staff at this clinic. Unpaid and other leaves are always unlimited.
+          </p>
+          <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
+            <SaveButton saving={savingLeave} onClick={handleSaveLeave} />
           </div>
         </Card>
 

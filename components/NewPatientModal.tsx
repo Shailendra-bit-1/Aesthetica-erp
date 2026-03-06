@@ -11,6 +11,7 @@ import {
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
+import { normalizePhone } from "@/lib/phoneUtils";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -206,7 +207,7 @@ export default function NewPatientModal({ isOpen, onClose }: Props) {
       .insert({
         full_name:             basic.fullName.trim(),
         email:                 basic.email?.trim()    || null,
-        phone:                 basic.phone.trim(),
+        phone:                 normalizePhone(basic.phone.trim()),
         date_of_birth:         basic.dob              || null,
         preferred_provider_id: basic.provider         || null,
         primary_concern:       basic.concerns.length  ? basic.concerns : null,
@@ -292,13 +293,14 @@ export default function NewPatientModal({ isOpen, onClose }: Props) {
     e.preventDefault();
     if (!isBasicValid) { setTab("basic"); return; }
 
-    // Duplicate check
+    // Duplicate check — GAP-6: normalize before comparing
     if (clinicId && basic.phone.trim()) {
+      const normalized = normalizePhone(basic.phone.trim());
       const { data: existing } = await supabase
         .from("patients")
         .select("id, full_name, phone")
         .eq("clinic_id", clinicId)
-        .eq("phone", basic.phone.trim())
+        .eq("phone", normalized)
         .limit(1).maybeSingle();
       if (existing) { setDupPatient(existing); return; }
     }
@@ -630,23 +632,34 @@ export default function NewPatientModal({ isOpen, onClose }: Props) {
 
             {/* N7: Post-registration quick actions */}
             {submitState === "success" && createdPatientId && (
-              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
                 <button type="button"
                   onClick={() => {
-                    const url = `${typeof window !== "undefined" ? window.location.origin : ""}/portal?phone=${basic.phone.replace(/\D/g, "")}`;
+                    const url = `${typeof window !== "undefined" ? window.location.origin : ""}/portal?phone=${normalizePhone(basic.phone)}`;
                     navigator.clipboard.writeText(url).then(() => toast.success("Portal link copied!"));
                   }}
-                  style={{ flex: 1, padding: "9px 0", borderRadius: "var(--radius-lg)", fontSize: 12, fontWeight: 600, border: "1px solid rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.07)", color: "var(--gold)", cursor: "pointer" }}>
+                  style={{ flex: 1, minWidth: 120, padding: "9px 0", borderRadius: "var(--radius-lg)", fontSize: 12, fontWeight: 600, border: "1px solid rgba(197,160,89,0.4)", background: "rgba(197,160,89,0.07)", color: "var(--gold)", cursor: "pointer" }}>
                   Copy Portal Link
+                </button>
+                {/* GAP-35: Send portal link via WhatsApp */}
+                <button type="button"
+                  onClick={() => {
+                    const origin = typeof window !== "undefined" ? window.location.origin : "";
+                    const portalUrl = `${origin}/portal?phone=${normalizePhone(basic.phone)}`;
+                    const msg = `Hello ${basic.fullName}! Access your patient portal here: ${portalUrl}`;
+                    window.open(`https://wa.me/91${normalizePhone(basic.phone)}?text=${encodeURIComponent(msg)}`, "_blank");
+                  }}
+                  style={{ flex: 1, minWidth: 120, padding: "9px 0", borderRadius: "var(--radius-lg)", fontSize: 12, fontWeight: 600, border: "1px solid rgba(124,58,237,0.35)", background: "rgba(124,58,237,0.07)", color: "#7C3AED", cursor: "pointer" }}>
+                  Send Portal via WA
                 </button>
                 <button type="button"
                   onClick={() => {
                     const origin = typeof window !== "undefined" ? window.location.origin : "";
                     const intakeUrl = `${origin}/intake/${clinicId}`;
                     const msg = `Hello ${basic.fullName}! Please complete your intake form: ${intakeUrl}`;
-                    window.open(`https://wa.me/91${basic.phone.replace(/\D/g, "")}?text=${encodeURIComponent(msg)}`, "_blank");
+                    window.open(`https://wa.me/91${normalizePhone(basic.phone)}?text=${encodeURIComponent(msg)}`, "_blank");
                   }}
-                  style={{ flex: 1, padding: "9px 0", borderRadius: "var(--radius-lg)", fontSize: 12, fontWeight: 600, border: "1px solid rgba(37,211,102,0.4)", background: "rgba(37,211,102,0.07)", color: "#16a34a", cursor: "pointer" }}>
+                  style={{ flex: 1, minWidth: 120, padding: "9px 0", borderRadius: "var(--radius-lg)", fontSize: 12, fontWeight: 600, border: "1px solid rgba(37,211,102,0.4)", background: "rgba(37,211,102,0.07)", color: "#16a34a", cursor: "pointer" }}>
                   Send Intake via WA
                 </button>
               </div>

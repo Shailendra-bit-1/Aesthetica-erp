@@ -82,6 +82,7 @@ export async function GET(req: NextRequest) {
     }
 
     return NextResponse.json({
+      clinic_id:    clinicId,
       patient:      patientRes.data,
       appointments: apptRes.data ?? [],
       invoices:     invoiceRes.data ?? [],

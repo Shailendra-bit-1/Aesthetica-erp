@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
@@ -539,7 +540,9 @@ function GalleryTab({ clinicId }: GalleryTabProps) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-export default function CounsellingPage() {
+function CounsellingPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { profile, activeClinicId } = useClinic();
   const clinicId = activeClinicId || profile?.clinic_id;
 
@@ -616,6 +619,19 @@ export default function CounsellingPage() {
       setDoctorTreatments([]);
     }
   }, [selectedSession, fetchDoctorTreatments]);
+
+  // GAP-15: auto-open drawer with patient pre-populated from ?patient= param
+  useEffect(() => {
+    const patientId = searchParams.get("patient");
+    if (!patientId || !clinicId) return;
+    supabase.from("patients").select("id, full_name").eq("id", patientId).maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          setForm(f => ({ ...f, patient_id: data.id, patient_search: data.full_name }));
+          setDrawerOpen(true);
+        }
+      });
+  }, [searchParams, clinicId]);
 
   const openNewSession = () => {
     const selfId = staff.find(s => s.id === profile?.id)?.id ?? "";
@@ -762,6 +778,28 @@ export default function CounsellingPage() {
         }))),
       });
       if (error) throw error;
+
+      // GAP-20: Create patient_service_credits for multi-session treatments
+      const creditInserts = treatments
+        .filter(t => t.service_id && (t.sessions ?? 1) > 1)
+        .map(t => ({
+          patient_id:          selectedSession.patient_id,
+          purchase_clinic_id:  clinicId,
+          current_clinic_id:   clinicId,
+          service_id:          t.service_id!,
+          service_name:        t.service_name,
+          total_sessions:      t.sessions ?? 1,
+          used_sessions:       0,
+          purchase_price:      (t.quoted_price || t.price || 0) * (t.sessions ?? 1),
+          per_session_value:   t.quoted_price || t.price || 0,
+          status:              "active",
+          commission_pct:      0,
+          family_shared:       false,
+        }));
+      if (creditInserts.length > 0) {
+        await supabase.from("patient_service_credits").insert(creditInserts);
+      }
+
       await supabase.from("counselling_sessions")
         .update({ conversion_status: "converted" })
         .eq("id", selectedSession.id);
@@ -884,7 +922,12 @@ export default function CounsellingPage() {
                           onClick={() => setSelectedSession(s)}
                           style={{ borderBottom: "1px solid rgba(197,160,89,0.06)" }}>
                           <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>{new Date(s.session_date).toLocaleDateString("en-IN")}</td>
-                          <td className="px-4 py-3 text-sm font-medium" style={{ color: "#1a1714" }}>{s.patients?.full_name}</td>
+                          <td className="px-4 py-3 text-sm font-medium">
+                            <button onClick={e => { e.stopPropagation(); router.push(`/patients/${s.patient_id}`); }}
+                              style={{ color: "#C5A059", textDecoration: "underline", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: "inherit", fontWeight: "inherit", padding: 0 }}>
+                              {s.patients?.full_name}
+                            </button>
+                          </td>
                           <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>{s.profiles?.full_name || "—"}</td>
                           <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>{s.treatments_discussed?.length || 0}</td>
                           <td className="px-4 py-3">
@@ -986,12 +1029,25 @@ export default function CounsellingPage() {
                         <CustomFieldsSection entityType="counselling_sessions" entityId={selectedSession.id} clinicId={clinicId ?? ""} />
                       </div>
 
-                      {/* Proforma Invoice button */}
-                      <button onClick={() => setProformaOpen(true)}
-                        className="w-full mt-2 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium"
-                        style={{ background: "var(--gold)", color: "#fff" }}>
-                        <Printer size={12} /> Proforma Invoice
-                      </button>
+                      {/* Action buttons */}
+                      <div className="flex gap-2 mt-2">
+                        <button onClick={() => setProformaOpen(true)}
+                          className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium"
+                          style={{ background: "var(--gold)", color: "#fff" }}>
+                          <Printer size={12} /> Proforma
+                        </button>
+                        {/* GAP-55: Book appointment from counselling */}
+                        <button onClick={() => {
+                          const firstTreatment = selectedSession.treatments_discussed?.[0];
+                          const params = new URLSearchParams({ patient: selectedSession.patient_id });
+                          if (firstTreatment?.service_name) params.set("service", firstTreatment.service_name);
+                          router.push(`/scheduler?${params.toString()}`);
+                        }}
+                          className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium"
+                          style={{ background: "rgba(197,160,89,0.1)", color: "#8B6914", border: "1px solid rgba(197,160,89,0.3)" }}>
+                          <Calendar size={12} /> Book Appt
+                        </button>
+                      </div>
 
                       {/* M7: Convert to Invoice */}
                       {(selectedSession.conversion_status === "pending" || selectedSession.conversion_status === "partial") && (
@@ -1376,5 +1432,13 @@ export default function CounsellingPage() {
       {/* Reference Gallery Modal (from session detail) */}
       {/* Note: ReferenceGalleryModal can also be used inline in session detail panel */}
     </div>
+  );
+}
+
+export default function CounsellingPageWrapper() {
+  return (
+    <Suspense fallback={null}>
+      <CounsellingPage />
+    </Suspense>
   );
 }

@@ -51,6 +51,18 @@ type CounsTreatmentRow = {
 
 // ─────────────────────── Props ────────────────────────────────────────────────
 
+interface CounsellingSession {
+  id: string;
+  session_date: string;
+  chief_complaint: string | null;
+  treatments_discussed: { service_name: string; quoted_price: number; sessions: number }[];
+  total_proposed: number;
+  total_accepted: number;
+  conversion_status: string;
+  notes: string | null;
+  created_at: string;
+}
+
 interface Props {
   patient: Patient;
   medicalHistory: MedicalHistory | null;
@@ -65,17 +77,27 @@ interface Props {
 export default function EMRTab({ patient, medicalHistory, notes, encounters, clinicId, onRefresh }: Props) {
   const [drawer, setDrawer]   = useState<"soap" | "note" | "treatment" | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [counselling, setCounselling] = useState<CounsellingSession[]>([]);
 
   useEffect(() => { setMounted(true); }, []);
+
+  useEffect(() => {
+    supabase.from("counselling_sessions")
+      .select("id, session_date, chief_complaint, treatments_discussed, total_proposed, total_accepted, conversion_status, notes, created_at")
+      .eq("patient_id", patient.id)
+      .order("session_date", { ascending: false })
+      .then(({ data }) => setCounselling((data as CounsellingSession[]) ?? []));
+  }, [patient.id]);
 
   const closeDrawer = () => { setDrawer(null); onRefresh(); };
 
   // Merged timeline entries
-  type TEntry = { id: string; kind: "intake" | "soap" | "note"; date: string; data: unknown };
+  type TEntry = { id: string; kind: "intake" | "soap" | "note" | "counselling"; date: string; data: unknown };
   const entries: TEntry[] = [];
   entries.push({ id: "intake", kind: "intake", date: patient.created_at, data: { patient, medicalHistory } });
   encounters.forEach(e => entries.push({ id: e.id, kind: "soap", date: e.created_at, data: e }));
   notes.forEach(n => entries.push({ id: n.id, kind: "note", date: n.created_at, data: n }));
+  counselling.forEach(c => entries.push({ id: c.id, kind: "counselling", date: c.session_date, data: c }));
   entries.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
   return (
@@ -112,7 +134,7 @@ export default function EMRTab({ patient, medicalHistory, notes, encounters, cli
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14 }}>
             <Activity size={13} color="#C5A059" />
             <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B7280" }}>Clinical Timeline</span>
-            <span style={{ fontSize: 11, color: "#9CA3AF" }}>({entries.length} entries)</span>
+            <span style={{ fontSize: 11, color: "#9CA3AF" }}>({entries.length} entries · {counselling.length} counselling)</span>
           </div>
 
           {entries.length === 0 ? (
@@ -248,11 +270,12 @@ function TimelineEntry({ entry, patient, medicalHistory }: {
 }) {
   const [expanded, setExpanded] = useState(true);
 
-  const DOT: Record<string, string> = { intake: "#C5A059", soap: "#6366F1", note: "#6B7280" };
+  const DOT: Record<string, string> = { intake: "#C5A059", soap: "#6366F1", note: "#6B7280", counselling: "#059669" };
   const BADGE: Record<string, React.CSSProperties> = {
-    intake: { background: "rgba(197,160,89,0.12)", color: "#8B6914", border: "1px solid rgba(197,160,89,0.3)" },
-    soap:   { background: "rgba(99,102,241,0.1)",  color: "#4338CA", border: "1px solid rgba(99,102,241,0.25)" },
-    note:   { background: "rgba(107,114,128,0.08)", color: "#4B5563", border: "1px solid rgba(107,114,128,0.2)" },
+    intake:      { background: "rgba(197,160,89,0.12)", color: "#8B6914",  border: "1px solid rgba(197,160,89,0.3)" },
+    soap:        { background: "rgba(99,102,241,0.1)",  color: "#4338CA",  border: "1px solid rgba(99,102,241,0.25)" },
+    note:        { background: "rgba(107,114,128,0.08)", color: "#4B5563", border: "1px solid rgba(107,114,128,0.2)" },
+    counselling: { background: "rgba(5,150,105,0.1)",   color: "#065F46",  border: "1px solid rgba(5,150,105,0.3)" },
   };
 
   return (
@@ -262,19 +285,21 @@ function TimelineEntry({ entry, patient, medicalHistory }: {
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", cursor: "pointer", borderBottom: expanded ? "1px solid rgba(197,160,89,0.08)" : "none" }}
           onClick={() => setExpanded(e => !e)}>
           <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6, letterSpacing: "0.06em", textTransform: "uppercase", ...BADGE[entry.kind] }}>
-            {entry.kind === "intake" ? "Intake" : entry.kind === "soap" ? "SOAP" : "Note"}
+            {entry.kind === "intake" ? "Intake" : entry.kind === "soap" ? "SOAP" : entry.kind === "counselling" ? "Counselling" : "Note"}
           </span>
           <span style={{ fontSize: 11, color: "#9C9584", flex: 1 }}>
             {relDate(entry.date)}{entry.kind === "soap" ? ` at ${fmtTime(entry.date)}` : ""}
           </span>
           {entry.kind === "soap" && <span style={{ fontSize: 11, color: "#9C9584" }}>{(entry.data as Encounter).created_by_name ?? "Provider"}</span>}
+          {entry.kind === "counselling" && <span style={{ fontSize: 11, color: "#059669", fontWeight: 600 }}>{(entry.data as CounsellingSession).conversion_status}</span>}
           {expanded ? <ChevronUp size={12} color="#B8AE9C" /> : <ChevronDown size={12} color="#B8AE9C" />}
         </div>
         {expanded && (
           <div style={{ padding: "12px 14px" }}>
-            {entry.kind === "intake" && <IntakeBody data={{ patient, medicalHistory }} />}
-            {entry.kind === "soap"   && <SOAPBody enc={entry.data as Encounter} />}
-            {entry.kind === "note"   && <NoteBody note={entry.data as PatientNote} />}
+            {entry.kind === "intake"      && <IntakeBody data={{ patient, medicalHistory }} />}
+            {entry.kind === "soap"        && <SOAPBody enc={entry.data as Encounter} />}
+            {entry.kind === "note"        && <NoteBody note={entry.data as PatientNote} />}
+            {entry.kind === "counselling" && <CounsellingBody session={entry.data as CounsellingSession} />}
           </div>
         )}
       </div>
@@ -333,10 +358,46 @@ function SOAPBody({ enc }: { enc: Encounter }) {
 }
 
 function NoteBody({ note }: { note: PatientNote }) {
+  const nt = NOTE_TYPES.find(t => t.key === note.note_type);
   return (
     <div>
+      {nt && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 5, background: `${nt.color}14`, color: nt.color, textTransform: "uppercase", letterSpacing: "0.07em", display: "inline-block", marginBottom: 6 }}>{nt.label}</span>}
       <p style={{ fontSize: 12, color: "#3D3530", fontFamily: "Georgia, serif", lineHeight: 1.65, margin: 0, whiteSpace: "pre-wrap" }}>{note.content}</p>
       {note.author_name && <p style={{ fontSize: 10, color: "#B8AE9C", marginTop: 6 }}>— {note.author_name}</p>}
+    </div>
+  );
+}
+
+function CounsellingBody({ session }: { session: CounsellingSession }) {
+  const treatments = session.treatments_discussed ?? [];
+  const STATUS_COLOR: Record<string, string> = { converted: "#059669", pending: "#D97706", partial: "#0891B2", declined: "#DC2626" };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {session.chief_complaint && (
+        <div style={{ borderLeft: "2px solid rgba(5,150,105,0.3)", paddingLeft: 10 }}>
+          <p style={{ fontSize: 10, fontWeight: 700, color: "#059669", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 }}>Chief Complaint</p>
+          <p style={{ fontSize: 12, color: "#3D3530", fontFamily: "Georgia, serif", lineHeight: 1.65, margin: 0 }}>{session.chief_complaint}</p>
+        </div>
+      )}
+      {treatments.length > 0 && (
+        <div>
+          <p style={{ fontSize: 10, fontWeight: 600, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Treatments Discussed</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {treatments.map((t, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 9px", borderRadius: 7, background: "rgba(5,150,105,0.05)", border: "1px solid rgba(5,150,105,0.12)" }}>
+                <span style={{ fontSize: 12, color: "#1C1917", fontFamily: "Georgia, serif" }}>{t.service_name}{t.sessions > 1 ? ` (${t.sessions} sessions)` : ""}</span>
+                <span style={{ fontSize: 12, fontWeight: 600, color: "#065F46" }}>{fmtINR(t.quoted_price)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 12, fontSize: 11 }}>
+        <span style={{ color: "#6B7280" }}>Proposed: <strong style={{ color: "#1C1917" }}>{fmtINR(session.total_proposed)}</strong></span>
+        <span style={{ color: "#6B7280" }}>Accepted: <strong style={{ color: "#059669" }}>{fmtINR(session.total_accepted)}</strong></span>
+        <span style={{ fontWeight: 700, padding: "1px 8px", borderRadius: 6, background: `${STATUS_COLOR[session.conversion_status] ?? "#9C9584"}18`, color: STATUS_COLOR[session.conversion_status] ?? "#9C9584", textTransform: "capitalize" }}>{session.conversion_status}</span>
+      </div>
+      {session.notes && <p style={{ fontSize: 11, color: "#6B6358", fontStyle: "italic", borderTop: "1px solid rgba(197,160,89,0.1)", paddingTop: 8, marginTop: 2 }}>{session.notes}</p>}
     </div>
   );
 }
@@ -352,6 +413,11 @@ function SOAPDrawer({ patient, clinicId, onClose }: { patient: Patient; clinicId
   const [cptResults,    setCptResults]    = useState<MedicalCode[]>([]);
   const [cptSearching,  setCptSearching]  = useState(false);
   const [attachedCodes, setAttachedCodes] = useState<MedicalCode[]>([]);
+  // GAP-18: Inline prescription entry
+  const [medications, setMedications] = useState<{
+    uid: string; name: string; dosage: string; frequency: string; duration: string;
+  }[]>([]);
+
   // B10: Injectable lot tracking
   const [injectables, setInjectables] = useState<{
     uid: string; productName: string; lotNumber: string;
@@ -434,6 +500,23 @@ function SOAPDrawer({ patient, clinicId, onClose }: { patient: Patient; clinicId
       body: JSON.stringify({ action: "save_encounter", ...soap, photos: uploadedPhotos, cpt_codes: attachedCodes.map(c => c.code) }),
     });
     const json = await res.json();
+    // GAP-18: Save inline prescriptions linked to encounter
+    if (json.success && json.encounterId && medications.length > 0) {
+      const rxRows = medications
+        .filter(m => m.name.trim())
+        .map(m => ({
+          encounter_id:    json.encounterId,
+          patient_id:      patient.id,
+          medication_name: m.name.trim(),
+          dosage:          m.dosage.trim() || null,
+          frequency:       m.frequency.trim() || null,
+          duration:        m.duration.trim() || null,
+        }));
+      if (rxRows.length > 0) {
+        await supabase.from("prescriptions").insert(rxRows);
+      }
+    }
+
     // B10: Save injectables to encounter_injectables table
     if (json.success && json.encounterId && injectables.length > 0) {
       const rows = injectables
@@ -606,6 +689,62 @@ function SOAPDrawer({ patient, clinicId, onClose }: { patient: Patient; clinicId
             )}
           </div>
 
+          {/* GAP-18: Inline Prescriptions */}
+          <div style={{ marginTop: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <p style={{ fontSize: 12, fontWeight: 600, color: "#6B6358", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 5 }}>
+                <FileText size={12} color="#C5A059" /> Prescriptions
+              </p>
+              <button
+                onClick={() => setMedications(prev => [...prev, { uid: crypto.randomUUID(), name: "", dosage: "", frequency: "", duration: "" }])}
+                style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", cursor: "pointer", fontSize: 11, color: "#8B6914" }}>
+                <Plus size={11} /> Add Medication
+              </button>
+            </div>
+            {medications.length === 0 ? (
+              <div style={{ border: "1.5px dashed rgba(197,160,89,0.25)", borderRadius: 10, padding: "12px 16px", textAlign: "center" }}>
+                <p style={{ fontSize: 11, color: "#B8AE9C", margin: 0 }}>No prescriptions — add if medications were prescribed</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {medications.map((med, idx) => (
+                  <div key={med.uid} style={{ padding: "10px 12px", borderRadius: 10, background: "white", border: "1px solid rgba(197,160,89,0.2)", position: "relative" }}>
+                    <button onClick={() => setMedications(prev => prev.filter(x => x.uid !== med.uid))} style={{ position: "absolute", top: 8, right: 8, background: "transparent", border: "none", cursor: "pointer", color: "#9C9584" }}>
+                      <X size={13} />
+                    </button>
+                    <p style={{ fontSize: 10, fontWeight: 700, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 8px" }}>Medication #{idx + 1}</p>
+                    <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 8 }}>
+                      <div>
+                        <label style={{ fontSize: 10, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 3 }}>Name *</label>
+                        <input value={med.name} onChange={e => setMedications(prev => prev.map(x => x.uid === med.uid ? { ...x, name: e.target.value } : x))}
+                          placeholder="e.g. Cetrizine"
+                          style={{ width: "100%", padding: "6px 9px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", background: "#FDFCF9", fontSize: 12, fontFamily: "Georgia, serif", color: "#1C1917", outline: "none", boxSizing: "border-box" }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 3 }}>Dosage</label>
+                        <input value={med.dosage} onChange={e => setMedications(prev => prev.map(x => x.uid === med.uid ? { ...x, dosage: e.target.value } : x))}
+                          placeholder="e.g. 10mg"
+                          style={{ width: "100%", padding: "6px 9px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", background: "#FDFCF9", fontSize: 12, color: "#1C1917", outline: "none", boxSizing: "border-box" }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 3 }}>Frequency</label>
+                        <input value={med.frequency} onChange={e => setMedications(prev => prev.map(x => x.uid === med.uid ? { ...x, frequency: e.target.value } : x))}
+                          placeholder="e.g. OD"
+                          style={{ width: "100%", padding: "6px 9px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", background: "#FDFCF9", fontSize: 12, color: "#1C1917", outline: "none", boxSizing: "border-box" }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 3 }}>Duration</label>
+                        <input value={med.duration} onChange={e => setMedications(prev => prev.map(x => x.uid === med.uid ? { ...x, duration: e.target.value } : x))}
+                          placeholder="e.g. 5 days"
+                          style={{ width: "100%", padding: "6px 9px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", background: "#FDFCF9", fontSize: 12, color: "#1C1917", outline: "none", boxSizing: "border-box" }} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* B10: Injectable Lot Tracking */}
           <div style={{ marginTop: 20 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
@@ -684,22 +823,33 @@ function SOAPDrawer({ patient, clinicId, onClose }: { patient: Patient; clinicId
 
 // ─────────────────────── Note Drawer ─────────────────────────────────────────
 
+const NOTE_TYPES = [
+  { key: "clinical",  label: "Clinical",   color: "#6366F1", desc: "Clinical observation or finding" },
+  { key: "admin",     label: "Admin",      color: "#6B7280", desc: "Administrative note" },
+  { key: "follow_up", label: "Follow-up",  color: "#D97706", desc: "Follow-up reminder or action" },
+  { key: "private",   label: "Private",    color: "#DC2626", desc: "Visible to doctors only" },
+] as const;
+type NoteType = typeof NOTE_TYPES[number]["key"];
+
 function NoteDrawer({ patientId, onClose }: { patientId: string; onClose: () => void }) {
-  const [content, setContent] = useState("");
-  const [saving,  setSaving]  = useState(false);
+  const [content,  setContent]  = useState("");
+  const [noteType, setNoteType] = useState<NoteType>("clinical");
+  const [saving,   setSaving]   = useState(false);
 
   async function handleSave() {
     if (!content.trim()) return;
     setSaving(true);
     const res = await fetch(`/api/patients/${patientId}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "add_note", note_type: "note", content }),
+      body: JSON.stringify({ action: "add_note", note_type: noteType, content }),
     });
     const json = await res.json();
     setSaving(false);
     if (json.success) { toast.success("Note added."); onClose(); }
     else toast.error(json.error ?? "Failed.");
   }
+
+  const selected = NOTE_TYPES.find(t => t.key === noteType)!;
 
   return (
     <>
@@ -710,15 +860,28 @@ function NoteDrawer({ patientId, onClose }: { patientId: string; onClose: () => 
             <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(107,114,128,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <FileText size={15} color="#6B7280" />
             </div>
-            <p style={{ fontSize: 14, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Quick Note</p>
+            <p style={{ fontSize: 14, fontWeight: 600, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>Add Note</p>
           </div>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <X size={14} color="#9C9584" />
           </button>
         </div>
-        <div style={{ flex: 1, padding: "20px 22px" }}>
-          <textarea autoFocus value={content} onChange={e => setContent(e.target.value)} placeholder="Add a clinical note, observation, or reminder…"
-            style={{ width: "100%", height: "100%", padding: "14px 16px", borderRadius: 12, border: "1px solid rgba(197,160,89,0.25)", background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", lineHeight: 1.75, resize: "none", outline: "none", boxSizing: "border-box" }} />
+        <div style={{ flex: 1, padding: "16px 22px", display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Note type selector */}
+          <div>
+            <p style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#6B7280", marginBottom: 8 }}>Note Type</p>
+            <div style={{ display: "flex", gap: 6 }}>
+              {NOTE_TYPES.map(nt => (
+                <button key={nt.key} onClick={() => setNoteType(nt.key)}
+                  style={{ flex: 1, padding: "7px 4px", borderRadius: 9, border: `1px solid ${noteType === nt.key ? nt.color : "rgba(197,160,89,0.2)"}`, background: noteType === nt.key ? `${nt.color}12` : "white", cursor: "pointer", fontSize: 11, fontWeight: 600, color: noteType === nt.key ? nt.color : "#9C9584" }}>
+                  {nt.label}
+                </button>
+              ))}
+            </div>
+            <p style={{ fontSize: 11, color: "#B8AE9C", marginTop: 5 }}>{selected.desc}</p>
+          </div>
+          <textarea autoFocus value={content} onChange={e => setContent(e.target.value)} placeholder="Add note…"
+            style={{ flex: 1, padding: "14px 16px", borderRadius: 12, border: `1px solid ${selected.color}30`, background: "white", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", lineHeight: 1.75, resize: "none", outline: "none", boxSizing: "border-box" }} />
         </div>
         <div style={{ padding: "14px 22px", borderTop: "1px solid rgba(197,160,89,0.18)", background: "white", display: "flex", gap: 10 }}>
           <button onClick={onClose} style={{ padding: "10px 18px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.2)", background: "transparent", cursor: "pointer", fontSize: 13, color: "#9C9584" }}>Cancel</button>

@@ -9,6 +9,7 @@ import {
   CheckCircle2, XCircle, UserCheck, PhoneOff, CalendarCheck,
   AlertTriangle, Package, Calendar, MapPin, Edit2, Trash2,
   ChevronDown, Send, Check, Receipt, IndianRupee, CreditCard, GripVertical, CalendarClock,
+  Printer, Ban,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -99,6 +100,20 @@ const STATUS_CFG: Record<AppointmentStatus, {
   no_show:    { label: "No Show",    bg: "#FEF2F2", border: "#B43C3C", text: "#7A1C1C", dot: "#EF4444",  icon: PhoneOff     },
 };
 
+// GAP-38: Provider color palette (10 distinct colors for provider-based coloring)
+const PROVIDER_PALETTE = [
+  { bg: "#EFF6FF", border: "#2563EB", text: "#1E3A8A" },
+  { bg: "#F0FDF4", border: "#16A34A", text: "#14532D" },
+  { bg: "#FDF4FF", border: "#9333EA", text: "#581C87" },
+  { bg: "#FFF7ED", border: "#EA580C", text: "#7C2D12" },
+  { bg: "#F0F9FF", border: "#0891B2", text: "#164E63" },
+  { bg: "#FFF1F2", border: "#E11D48", text: "#881337" },
+  { bg: "#F7FEE7", border: "#65A30D", text: "#3F6212" },
+  { bg: "#FEF9C3", border: "#CA8A04", text: "#713F12" },
+  { bg: "#F5F3FF", border: "#7C3AED", text: "#3B0764" },
+  { bg: "#FFF5F5", border: "#DC2626", text: "#7F1D1D" },
+];
+
 const MONTHS = [
   "January","February","March","April","May","June",
   "July","August","September","October","November","December",
@@ -177,17 +192,26 @@ function SchedulerPageInner() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [privacyMode, setPrivacyMode] = useState(false);
 
-  const [appointments, setAppointments] = useState<Appointment[]>([]);
-  const [providers,    setProviders]    = useState<Provider[]>([]);
-  const [services,     setServices]     = useState<Service[]>([]);
-  const [settings,     setSettings]     = useState<SchedulerSettings | null>(null);
+  const [appointments,  setAppointments]  = useState<Appointment[]>([]);
+  const [providers,     setProviders]     = useState<Provider[]>([]);
+  const [services,      setServices]      = useState<Service[]>([]);
+  const [settings,      setSettings]      = useState<SchedulerSettings | null>(null);
+  const [blockedSlots,  setBlockedSlots]  = useState<{ id: string; provider_id: string | null; start_time: string; end_time: string; reason: string | null }[]>([]);
   const [loading,      setLoading]      = useState(true);
 
   const [selectedAppt,  setSelectedAppt]  = useState<Appointment | null>(null);
   const [showNewAppt,   setShowNewAppt]   = useState(false);
   const [showSettings,  setShowSettings]  = useState(false);
+  // GAP-25: Block time
+  const [showBlockTime, setShowBlockTime] = useState(false);
   const [prefillSlot,   setPrefillSlot]   = useState<{ date: Date; hour: number; providerId?: string } | null>(null);
   const [schedulerTab,  setSchedulerTab]  = useState<"calendar" | "waitlist" | "recalls">("calendar");
+
+  // GAP-37: Calendar filter state
+  const [filterProvider, setFilterProvider] = useState<string>("all");
+  const [filterStatus,   setFilterStatus]   = useState<string>("all");
+  // GAP-38: Color-by toggle
+  const [colorBy, setColorBy] = useState<"status" | "provider">("status");
 
   // Date range for current view
   const viewRange = useMemo(() => {
@@ -210,7 +234,7 @@ function SchedulerPageInner() {
   const fetchAll = useCallback(async () => {
     if (!activeClinicId) return;
     setLoading(true);
-    const [apptRes, provRes, svcRes, settRes] = await Promise.all([
+    const [apptRes, provRes, svcRes, settRes, blkRes] = await Promise.all([
       supabase
         .from("appointments")
         .select("*, patients!patient_id(full_name,patient_tier), profiles!provider_id(full_name)")
@@ -237,6 +261,13 @@ function SchedulerPageInner() {
         .select("*")
         .eq("clinic_id", activeClinicId)
         .maybeSingle(),
+      // GAP-25: Fetch blocked slots for current view range
+      supabase
+        .from("blocked_slots")
+        .select("id, provider_id, start_time, end_time, reason")
+        .eq("clinic_id", activeClinicId)
+        .gte("start_time", viewRange.start.toISOString())
+        .lte("end_time", viewRange.end.toISOString()),
     ]);
 
     const normalised: Appointment[] = (apptRes.data ?? []).map((a: Record<string,unknown>) => ({
@@ -250,6 +281,7 @@ function SchedulerPageInner() {
     setProviders((provRes.data ?? []) as Provider[]);
     setServices((svcRes.data ?? []) as Service[]);
     setSettings(settRes.data as SchedulerSettings | null);
+    setBlockedSlots((blkRes.data ?? []) as { id: string; provider_id: string | null; start_time: string; end_time: string; reason: string | null }[]);
     setLoading(false);
   }, [activeClinicId, viewRange]);
 
@@ -299,6 +331,21 @@ function SchedulerPageInner() {
     }
     return `${MONTHS[currentDate.getMonth()]} ${currentDate.getFullYear()}`;
   }, [view, currentDate]);
+
+  // GAP-37: Apply calendar filters
+  const filteredAppointments = useMemo(() => appointments.filter(a => {
+    if (filterProvider !== "all" && a.provider_id !== filterProvider) return false;
+    if (filterStatus !== "all" && a.status !== filterStatus) return false;
+    return true;
+  }), [appointments, filterProvider, filterStatus]);
+
+  // GAP-38: Build provider → palette color map (stable by sorted provider index)
+  const providerColorMap = useMemo(() => {
+    const sorted = [...providers].sort((a, b) => a.full_name.localeCompare(b.full_name));
+    const map: Record<string, typeof PROVIDER_PALETTE[0]> = {};
+    sorted.forEach((p, i) => { map[p.id] = PROVIDER_PALETTE[i % PROVIDER_PALETTE.length]; });
+    return map;
+  }, [providers]);
 
   if (profileLoading) return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--background)" }}>
@@ -364,6 +411,35 @@ function SchedulerPageInner() {
           {privacyMode ? "Privacy ON" : "Privacy"}
         </button>
 
+        {/* GAP-39: Print daily schedule */}
+        <button
+          onClick={() => {
+            const today = filteredAppointments.filter(a => isSameDay(new Date(a.start_time), currentDate));
+            const html = `<!DOCTYPE html><html><head><title>Schedule – ${viewTitle}</title>
+<style>body{font-family:Georgia,serif;max-width:700px;margin:40px auto;color:#1C1917}
+h1{font-size:20px;border-bottom:2px solid #C5A059;padding-bottom:8px}
+table{width:100%;border-collapse:collapse;margin-top:20px}
+th{text-align:left;padding:8px 12px;background:#F9F7F2;border:1px solid #e5e0d8;font-size:12px}
+td{padding:8px 12px;border:1px solid #e5e0d8;font-size:12px}
+.status{padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;text-transform:uppercase}
+@media print{body{margin:0}}</style></head><body>
+<h1>Daily Schedule — ${viewTitle}</h1>
+<p style="color:#9C9584;margin-top:4px">${today.length} appointments</p>
+<table><thead><tr><th>Time</th><th>Patient</th><th>Service</th><th>Provider</th><th>Status</th></tr></thead><tbody>
+${today.sort((a,b) => a.start_time.localeCompare(b.start_time)).map(a => `<tr>
+<td>${new Date(a.start_time).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</td>
+<td>${a.patient_name ?? "—"}</td><td>${a.service_name ?? "—"}</td>
+<td>${a.provider_name ?? "—"}</td><td>${a.status}</td>
+</tr>`).join("")}
+</tbody></table></body></html>`;
+            const w = window.open("", "_blank");
+            if (w) { w.document.write(html); w.document.close(); w.print(); }
+          }}
+          style={{ ...navBtn, color: "var(--text-muted)" }}
+          title="Print Daily Schedule"
+        >
+          <Printer size={14} />
+        </button>
         <button onClick={fetchAll} style={{ ...navBtn, color: "var(--text-muted)" }}>
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
         </button>
@@ -374,6 +450,14 @@ function SchedulerPageInner() {
           </button>
         )}
 
+        {isAdmin && (
+          <button
+            onClick={() => setShowBlockTime(true)}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(220,38,38,0.3)", background: "rgba(220,38,38,0.06)", cursor: "pointer", color: "#DC2626", fontSize: 13 }}
+          >
+            <Ban size={13} /> Block Time
+          </button>
+        )}
         <button
           onClick={() => { setPrefillSlot(null); setShowNewAppt(true); }}
           style={{
@@ -389,21 +473,58 @@ function SchedulerPageInner() {
         </button>
       </div>
 
-      {/* ── Status legend + tier key ─────────────────────────────────────────── */}
-      <div style={{ padding: "7px 24px", background: "rgba(249,247,242,0.9)", borderBottom: "1px solid rgba(197,160,89,0.1)", display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-        {(Object.entries(STATUS_CFG) as [AppointmentStatus, typeof STATUS_CFG[AppointmentStatus]][])
-          .filter(([k]) => !["cancelled","no_show"].includes(k))
-          .map(([key, cfg]) => (
-            <div key={key} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <div style={{ width: 8, height: 8, borderRadius: "50%", background: cfg.dot }} />
-              <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "Georgia, serif" }}>{cfg.label}</span>
-            </div>
-          ))}
+      {/* ── Status legend + tier key + GAP-37 filters ───────────────────────── */}
+      <div style={{ padding: "7px 24px", background: "rgba(249,247,242,0.9)", borderBottom: "1px solid rgba(197,160,89,0.1)", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+        {colorBy === "provider"
+          ? providers.slice(0, 8).map(p => {
+              const c = providerColorMap[p.id];
+              return c ? (
+                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: c.border }} />
+                  <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "Georgia, serif" }}>{p.full_name}</span>
+                </div>
+              ) : null;
+            })
+          : (Object.entries(STATUS_CFG) as [AppointmentStatus, typeof STATUS_CFG[AppointmentStatus]][])
+              .filter(([k]) => !["cancelled","no_show"].includes(k))
+              .map(([key, cfg]) => (
+                <div key={key} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: cfg.dot }} />
+                  <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "Georgia, serif" }}>{cfg.label}</span>
+                </div>
+              ))
+        }
         <div style={{ width: 1, height: 16, background: "var(--border)", margin: "0 4px" }} />
         <span style={{ fontSize: 10, fontWeight: 700, color: "#C5A059", background: "rgba(197,160,89,0.15)", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(197,160,89,0.35)" }}>VIP</span>
         <span style={{ fontSize: 10, fontWeight: 700, color: "#2E7D6E", background: "rgba(46,125,110,0.12)", padding: "2px 8px", borderRadius: 999, border: "1px solid rgba(46,125,110,0.3)" }}>HNI</span>
+        {/* GAP-37: Filters */}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+          <select value={filterProvider} onChange={e => setFilterProvider(e.target.value)}
+            style={{ fontSize: 11, padding: "3px 8px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.3)", background: "white", color: "#5C5447", cursor: "pointer", outline: "none" }}>
+            <option value="all">All Providers</option>
+            {providers.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+          </select>
+          <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
+            style={{ fontSize: 11, padding: "3px 8px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.3)", background: "white", color: "#5C5447", cursor: "pointer", outline: "none" }}>
+            <option value="all">All Statuses</option>
+            {(Object.keys(STATUS_CFG) as AppointmentStatus[]).map(s => <option key={s} value={s}>{STATUS_CFG[s].label}</option>)}
+          </select>
+          {(filterProvider !== "all" || filterStatus !== "all") && (
+            <button onClick={() => { setFilterProvider("all"); setFilterStatus("all"); }}
+              style={{ fontSize: 11, color: "#DC2626", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>
+              Clear
+            </button>
+          )}
+          {/* GAP-38: Color by toggle */}
+          <button
+            onClick={() => setColorBy(c => c === "status" ? "provider" : "status")}
+            style={{ fontSize: 11, padding: "3px 8px", borderRadius: 7, border: `1px solid ${colorBy === "provider" ? "#7C3AED" : "rgba(197,160,89,0.3)"}`, background: colorBy === "provider" ? "rgba(124,58,237,0.08)" : "white", color: colorBy === "provider" ? "#7C3AED" : "#5C5447", cursor: "pointer" }}
+          >
+            Color: {colorBy === "status" ? "Status" : "Provider"}
+          </button>
+        </div>
         {privacyMode && (
-          <span style={{ fontSize: 11, color: "#C5A059", fontFamily: "Georgia, serif", marginLeft: "auto" }}>
+          <span style={{ fontSize: 11, color: "#C5A059", fontFamily: "Georgia, serif" }}>
             <EyeOff size={11} style={{ display: "inline", marginRight: 4 }} />
             VIP/HNI names are blurred
           </span>
@@ -444,30 +565,36 @@ function SchedulerPageInner() {
             </div>
           ) : view === "week" ? (
             <WeekView
-              appointments={appointments}
+              appointments={filteredAppointments}
               currentDate={currentDate}
               privacyMode={privacyMode}
               settings={settings}
+              blockedSlots={blockedSlots}
               onSelectAppt={setSelectedAppt}
               onSlotClick={(date, hour) => { setPrefillSlot({ date, hour }); setShowNewAppt(true); }}
               onDragAppt={handleDragAppt}
               onActionAppt={handleQuickAction}
+              colorBy={colorBy}
+              providerColorMap={providerColorMap}
             />
           ) : view === "day" ? (
             <DayView
-              appointments={appointments}
+              appointments={filteredAppointments}
               currentDate={currentDate}
               providers={providers}
               privacyMode={privacyMode}
               settings={settings}
+              blockedSlots={blockedSlots}
               onSelectAppt={setSelectedAppt}
               onSlotClick={(date, hour, pid) => { setPrefillSlot({ date, hour, providerId: pid }); setShowNewAppt(true); }}
               onDragAppt={handleDragAppt}
               onActionAppt={handleQuickAction}
+              colorBy={colorBy}
+              providerColorMap={providerColorMap}
             />
           ) : (
             <MonthView
-              appointments={appointments}
+              appointments={filteredAppointments}
               currentDate={currentDate}
               privacyMode={privacyMode}
               onDayClick={(d) => { setCurrentDate(d); setView("day"); }}
@@ -517,6 +644,18 @@ function SchedulerPageInner() {
         />
       )}
 
+      {/* GAP-25: Block Time drawer */}
+      {showBlockTime && activeClinicId && (
+        <BlockTimeDrawer
+          clinicId={activeClinicId}
+          providers={providers}
+          profile={profile}
+          currentDate={currentDate}
+          onClose={() => setShowBlockTime(false)}
+          onSaved={() => { setShowBlockTime(false); fetchAll(); toast.success("Time block created"); }}
+        />
+      )}
+
       <style>{`
         @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
         @keyframes pulse-gold { 0%,100%{ box-shadow:0 0 0 0 rgba(212,160,23,0.4) } 50%{ box-shadow:0 0 0 6px rgba(212,160,23,0) } }
@@ -545,15 +684,18 @@ const navBtn: React.CSSProperties = {
 
 // ── Week View ─────────────────────────────────────────────────────────────────
 
-function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAppt, onSlotClick, onDragAppt, onActionAppt }: {
+function WeekView({ appointments, currentDate, privacyMode, settings, blockedSlots, onSelectAppt, onSlotClick, onDragAppt, onActionAppt, colorBy, providerColorMap }: {
   appointments: Appointment[];
   currentDate: Date;
   privacyMode: boolean;
   settings: SchedulerSettings | null;
+  blockedSlots?: { id: string; provider_id: string | null; start_time: string; end_time: string; reason: string | null }[];
   onSelectAppt: (a: Appointment) => void;
   onSlotClick: (date: Date, hour: number) => void;
   onDragAppt: (apptId: string, newStart: Date) => void;
   onActionAppt: (apptId: string, status: AppointmentStatus) => void;
+  colorBy?: "status" | "provider";
+  providerColorMap?: Record<string, typeof PROVIDER_PALETTE[0]>;
 }) {
   const weekStart = startOfWeek(currentDate);
   const days  = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
@@ -561,6 +703,9 @@ function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAp
 
   function getApptsByDay(day: Date) {
     return appointments.filter(a => isSameDay(new Date(a.start_time), day));
+  }
+  function getBlocksByDay(day: Date) {
+    return (blockedSlots ?? []).filter(b => isSameDay(new Date(b.start_time), day));
   }
 
   return (
@@ -582,7 +727,8 @@ function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAp
       {/* Day columns */}
       <div style={{ flex: 1, display: "flex", overflowX: "auto" }}>
         {days.map(day => {
-          const dayAppts = getApptsByDay(day);
+          const dayAppts  = getApptsByDay(day);
+          const dayBlocks = getBlocksByDay(day);
           const today = isToday(day);
           return (
             <div key={day.toISOString()} style={{ flex: 1, minWidth: 120, borderRight: "1px solid var(--border)" }}>
@@ -653,6 +799,24 @@ function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAp
                   ));
                 })()}
 
+                {/* GAP-25: Blocked slots — gray striped overlay */}
+                {dayBlocks.map(blk => (
+                  <div key={blk.id} style={{
+                    position: "absolute",
+                    top: apptTop(blk.start_time),
+                    height: Math.max(22, apptHeight(blk.start_time, blk.end_time)),
+                    left: 0, right: 0,
+                    background: "repeating-linear-gradient(45deg, rgba(107,114,128,0.08) 0px, rgba(107,114,128,0.08) 4px, transparent 4px, transparent 10px)",
+                    border: "1px solid rgba(107,114,128,0.3)",
+                    borderRadius: 4, pointerEvents: "none", zIndex: 3,
+                    display: "flex", alignItems: "flex-start", padding: "2px 4px",
+                  }}>
+                    <span style={{ fontSize: 9, color: "#6B7280", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {blk.reason ?? "Blocked"}
+                    </span>
+                  </div>
+                ))}
+
                 {/* Appointments */}
                 {dayAppts.map((appt, i) => {
                   const overlaps = dayAppts.filter(b =>
@@ -673,6 +837,8 @@ function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAp
                       totalCols={total}
                       onClick={() => onSelectAppt(appt)}
                       onActionAppt={onActionAppt}
+                      colorBy={colorBy}
+                      providerColorMap={providerColorMap}
                     />
                   );
                 })}
@@ -700,16 +866,19 @@ function WeekView({ appointments, currentDate, privacyMode, settings, onSelectAp
 
 // ── Day View (providers as columns) ──────────────────────────────────────────
 
-function DayView({ appointments, currentDate, providers, privacyMode, settings, onSelectAppt, onSlotClick, onDragAppt, onActionAppt }: {
+function DayView({ appointments, currentDate, providers, privacyMode, settings, blockedSlots, onSelectAppt, onSlotClick, onDragAppt, onActionAppt, colorBy, providerColorMap }: {
   appointments: Appointment[];
   currentDate: Date;
   providers: Provider[];
   privacyMode: boolean;
   settings: SchedulerSettings | null;
+  blockedSlots?: { id: string; provider_id: string | null; start_time: string; end_time: string; reason: string | null }[];
   onSelectAppt: (a: Appointment) => void;
   onSlotClick: (date: Date, hour: number, providerId?: string) => void;
   onDragAppt: (apptId: string, newStart: Date) => void;
   onActionAppt: (apptId: string, status: AppointmentStatus) => void;
+  colorBy?: "status" | "provider";
+  providerColorMap?: Record<string, typeof PROVIDER_PALETTE[0]>;
 }) {
   const hours = Array.from({ length: TOTAL_HOURS }, (_, i) => WORKING_START + i);
   // Columns: one per provider, plus an "Unassigned" column
@@ -722,6 +891,12 @@ function DayView({ appointments, currentDate, providers, privacyMode, settings, 
     const dayAppts = appointments.filter(a => isSameDay(new Date(a.start_time), currentDate));
     if (providerId === "unassigned") return dayAppts.filter(a => !a.provider_id);
     return dayAppts.filter(a => a.provider_id === providerId);
+  }
+
+  function getBlocksByProvider(providerId: string) {
+    const dayBlocks = (blockedSlots ?? []).filter(b => isSameDay(new Date(b.start_time), currentDate));
+    if (providerId === "unassigned") return dayBlocks.filter(b => !b.provider_id);
+    return dayBlocks.filter(b => !b.provider_id || b.provider_id === providerId);
   }
 
   return (
@@ -743,7 +918,8 @@ function DayView({ appointments, currentDate, providers, privacyMode, settings, 
       {/* Provider columns */}
       <div style={{ flex: 1, display: "flex", overflowX: "auto" }}>
         {cols.map(col => {
-          const colAppts = getApptsByProvider(col.id);
+          const colAppts   = getApptsByProvider(col.id);
+          const colBlocks  = getBlocksByProvider(col.id);
           return (
             <div key={col.id} style={{ flex: 1, minWidth: 160, borderRight: "1px solid var(--border)" }}>
               {/* Provider header */}
@@ -787,6 +963,24 @@ function DayView({ appointments, currentDate, providers, privacyMode, settings, 
                   />
                 ))}
 
+                {/* GAP-25: Blocked slots in day view */}
+                {colBlocks.map(blk => (
+                  <div key={blk.id} style={{
+                    position: "absolute",
+                    top: apptTop(blk.start_time),
+                    height: Math.max(22, apptHeight(blk.start_time, blk.end_time)),
+                    left: 0, right: 0,
+                    background: "repeating-linear-gradient(45deg, rgba(107,114,128,0.08) 0px, rgba(107,114,128,0.08) 4px, transparent 4px, transparent 10px)",
+                    border: "1px solid rgba(107,114,128,0.3)",
+                    borderRadius: 4, pointerEvents: "none", zIndex: 3,
+                    display: "flex", alignItems: "flex-start", padding: "2px 4px",
+                  }}>
+                    <span style={{ fontSize: 9, color: "#6B7280", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {blk.reason ?? "Blocked"}
+                    </span>
+                  </div>
+                ))}
+
                 {colAppts.map(appt => (
                   <ApptCard
                     key={appt.id}
@@ -798,6 +992,8 @@ function DayView({ appointments, currentDate, providers, privacyMode, settings, 
                     totalCols={1}
                     onClick={() => onSelectAppt(appt)}
                     onActionAppt={onActionAppt}
+                    colorBy={colorBy}
+                    providerColorMap={providerColorMap}
                   />
                 ))}
 
@@ -925,7 +1121,7 @@ function MonthView({ appointments, currentDate, privacyMode, onDayClick }: {
 
 // ── B7: Appointment Card with hover-expand + inline quick actions ─────────────
 
-function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick, onActionAppt }: {
+function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick, onActionAppt, colorBy, providerColorMap }: {
   appt: Appointment;
   top: number;
   height: number;
@@ -934,9 +1130,18 @@ function ApptCard({ appt: a, top, height, privacyMode, col, totalCols, onClick, 
   totalCols: number;
   onClick: () => void;
   onActionAppt: (apptId: string, status: AppointmentStatus) => void;
+  colorBy?: "status" | "provider";
+  providerColorMap?: Record<string, typeof PROVIDER_PALETTE[0]>;
 }) {
   const [hovered, setHovered] = useState(false);
-  const cfg   = STATUS_CFG[a.status];
+  const statusCfg = STATUS_CFG[a.status];
+  // GAP-38: Override colors when colorBy === "provider"
+  const providerPalette = colorBy === "provider" && a.provider_id && providerColorMap
+    ? (providerColorMap[a.provider_id] ?? null)
+    : null;
+  const cfg = providerPalette
+    ? { ...statusCfg, bg: providerPalette.bg, border: providerPalette.border, text: providerPalette.text, dot: providerPalette.border }
+    : statusCfg;
   const isVip = a.patient_tier === "vip";
   const isHni = a.patient_tier === "hni";
   const masked = (isVip || isHni) && privacyMode;
@@ -1081,6 +1286,19 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
   const [rescheduleProviders,  setRescheduleProviders]  = useState<Provider[]>([]);
   const [rescheduling,         setRescheduling]         = useState(false);
 
+  // GAP-17: Counselling history for this patient
+  const [counsellingHistory, setCounsellingHistory] = useState<{ id: string; session_date: string; treatments_discussed: { service_name: string; quoted_price: number }[]; total_proposed: number; total_accepted: number; conversion_status: string }[]>([]);
+  const [showCounselling, setShowCounselling] = useState(false);
+  useEffect(() => {
+    if (!a.patient_id) return;
+    supabase.from("counselling_sessions")
+      .select("id, session_date, treatments_discussed, total_proposed, total_accepted, conversion_status")
+      .eq("patient_id", a.patient_id)
+      .order("session_date", { ascending: false })
+      .limit(3)
+      .then(({ data }) => setCounsellingHistory((data as typeof counsellingHistory) ?? []));
+  }, [a.patient_id]);
+
   // Fetch providers when reschedule panel opens
   useEffect(() => {
     if (!showReschedule || rescheduleProviders.length > 0 || !activeClinicId) return;
@@ -1151,7 +1369,22 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
       });
   }, [a.patient_id, a.service_name]);
 
+  const VALID_TRANSITIONS: Record<AppointmentStatus, AppointmentStatus[]> = {
+    planned:    ["confirmed", "cancelled", "no_show"],
+    confirmed:  ["arrived",   "cancelled", "no_show"],
+    arrived:    ["in_session","cancelled"],
+    in_session: ["completed"],
+    completed:  [],
+    cancelled:  [],
+    no_show:    [],
+  };
+
   async function updateStatus(status: AppointmentStatus, extra?: Record<string, unknown>) {
+    const allowed = VALID_TRANSITIONS[a.status] ?? [];
+    if (!allowed.includes(status)) {
+      toast.error(`Cannot move from "${a.status}" to "${status}"`);
+      return;
+    }
     setUpdating(true);
     try {
       if (status === "no_show") {
@@ -1539,6 +1772,36 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
           )}
         </div>
 
+        {/* GAP-17: Counselling History */}
+        {counsellingHistory.length > 0 && (
+          <div style={{ padding: "12px 24px 0", borderTop: "1px solid var(--border)" }}>
+            <button onClick={() => setShowCounselling(v => !v)}
+              style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: showCounselling ? 10 : 0 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#059669", textTransform: "uppercase", letterSpacing: "0.08em" }}>Counselling History ({counsellingHistory.length})</span>
+              <ChevronDown size={12} color="#059669" style={{ transform: showCounselling ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }} />
+            </button>
+            {showCounselling && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {counsellingHistory.map(cs => {
+                  const STATUS_COLOR: Record<string, string> = { converted: "#059669", pending: "#D97706", partial: "#0891B2", declined: "#DC2626" };
+                  return (
+                    <div key={cs.id} style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(5,150,105,0.04)", border: "1px solid rgba(5,150,105,0.15)" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 11, color: "#6B7280" }}>{new Date(cs.session_date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 5, background: `${STATUS_COLOR[cs.conversion_status] ?? "#9C9584"}18`, color: STATUS_COLOR[cs.conversion_status] ?? "#9C9584", textTransform: "capitalize" }}>{cs.conversion_status}</span>
+                      </div>
+                      {(cs.treatments_discussed ?? []).slice(0, 2).map((t, i) => (
+                        <p key={i} style={{ fontSize: 11, color: "#1C1917", margin: "1px 0", fontFamily: "Georgia, serif" }}>{t.service_name} — ₹{t.quoted_price?.toLocaleString("en-IN")}</p>
+                      ))}
+                      <p style={{ fontSize: 10, color: "#6B7280", marginTop: 3 }}>Proposed: ₹{cs.total_proposed?.toLocaleString("en-IN")} · Accepted: ₹{cs.total_accepted?.toLocaleString("en-IN")}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Custom Fields */}
         <div style={{ padding: "14px 24px 0", borderTop: "1px solid var(--border)" }}>
           <p style={{ fontSize: 11, fontWeight: 700, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 10px" }}>Custom Fields</p>
@@ -1683,6 +1946,96 @@ function DetailRow({ icon, label, value }: { icon: React.ReactNode; label: strin
   );
 }
 
+// ── GAP-25: Block Time Drawer ─────────────────────────────────────────────────
+
+function BlockTimeDrawer({ clinicId, providers, profile, currentDate, onClose, onSaved }: {
+  clinicId: string;
+  providers: { id: string; full_name: string }[];
+  profile: { id: string; full_name: string | null } | null;
+  currentDate: Date;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const dateStr = currentDate.toISOString().slice(0, 10);
+  const [providerId, setProviderId] = useState<string>("");
+  const [startDate,  setStartDate]  = useState(dateStr);
+  const [startTime,  setStartTime]  = useState("09:00");
+  const [endTime,    setEndTime]    = useState("10:00");
+  const [reason,     setReason]     = useState("");
+  const [saving,     setSaving]     = useState(false);
+
+  async function handleSave() {
+    if (!startDate || !startTime || !endTime) return;
+    setSaving(true);
+    const start = new Date(`${startDate}T${startTime}:00`).toISOString();
+    const end   = new Date(`${startDate}T${endTime}:00`).toISOString();
+    const { error } = await supabase.from("blocked_slots").insert({
+      clinic_id:   clinicId,
+      provider_id: providerId || null,
+      start_time:  start,
+      end_time:    end,
+      reason:      reason.trim() || null,
+      created_by:  profile?.id ?? null,
+    });
+    setSaving(false);
+    if (error) { toast.error("Failed to create time block"); return; }
+    onSaved();
+  }
+
+  const inputSt: React.CSSProperties = { width: "100%", padding: "9px 12px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, fontFamily: "Georgia, serif", color: "#1C1917", background: "white", outline: "none" };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "flex-start", justifyContent: "flex-end" }}>
+      <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.35)" }} onClick={onClose} />
+      <div style={{ position: "relative", width: 400, height: "100vh", background: "white", boxShadow: "-8px 0 32px rgba(0,0,0,0.12)", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "20px 24px", borderBottom: "1px solid rgba(220,38,38,0.15)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Ban size={18} style={{ color: "#DC2626" }} />
+            <span style={{ fontSize: 16, fontWeight: 600, fontFamily: "Georgia, serif", color: "#1C1917" }}>Block Time</span>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9C9584" }}><X size={18} /></button>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#5C5447", display: "block", marginBottom: 6 }}>Provider (optional — leave blank to block all)</label>
+            <select value={providerId} onChange={e => setProviderId(e.target.value)} style={inputSt}>
+              <option value="">All Providers / Clinic-wide</option>
+              {providers.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#5C5447", display: "block", marginBottom: 6 }}>Date</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={inputSt} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#5C5447", display: "block", marginBottom: 6 }}>Start Time</label>
+              <input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} style={inputSt} />
+            </div>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#5C5447", display: "block", marginBottom: 6 }}>End Time</label>
+              <input type="time" value={endTime} onChange={e => setEndTime(e.target.value)} style={inputSt} />
+            </div>
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#5C5447", display: "block", marginBottom: 6 }}>Reason (optional)</label>
+            <input value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. Doctor on leave, Staff training, Holiday" style={inputSt} />
+          </div>
+          <div style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(220,38,38,0.04)", border: "1px solid rgba(220,38,38,0.15)" }}>
+            <p style={{ fontSize: 12, color: "#DC2626", margin: 0 }}>Blocked slots will appear as unavailable on the calendar. New bookings cannot be made in the blocked timeframe.</p>
+          </div>
+        </div>
+        <div style={{ padding: "16px 24px", borderTop: "1px solid rgba(197,160,89,0.15)" }}>
+          <button onClick={handleSave} disabled={saving || !startDate || !startTime || !endTime}
+            style={{ width: "100%", padding: "12px", borderRadius: 10, border: "none", background: saving ? "rgba(220,38,38,0.3)" : "#DC2626", color: "white", fontSize: 14, fontWeight: 600, cursor: saving ? "not-allowed" : "pointer", fontFamily: "Georgia, serif" }}>
+            {saving ? "Saving…" : "Block Time Slot"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── New Appointment Drawer ────────────────────────────────────────────────────
 
 interface ExtraServiceRow {
@@ -1735,6 +2088,9 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
   const [saving,         setSaving]         = useState(false);
   const [conflict,       setConflict]       = useState<string | null>(null);
   const [extraRows,      setExtraRows]      = useState<ExtraServiceRow[]>([]);
+  const [isRecurring,    setIsRecurring]    = useState(false);
+  const [recurringFreq,  setRecurringFreq]  = useState<"weekly" | "biweekly" | "monthly">("weekly");
+  const [recurringCount, setRecurringCount] = useState(4);
 
   // Update duration when service changes
   useEffect(() => {
@@ -1824,33 +2180,78 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
 
     setSaving(true);
     try {
-      const start = new Date(`${date}T${startTime}`);
-      const end   = new Date(start.getTime() + durationMins * 60000);
-      const svc   = services.find(s => s.id === serviceId);
-      const { data: appt, error } = await supabase.from("appointments").insert({
-        clinic_id:       activeClinicId,
-        patient_id:      selectedPatient.id,
-        provider_id:     providerId || null,
-        service_id:      serviceId,
-        credit_id:       useCredit && selectedCreditId ? selectedCreditId : null,
-        service_name:    svc?.name ?? "Service",
-        room:            room || null,
-        start_time:      start.toISOString(),
-        end_time:        end.toISOString(),
-        status:          "planned",
-        notes:           notes || null,
-        credit_reserved: useCredit && selectedCreditId && settings?.credit_lock ? true : false,
-        created_by:      (await supabase.auth.getUser()).data.user?.id,
-      }).select("id").single();
+      const creatorId = (await supabase.auth.getUser()).data.user?.id;
+      const svc = services.find(s => s.id === serviceId);
+
+      // Build list of start/end times — 1 if not recurring, N if recurring
+      const freqDays = recurringFreq === "weekly" ? 7 : recurringFreq === "biweekly" ? 14 : 28;
+      const recurrenceGroupId = isRecurring ? crypto.randomUUID() : null;
+      const sessionCount = isRecurring ? recurringCount : 1;
+
+      const slots: { start: Date; end: Date }[] = [];
+      for (let i = 0; i < sessionCount; i++) {
+        const base = new Date(`${date}T${startTime}`);
+        base.setDate(base.getDate() + i * freqDays);
+        const end = new Date(base.getTime() + durationMins * 60000);
+        slots.push({ start: base, end });
+      }
+
+      const firstSlot = slots[0];
+      // GAP-28: use server-side RPC with conflict check
+      const { data: safeResult, error } = await supabase.rpc("create_appointment_safe", {
+        p_clinic_id:            activeClinicId,
+        p_patient_id:           selectedPatient.id,
+        p_provider_id:          providerId || null,
+        p_service_id:           serviceId,
+        p_service_name:         svc?.name ?? "Service",
+        p_start_time:           firstSlot.start.toISOString(),
+        p_end_time:             firstSlot.end.toISOString(),
+        p_notes:                notes || null,
+        p_room:                 room || null,
+        p_credit_id:            useCredit && selectedCreditId ? selectedCreditId : null,
+        p_credit_reserved:      useCredit && selectedCreditId && settings?.credit_lock ? true : false,
+        p_recurrence_group_id:  recurrenceGroupId,
+        p_created_by:           creatorId,
+        p_allow_double_booking: settings?.enable_double_booking ?? false,
+      });
 
       if (error) throw error;
+      const rpcResult = safeResult as { conflict: boolean; id?: string; conflict_patient?: string; conflict_service?: string };
+      if (rpcResult?.conflict) {
+        toast.error(`Booking conflict: "${rpcResult.conflict_service}" for ${rpcResult.conflict_patient} already in this slot`);
+        setSaving(false);
+        return;
+      }
+      const appt = rpcResult?.id ? { id: rpcResult.id } : null;
+
+      // Insert remaining recurring slots (skip first — already inserted)
+      if (isRecurring && slots.length > 1) {
+        const recurringRows = slots.slice(1).map(slot => ({
+          clinic_id:            activeClinicId,
+          patient_id:           selectedPatient.id,
+          provider_id:          providerId || null,
+          service_id:           serviceId,
+          credit_id:            null,
+          service_name:         svc?.name ?? "Service",
+          room:                 room || null,
+          start_time:           slot.start.toISOString(),
+          end_time:             slot.end.toISOString(),
+          status:               "planned",
+          notes:                notes || null,
+          credit_reserved:      false,
+          recurrence_group_id:  recurrenceGroupId,
+          created_by:           creatorId,
+        }));
+        const { error: recurErr } = await supabase.from("appointments").insert(recurringRows);
+        if (recurErr) throw recurErr;
+      }
 
       // If credit_lock is on and using a credit, mark credit as reserved in log
       if (useCredit && selectedCreditId && settings?.credit_lock && appt) {
         await supabase.from("credit_consumption_log").insert({
           credit_id:      selectedCreditId,
           appointment_id: appt.id,
-          session_date:   start.toISOString(),
+          session_date:   firstSlot.start.toISOString(),
           provider_id:    providerId || null,
           clinic_id:      activeClinicId,
           notes:          `Session reserved (not yet consumed) — credit lock active`,
@@ -1858,7 +2259,7 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
       }
 
       // Create extra service appointments chained after the main one
-      let chainEnd = end;
+      let chainEnd = firstSlot.end;
       for (const row of extraRows) {
         if (!row.serviceId) continue;
         const xSvc   = services.find(s => s.id === row.serviceId);
@@ -1877,13 +2278,14 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
           status:          "planned",
           notes:           `Part of multi-service booking — ${notes || ""}`.trim(),
           credit_reserved: false,
-          created_by:      (await supabase.auth.getUser()).data.user?.id,
+          created_by:      creatorId,
         });
         chainEnd = xEnd;
       }
 
       const extraMsg = extraRows.length > 0 ? ` + ${extraRows.length} extra service${extraRows.length > 1 ? "s" : ""}` : "";
-      toast.success(`Appointment booked for ${selectedPatient.full_name}${extraMsg}`);
+      const recurringMsg = isRecurring ? ` (${recurringCount} sessions)` : "";
+      toast.success(`Appointment booked for ${selectedPatient.full_name}${recurringMsg}${extraMsg}`);
       // N6: send intake form link
       if (sendIntake && selectedPatient) {
         const intakeUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/intake/${activeClinicId}`;
@@ -2200,6 +2602,46 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
               })}
             </div>
 
+            {/* Recurring Appointments */}
+            <div style={{ padding: 16, borderRadius: 12, background: "rgba(197,160,89,0.04)", border: "1px solid var(--border)" }}>
+              <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", marginBottom: isRecurring ? 14 : 0 }}>
+                <div>
+                  <p style={{ fontSize: 13, fontWeight: 600, fontFamily: "Georgia, serif", margin: 0 }}>Recurring Appointment</p>
+                  <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>Create multiple sessions automatically</p>
+                </div>
+                <input type="checkbox" checked={isRecurring} onChange={e => setIsRecurring(e.target.checked)} style={{ accentColor: "#C5A059", width: 16, height: 16 }} />
+              </label>
+              {isRecurring && (
+                <div style={{ display: "flex", gap: 14 }}>
+                  <div style={{ flex: 2 }}>
+                    <p style={{ fontSize: 11, fontWeight: 600, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Frequency</p>
+                    <select
+                      value={recurringFreq}
+                      onChange={e => setRecurringFreq(e.target.value as "weekly" | "biweekly" | "monthly")}
+                      style={inputStyle}
+                    >
+                      <option value="weekly">Weekly (every 7 days)</option>
+                      <option value="biweekly">Bi-weekly (every 14 days)</option>
+                      <option value="monthly">Monthly (every 4 weeks)</option>
+                    </select>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontSize: 11, fontWeight: 600, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Sessions</p>
+                    <input
+                      type="number" min={2} max={24} value={recurringCount}
+                      onChange={e => setRecurringCount(Math.max(2, Math.min(24, Number(e.target.value))))}
+                      style={inputStyle}
+                    />
+                  </div>
+                </div>
+              )}
+              {isRecurring && (
+                <p style={{ fontSize: 11, color: "#C5A059", marginTop: 10 }}>
+                  Will create {recurringCount} appointments — first on {date}, then every {recurringFreq === "weekly" ? "7" : recurringFreq === "biweekly" ? "14" : "28"} days
+                </p>
+              )}
+            </div>
+
             {/* Conflict warning */}
             {conflict && (
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px", borderRadius: 10, background: settings?.enable_double_booking ? "rgba(212,160,23,0.08)" : "rgba(180,60,60,0.07)", border: `1px solid ${settings?.enable_double_booking ? "rgba(212,160,23,0.35)" : "rgba(180,60,60,0.3)"}` }}>
@@ -2265,6 +2707,14 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
                   <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Duration</span>
                   <span style={{ fontSize: 13, fontFamily: "Georgia, serif" }}>{durationMins} min</span>
                 </div>
+                {isRecurring && (
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 12, color: "#C5A059" }}>Recurring</span>
+                    <span style={{ fontSize: 12, color: "#C5A059", fontWeight: 600 }}>
+                      {recurringCount} sessions · {recurringFreq === "weekly" ? "Weekly" : recurringFreq === "biweekly" ? "Bi-weekly" : "Monthly"}
+                    </span>
+                  </div>
+                )}
                 {useCredit && selectedCreditId && (
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <span style={{ fontSize: 12, color: "#C5A059" }}>Using Credit</span>
@@ -2497,7 +2947,7 @@ interface RecallTask {
   status: string;
   notes: string | null;
   created_at: string;
-  patients: { full_name: string } | null;
+  patients: { full_name: string; phone: string | null } | null;
 }
 
 function RecallsTab({ activeClinicId, onBook }: { activeClinicId: string | null; onBook: () => void }) {
@@ -2507,17 +2957,24 @@ function RecallsTab({ activeClinicId, onBook }: { activeClinicId: string | null;
   useEffect(() => {
     if (!activeClinicId) return;
     supabase.from("recall_tasks")
-      .select("*, patients!patient_id(full_name)")
+      .select("*, patients!patient_id(full_name, phone)")
       .eq("clinic_id", activeClinicId)
       .in("status", ["pending", "sent"])
       .order("recall_date")
       .then(({ data }) => { setTasks((data ?? []) as RecallTask[]); setLoading(false); });
   }, [activeClinicId]);
 
-  async function sendRecall(id: string) {
-    await supabase.from("recall_tasks").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", id);
-    toast.success("Recall notification sent");
-    setTasks(t => t.map(x => x.id === id ? { ...x, status: "sent" } : x));
+  // GAP-34: Use wa.me deeplink instead of placeholder Edge Function
+  async function sendRecall(task: RecallTask) {
+    await supabase.from("recall_tasks").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", task.id);
+    setTasks(t => t.map(x => x.id === task.id ? { ...x, status: "sent" } : x));
+    const phone = task.patients?.phone?.replace(/\D/g, "") ?? "";
+    const msg = `Hi ${task.patients?.full_name ?? ""},\n\nIt's time for your ${task.service_name} follow-up! Please call us or reply here to schedule your appointment.\n\nThank you!`;
+    if (phone) {
+      window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`, "_blank");
+    } else {
+      toast.success("Recall marked as sent");
+    }
   }
 
   async function dismissRecall(id: string) {
@@ -2566,7 +3023,8 @@ function RecallsTab({ activeClinicId, onBook }: { activeClinicId: string | null;
                 return (
                   <tr key={task.id} style={{ borderBottom: "1px solid rgba(0,0,0,0.04)", background: isOverdue ? "rgba(180,60,60,0.03)" : isDueToday ? "rgba(212,160,23,0.04)" : "transparent" }}>
                     <td style={{ padding: "12px 16px", fontFamily: "Georgia, serif", fontSize: 14, fontWeight: 600 }}>
-                      {(task.patients as { full_name: string } | null)?.full_name ?? "—"}
+                      {task.patients?.full_name ?? "—"}
+                      {task.notes && <p style={{ fontSize: 11, color: "#9C9584", margin: "2px 0 0", fontWeight: 400, fontFamily: "inherit" }}>{task.notes}</p>}
                     </td>
                     <td style={{ padding: "12px 16px", fontSize: 13 }}>{task.service_name}</td>
                     <td style={{ padding: "12px 16px", fontSize: 13 }}>
@@ -2589,7 +3047,7 @@ function RecallsTab({ activeClinicId, onBook }: { activeClinicId: string | null;
                       <div style={{ display: "flex", gap: 6 }}>
                         {task.status === "pending" && (
                           <button
-                            onClick={() => sendRecall(task.id)}
+                            onClick={() => sendRecall(task)}
                             style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, border: "none", background: "#C5A059", color: "white", cursor: "pointer", fontFamily: "Georgia, serif", display: "flex", alignItems: "center", gap: 4 }}
                           >
                             <Bell size={11} /> Send Recall

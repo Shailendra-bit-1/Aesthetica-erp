@@ -3,8 +3,9 @@
 import { useState, useEffect } from "react";
 import {
   Wallet, CreditCard, Star, ArrowUpCircle, ArrowDownCircle,
-  RefreshCw, Loader2, Users, ExternalLink, CalendarDays,
+  RefreshCw, Loader2, Users, ExternalLink, CalendarDays, Plus, X,
 } from "lucide-react";
+import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { Patient, ServiceCredit, PatientMembership, fmtDate } from "../types";
 
@@ -62,6 +63,10 @@ export default function WalletTab({ patient, clinicId, privacyMode, onRefresh }:
   const [memberships,  setMemberships]  = useState<PatientMembership[]>([]);
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [loading,      setLoading]      = useState(true);
+  const [topupOpen,    setTopupOpen]    = useState(false);
+  const [topupAmount,  setTopupAmount]  = useState("");
+  const [topupReason,  setTopupReason]  = useState("");
+  const [topupSaving,  setTopupSaving]  = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -102,6 +107,31 @@ export default function WalletTab({ patient, clinicId, privacyMode, onRefresh }:
   const mask = (n: number) => privacyMode ? "₹ ••••" : fmtINR(n);
   const walletBal = patient.wallet_balance ?? 0;
 
+  async function handleTopup() {
+    const amount = parseFloat(topupAmount);
+    if (isNaN(amount) || amount <= 0) { toast.error("Enter a valid amount"); return; }
+    setTopupSaving(true);
+    const { error } = await supabase.rpc("add_wallet_credit", {
+      p_patient_id:     patient.id,
+      p_clinic_id:      clinicId,
+      p_amount:         amount,
+      p_reason:         topupReason || "Manual top-up",
+      p_reference_id:   null,
+      p_reference_type: "manual",
+      p_actor_id:       null,
+    });
+    setTopupSaving(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success(`₹${amount.toLocaleString()} added to wallet`);
+    setTopupOpen(false);
+    setTopupAmount("");
+    setTopupReason("");
+    onRefresh();
+    // Reload transactions
+    const { data: txData } = await supabase.from("wallet_transactions").select("id,type,amount,balance_after,reason,created_at").eq("patient_id", patient.id).order("created_at", { ascending: false }).limit(20);
+    setTransactions((txData ?? []) as WalletTransaction[]);
+  }
+
   if (loading) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 48, gap: 8 }}>
@@ -136,16 +166,47 @@ export default function WalletTab({ patient, clinicId, privacyMode, onRefresh }:
             {patient.full_name}
           </p>
         </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{
-            padding: "8px 16px", borderRadius: 10,
-            background: "rgba(255,255,255,0.18)", border: "1px solid rgba(255,255,255,0.3)",
-          }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+          <div style={{ padding: "8px 16px", borderRadius: 10, background: "rgba(255,255,255,0.18)", border: "1px solid rgba(255,255,255,0.3)" }}>
             <p style={{ fontSize: 10, color: "rgba(255,255,255,0.7)", margin: "0 0 2px", textTransform: "uppercase", letterSpacing: "0.06em" }}>Credits Active</p>
             <p style={{ fontSize: 20, fontWeight: 700, fontFamily: "Georgia, serif", color: "#fff", margin: 0 }}>{credits.length}</p>
           </div>
+          {/* GAP-19: Top Up button */}
+          <button onClick={() => setTopupOpen(true)}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", borderRadius: 9, background: "rgba(255,255,255,0.2)", border: "1px solid rgba(255,255,255,0.35)", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#fff" }}>
+            <Plus size={13} /> Top Up
+          </button>
         </div>
       </div>
+
+      {/* Top Up Modal */}
+      {topupOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "#F9F7F2", borderRadius: 16, padding: 24, width: 340, maxWidth: "92vw" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 600, fontFamily: "Georgia, serif", color: "#1C1917", margin: 0 }}>Top Up Wallet</h3>
+              <button onClick={() => setTopupOpen(false)} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={16} style={{ color: "#9C9584" }} /></button>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", display: "block", marginBottom: 4 }}>Amount (₹)</label>
+                <input type="number" value={topupAmount} onChange={e => setTopupAmount(e.target.value)} placeholder="e.g. 1000"
+                  style={{ width: "100%", padding: "9px 12px", borderRadius: 9, border: "1px solid rgba(197,160,89,0.3)", fontSize: 14, outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#6B7280", display: "block", marginBottom: 4 }}>Reason (optional)</label>
+                <input type="text" value={topupReason} onChange={e => setTopupReason(e.target.value)} placeholder="e.g. Gift card redemption"
+                  style={{ width: "100%", padding: "9px 12px", borderRadius: 9, border: "1px solid rgba(197,160,89,0.3)", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <button onClick={handleTopup} disabled={topupSaving || !topupAmount}
+                style={{ padding: "10px", borderRadius: 10, border: "none", background: "linear-gradient(135deg, #C5A059, #A8853A)", color: "#fff", fontSize: 13, fontWeight: 600, cursor: topupSaving || !topupAmount ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                {topupSaving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                {topupSaving ? "Adding…" : "Add to Wallet"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Active Service Credits ──────────────────────────────────────────── */}
       <section>

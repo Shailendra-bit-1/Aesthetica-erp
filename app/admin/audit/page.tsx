@@ -12,6 +12,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { PERMISSION_LABELS, type StaffPermissions } from "@/lib/permissions";
+import { useClinic } from "@/contexts/ClinicContext";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -80,34 +81,46 @@ export default function AuditLogPage() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo,   setDateTo]   = useState("");
+  const [actionFilter, setActionFilter] = useState("");
+
+  const { profile } = useClinic();
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await supabase
-        .from("audit_logs")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(200);
+      let q = supabase.from("audit_logs").select("*").order("created_at", { ascending: false }).limit(500);
+      if (dateFrom) q = q.gte("created_at", dateFrom);
+      if (dateTo)   q = q.lte("created_at", dateTo + "T23:59:59");
+      // Non-superadmin users only see their own clinic's audit log
+      if (profile?.role !== "superadmin" && profile?.clinic_id) {
+        q = q.eq("clinic_id", profile.clinic_id);
+      }
+      const { data } = await q;
       setEntries(data ?? []);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [dateFrom, dateTo, profile?.role, profile?.clinic_id]);
 
   useEffect(() => {
     fetchLogs();
   }, [fetchLogs]);
 
   const filtered = entries.filter((e) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return (
-      e.actor_name?.toLowerCase().includes(q) ||
-      e.target_name?.toLowerCase().includes(q) ||
-      (e.permission_key && permLabel(e.permission_key).toLowerCase().includes(q))
-    );
+    if (search) {
+      const q = search.toLowerCase();
+      if (!e.actor_name?.toLowerCase().includes(q) &&
+          !e.target_name?.toLowerCase().includes(q) &&
+          !(e.permission_key && permLabel(e.permission_key).toLowerCase().includes(q)) &&
+          !e.action?.toLowerCase().includes(q)) return false;
+    }
+    if (actionFilter && e.action !== actionFilter) return false;
+    return true;
   });
+
+  const uniqueActions = Array.from(new Set(entries.map(e => e.action))).sort();
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
@@ -170,45 +183,32 @@ export default function AuditLogPage() {
           style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
         >
           {/* Toolbar */}
-          <div
-            className="flex items-center justify-between px-6 py-4"
-            style={{ borderBottom: "1px solid var(--border)" }}
-          >
-            <div className="flex items-center gap-2.5" style={{ color: "var(--text-muted)" }}>
-              <Search size={14} />
-              <input
-                type="text"
-                placeholder="Search by actor, staff or permission…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                style={{
-                  border: "none",
-                  background: "transparent",
-                  outline: "none",
-                  fontSize: 13,
-                  color: "var(--foreground)",
-                  width: 280,
-                  fontFamily: "Georgia, serif",
-                }}
-              />
+          <div className="px-6 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
+                <Search size={14} />
+                <input type="text" placeholder="Search actor, action, target…" value={search} onChange={e => setSearch(e.target.value)}
+                  style={{ border: "none", background: "transparent", outline: "none", fontSize: 13, color: "var(--foreground)", width: 220, fontFamily: "Georgia, serif" }} />
+              </div>
+              <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+                style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--border)", fontSize: 12, background: "var(--surface)", color: "var(--foreground)" }} />
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>to</span>
+              <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+                style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--border)", fontSize: 12, background: "var(--surface)", color: "var(--foreground)" }} />
+              <select value={actionFilter} onChange={e => setActionFilter(e.target.value)}
+                style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid var(--border)", fontSize: 12, background: "var(--surface)", color: "var(--foreground)" }}>
+                <option value="">All actions</option>
+                {uniqueActions.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+              {profile?.role !== "superadmin" && (
+                <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, background: "rgba(197,160,89,0.1)", color: "#8B6914" }}>Clinic-scoped view</span>
+              )}
             </div>
-            <button
-              onClick={fetchLogs}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "6px 12px",
-                borderRadius: 8,
-                border: "1px solid var(--border)",
-                background: "transparent",
-                color: "var(--text-muted)",
-                fontSize: 12,
-                cursor: "pointer",
-              }}
-            >
-              <RefreshCw size={12} />
-              Refresh
+          </div>
+          <div className="flex justify-end px-6 py-2" style={{ borderBottom: "1px solid var(--border)" }}>
+            <button onClick={fetchLogs}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text-muted)", fontSize: 12, cursor: "pointer" }}>
+              <RefreshCw size={12} /> Refresh
             </button>
           </div>
 

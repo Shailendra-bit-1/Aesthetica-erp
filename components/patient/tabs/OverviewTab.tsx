@@ -29,7 +29,7 @@ export default function OverviewTab({ patient, medicalHistory, clinicId, privacy
   const [newText, setNewText]       = useState("");
   const [newColor, setNewColor]     = useState("gold");
   const [saving, setSaving]         = useState(false);
-  const [kpi, setKpi]               = useState({ totalSpend: 0, totalVisits: 0, lastVisit: "" as string | null, activeCredits: 0, membership: "" as string | null });
+  const [kpi, setKpi]               = useState({ totalSpend: 0, totalVisits: 0, noShowCount: 0, lastVisit: "" as string | null, activeCredits: 0, membership: "" as string | null });
   // Allergy editing
   const [allergyEdit, setAllergyEdit] = useState(false);
   const [allergyText, setAllergyText] = useState("");
@@ -123,12 +123,16 @@ export default function OverviewTab({ patient, medicalHistory, clinicId, privacy
         supabase.from("patient_memberships").select("plan:membership_plans!plan_id(name)").eq("patient_id", patient.id).eq("status", "active").limit(1).maybeSingle(),
       ]);
       const totalSpend = (invoiceRes.data ?? []).reduce((s, r) => s + (r.total_amount ?? 0), 0);
-      const visits = await supabase.from("appointments").select("id", { count: "exact", head: true }).eq("patient_id", patient.id).eq("status", "completed");
+      const [visits, noShows] = await Promise.all([
+        supabase.from("appointments").select("id", { count: "exact", head: true }).eq("patient_id", patient.id).eq("status", "completed"),
+        supabase.from("appointments").select("id", { count: "exact", head: true }).eq("patient_id", patient.id).eq("status", "no_show"),
+      ]);
       const planData = memRes.data?.plan as { name?: string } | null;
       setStickies((snRes.data ?? []) as StickyNote[]);
       setKpi({
         totalSpend,
         totalVisits:   visits.count ?? 0,
+        noShowCount:   noShows.count ?? 0,
         lastVisit:     apptRes.data?.[0]?.start_time ?? null,
         activeCredits: (credRes.data ?? []).length,
         membership:    planData?.name ?? null,
@@ -231,6 +235,7 @@ export default function OverviewTab({ patient, medicalHistory, clinicId, privacy
             { label: "Total Spend",    value: privacyMode ? "₹ ••••" : `₹${kpi.totalSpend.toLocaleString("en-IN")}`, icon: TrendingUp, color: "#C5A059" },
             { label: "Completed Visits", value: kpi.totalVisits,   icon: Calendar, color: "#8B7EC8" },
             { label: "Active Credits",  value: kpi.activeCredits,  icon: CreditCard, color: "#7A9E8E" },
+            { label: "No-Shows",        value: kpi.noShowCount,    icon: Calendar, color: kpi.noShowCount > 2 ? "#B43C3C" : "#9CA3AF" },
             { label: "Wallet Balance",  value: privacyMode ? "₹ ••••" : `₹${(patient.wallet_balance ?? 0).toLocaleString("en-IN")}`, icon: Sparkles, color: "#C5A059" },
           ].map(({ label, value, icon: Icon, color }) => (
             <div key={label} style={{ padding: "14px 16px", borderRadius: 12, background: "#fff", border: "1px solid rgba(197,160,89,0.15)", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
@@ -246,14 +251,21 @@ export default function OverviewTab({ patient, medicalHistory, clinicId, privacy
 
       {/* Quick Actions */}
       <section>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8 }}>
           {[
-            { label: "Book Appointment", icon: Calendar, color: "#C5A059", href: `/scheduler?patient=${patient.id}` },
-            { label: "New Invoice",      icon: FileText,  color: "#2563EB", href: `/billing?patient=${patient.id}` },
-            { label: "Send WhatsApp",    icon: MessageCircle, color: "#16a34a",
+            { label: "Book Appointment",  icon: Calendar,      color: "#C5A059", href: `/scheduler?patient=${patient.id}` },
+            { label: "New Invoice",       icon: FileText,       color: "#2563EB", href: `/billing?patient=${patient.id}` },
+            { label: "Start Counselling", icon: MessageCircle,  color: "#EC4899", href: `/counselling?patient=${patient.id}` },
+            { label: "Send WhatsApp",     icon: MessageCircle, color: "#16a34a",
               onClick: () => { const p = patient.phone?.replace(/\D/g,""); if (p) window.open(`https://wa.me/91${p}`, "_blank"); } },
-            { label: "Copy Portal Link", icon: Send, color: "#7C3AED",
-              onClick: () => { navigator.clipboard.writeText(`${window.location.origin}/portal?phone=${patient.phone ?? ""}`); toast.success("Portal link copied"); } },
+            { label: "Send Portal Link",  icon: Send, color: "#7C3AED",
+              onClick: () => {
+                const phone = patient.phone?.replace(/\D/g,"") ?? "";
+                const url = `${window.location.origin}/portal?phone=${phone}`;
+                const msg = `Hi ${patient.full_name}, access your patient portal here: ${url}`;
+                if (phone) window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`, "_blank");
+                else { navigator.clipboard.writeText(url); toast.success("Portal link copied"); }
+              } },
           ].map(({ label, icon: Icon, color, href, onClick }) => (
             href ? (
               <a key={label} href={href} style={{

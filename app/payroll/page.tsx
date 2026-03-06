@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
-import { Banknote, Plus, X, ChevronDown, Download, Check, Clock, FileText, Eye, Pencil } from "lucide-react";
+import { Banknote, Plus, X, ChevronDown, Download, Check, Clock, FileText, Eye, Pencil, Mail } from "lucide-react";
 
 type RunStatus = "draft" | "processing" | "approved" | "paid";
 
@@ -23,6 +23,7 @@ interface Payslip {
   id: string;
   run_id: string;
   staff_id: string;
+  clinic_id: string;
   basic_salary: number;
   commission_total: number;
   allowances: number;
@@ -50,6 +51,17 @@ const RUN_STATUS_CONFIG: Record<RunStatus, { bg: string; color: string; label: s
 
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
+// GAP-32: Auto TDS calculation per India tax slabs (new regime)
+function calcMonthlyTDS(annualGross: number): number {
+  const afterStdDeduction = Math.max(0, annualGross - 50000);
+  let annualTax = 0;
+  if (afterStdDeduction <= 250000)       annualTax = 0;
+  else if (afterStdDeduction <= 500000)  annualTax = (afterStdDeduction - 250000) * 0.05;
+  else if (afterStdDeduction <= 1000000) annualTax = 12500 + (afterStdDeduction - 500000) * 0.20;
+  else                                    annualTax = 112500 + (afterStdDeduction - 1000000) * 0.30;
+  return Math.round(annualTax / 12);
+}
+
 export default function PayrollPage() {
   const { profile, activeClinicId } = useClinic();
 
@@ -64,6 +76,8 @@ export default function PayrollPage() {
   const [editPayslip, setEditPayslip] = useState<Payslip | null>(null);
   const [editForm, setEditForm] = useState({ allowances: "0", deductions: "0", tds: "0" });
   const [editSaving, setEditSaving] = useState(false);
+  // GAP-42: Ad-hoc adjustments per payslip
+  const [adjustments, setAdjustments] = useState<{ uid: string; description: string; type: "bonus" | "deduction"; amount: string }[]>([]);
 
   const [newRunDrawer, setNewRunDrawer] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -172,17 +186,27 @@ export default function PayrollPage() {
 
         if (staffList.length > 0) {
           // H-7 fix: use basic_salary from staff profile
+          // GAP-32: auto TDS; GAP-33: attendance-based deduction
+          const WORKING_DAYS = 26;
           const payslipInserts = staffList.map(s => {
             const basic = s.basic_salary ?? 0;
             const commission = commTotals[s.id] || 0;
+            const presentDays = attendanceCounts[s.id] || 0;
+            const absentDays = Math.max(0, WORKING_DAYS - presentDays);
+            const attendanceDeduction = basic > 0 && absentDays > 0 ? Math.round((basic / WORKING_DAYS) * absentDays) : 0;
+            const annualGross = (basic + commission) * 12;
+            const autoTds = calcMonthlyTDS(annualGross);
+            const net = basic + commission - attendanceDeduction - autoTds;
             return {
               clinic_id: clinicId, run_id: run.id, staff_id: s.id,
               basic_salary: basic,
               commission_total: commission,
-              allowances: 0, deductions: 0, tds: 0,
-              net_pay: basic + commission,
-              attendance_days: attendanceCounts[s.id] || 0,
-              breakdown: {},
+              allowances: 0,
+              deductions: attendanceDeduction,
+              tds: autoTds,
+              net_pay: Math.max(0, net),
+              attendance_days: presentDays,
+              breakdown: { absent_days: absentDays, attendance_deduction: attendanceDeduction, auto_tds: autoTds },
             };
           });
           await supabase.from("payslips").insert(payslipInserts);
@@ -225,17 +249,23 @@ export default function PayrollPage() {
       deductions: String(p.deductions || 0),
       tds:        String(p.tds || 0),
     });
+    // GAP-42: Restore saved adjustments from breakdown JSONB
+    const saved = (p.breakdown as { adjustments?: { uid: string; description: string; type: "bonus" | "deduction"; amount: string }[] } | null)?.adjustments ?? [];
+    setAdjustments(saved.map(a => ({ ...a, uid: a.uid ?? crypto.randomUUID() })));
   };
 
   const savePayslipEdits = async () => {
     if (!editPayslip) return;
     setEditSaving(true);
-    const allowances = parseFloat(editForm.allowances) || 0;
-    const deductions = parseFloat(editForm.deductions) || 0;
-    const tds        = parseFloat(editForm.tds)        || 0;
-    const net_pay    = (editPayslip.basic_salary || 0) + (editPayslip.commission_total || 0) + allowances - deductions - tds;
+    const allowances  = parseFloat(editForm.allowances) || 0;
+    const deductions  = parseFloat(editForm.deductions) || 0;
+    const tds         = parseFloat(editForm.tds)        || 0;
+    const adjBonus    = adjustments.filter(a => a.type === "bonus").reduce((s, a) => s + (parseFloat(a.amount) || 0), 0);
+    const adjDeduct   = adjustments.filter(a => a.type === "deduction").reduce((s, a) => s + (parseFloat(a.amount) || 0), 0);
+    const net_pay     = (editPayslip.basic_salary || 0) + (editPayslip.commission_total || 0) + allowances + adjBonus - deductions - adjDeduct - tds;
+    const breakdown   = { ...((editPayslip.breakdown as object) ?? {}), adjustments: adjustments.map(({ uid, description, type, amount }) => ({ uid, description, type, amount })) };
 
-    await supabase.from("payslips").update({ allowances, deductions, tds, net_pay }).eq("id", editPayslip.id);
+    await supabase.from("payslips").update({ allowances, deductions, tds, net_pay, breakdown }).eq("id", editPayslip.id);
 
     // Recalculate run totals from all payslips
     const { data: allSlips } = await supabase.from("payslips")
@@ -461,8 +491,29 @@ export default function PayrollPage() {
                           <Pencil size={13} style={{ color: "#9ca3af" }} />
                         </button>
                         <button onClick={() => { setViewPayslip(p); printPayslip(p); }}
-                          className="p-1.5 rounded hover:bg-amber-50 transition-colors">
+                          className="p-1.5 rounded hover:bg-amber-50 transition-colors" title="Print payslip">
                           <Eye size={14} style={{ color: "var(--gold)" }} />
+                        </button>
+                        {/* GAP-43: Email payslip to staff */}
+                        <button
+                          title="Email payslip to staff"
+                          className="p-1.5 rounded hover:bg-blue-50 transition-colors"
+                          onClick={async () => {
+                            const res = await fetch("/api/payroll/email-payslip", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ payslip_id: p.id, clinic_id: p.clinic_id }),
+                            });
+                            const data = await res.json();
+                            if (res.ok) {
+                              const { toast } = await import("sonner");
+                              toast.success(`Payslip emailed to ${data.sent_to}`);
+                            } else {
+                              const { toast } = await import("sonner");
+                              toast.error(data.error ?? "Failed to send email");
+                            }
+                          }}>
+                          <Mail size={13} style={{ color: "#3B82F6" }} />
                         </button>
                       </div>
                     </div>
@@ -549,7 +600,7 @@ export default function PayrollPage() {
               {[
                 { key: "allowances", label: "Allowances (₹)", hint: "HRA, travel, meals, etc.", color: "#16a34a" },
                 { key: "deductions", label: "Deductions (₹)", hint: "PF, ESI, advance recovery", color: "#dc2626" },
-                { key: "tds",        label: "TDS (₹)",        hint: "Income tax withheld",      color: "#dc2626" },
+                { key: "tds",        label: "TDS (₹)",        hint: `Auto-calc: ₹${calcMonthlyTDS(((editPayslip?.basic_salary ?? 0) + (editPayslip?.commission_total ?? 0)) * 12).toLocaleString()} — override if needed`, color: "#dc2626" },
               ].map(({ key, label, hint, color }) => (
                 <div key={key}>
                   <label className="block text-xs font-medium mb-1" style={{ color: "#4b5563" }}>{label}</label>
@@ -563,6 +614,39 @@ export default function PayrollPage() {
                   <p className="text-xs mt-1" style={{ color: "#9ca3af" }}>{hint}</p>
                 </div>
               ))}
+              {/* GAP-42: Ad-hoc Adjustments */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-medium" style={{ color: "#4b5563" }}>Ad-hoc Adjustments</span>
+                  <button onClick={() => setAdjustments(prev => [...prev, { uid: crypto.randomUUID(), description: "", type: "bonus", amount: "" }])}
+                    className="text-xs px-2 py-1 rounded-lg flex items-center gap-1"
+                    style={{ background: "rgba(197,160,89,0.08)", color: "#A8853A", border: "1px solid rgba(197,160,89,0.25)" }}>
+                    <Plus size={11} /> Add
+                  </button>
+                </div>
+                {adjustments.map(adj => (
+                  <div key={adj.uid} className="flex items-center gap-2 mb-2">
+                    <input value={adj.description} onChange={e => setAdjustments(prev => prev.map(x => x.uid === adj.uid ? { ...x, description: e.target.value } : x))}
+                      placeholder="Description (e.g. Diwali bonus)"
+                      className="flex-1 px-2 py-1.5 rounded-lg border outline-none text-xs"
+                      style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+                    <select value={adj.type} onChange={e => setAdjustments(prev => prev.map(x => x.uid === adj.uid ? { ...x, type: e.target.value as "bonus"|"deduction" } : x))}
+                      className="px-2 py-1.5 rounded-lg border outline-none text-xs bg-white"
+                      style={{ borderColor: "rgba(197,160,89,0.3)", color: adj.type === "bonus" ? "#16a34a" : "#dc2626" }}>
+                      <option value="bonus">Bonus</option>
+                      <option value="deduction">Deduction</option>
+                    </select>
+                    <input type="number" value={adj.amount} onChange={e => setAdjustments(prev => prev.map(x => x.uid === adj.uid ? { ...x, amount: e.target.value } : x))}
+                      placeholder="₹"
+                      className="w-20 px-2 py-1.5 rounded-lg border outline-none text-xs"
+                      style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+                    <button onClick={() => setAdjustments(prev => prev.filter(x => x.uid !== adj.uid))} className="p-1 rounded hover:bg-red-50 text-red-400">
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
               {/* Preview net pay */}
               <div className="rounded-lg p-3 flex justify-between items-center" style={{ background: "rgba(197,160,89,0.06)", border: "1px solid rgba(197,160,89,0.15)" }}>
                 <span className="text-xs font-medium" style={{ color: "#4b5563" }}>Calculated Net Pay</span>
@@ -570,8 +654,10 @@ export default function PayrollPage() {
                   ₹{(
                     (editPayslip.basic_salary || 0) +
                     (editPayslip.commission_total || 0) +
-                    (parseFloat(editForm.allowances) || 0) -
+                    (parseFloat(editForm.allowances) || 0) +
+                    adjustments.filter(a => a.type === "bonus").reduce((s, a) => s + (parseFloat(a.amount) || 0), 0) -
                     (parseFloat(editForm.deductions) || 0) -
+                    adjustments.filter(a => a.type === "deduction").reduce((s, a) => s + (parseFloat(a.amount) || 0), 0) -
                     (parseFloat(editForm.tds) || 0)
                   ).toLocaleString()}
                 </span>

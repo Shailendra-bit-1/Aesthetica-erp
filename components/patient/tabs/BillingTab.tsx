@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import {
   FileText, ChevronDown, ChevronUp, ExternalLink, RefreshCw,
-  Receipt, AlertCircle, CheckCircle2, Clock, Ban, Loader2,
+  Receipt, AlertCircle, CheckCircle2, Clock, Ban, Loader2, Download,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { Patient, fmtDate, fmtDateTime } from "../types";
@@ -129,6 +129,29 @@ export default function BillingTab({ patient, clinicId, privacyMode }: Props) {
     setExpandLoading(null);
   }
 
+  // GAP-44: Download Statement of Account
+  function downloadStatement() {
+    const lines: string[] = [
+      `STATEMENT OF ACCOUNT`,
+      `Patient: ${patient.full_name}`,
+      `Phone: ${patient.phone ?? "—"}`,
+      `Generated: ${new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}`,
+      ``,
+      `Invoice#\tDate\tType\tStatus\tAmount`,
+      ...invoices.map(i =>
+        `${i.invoice_number ?? i.id.slice(0,8)}\t${fmtDate(i.created_at)}\t${i.invoice_type}\t${i.status}\t₹${i.total_amount.toLocaleString("en-IN")}`
+      ),
+      ``,
+      `Total Paid: ₹${invoices.filter(i => i.status === "paid").reduce((s, i) => s + i.total_amount, 0).toLocaleString("en-IN")}`,
+      `Outstanding: ₹${invoices.filter(i => ["pending","partial","overdue"].includes(i.status)).reduce((s, i) => s + i.total_amount, 0).toLocaleString("en-IN")}`,
+    ];
+    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = `statement-${patient.full_name.replace(/\s+/g, "-")}.txt`;
+    a.click(); URL.revokeObjectURL(url);
+  }
+
   // Summary calculations
   const totalPaid        = invoices.filter(i => i.status === "paid").reduce((s, i) => s + i.total_amount, 0);
   const totalOutstanding = invoices.filter(i => ["pending", "partial", "overdue"].includes(i.status)).reduce((s, i) => s + i.total_amount, 0);
@@ -153,18 +176,28 @@ export default function BillingTab({ patient, clinicId, privacyMode }: Props) {
             Invoices & Billing
           </span>
         </div>
-        <a
-          href={`/billing?patient=${patient.id}`}
-          style={{
-            display: "inline-flex", alignItems: "center", gap: 6,
-            padding: "7px 14px", borderRadius: 9,
-            background: "linear-gradient(135deg,#C5A059,#A8853A)",
-            color: "white", fontSize: 12, fontWeight: 600,
-            textDecoration: "none", boxShadow: "0 2px 6px rgba(197,160,89,0.35)",
-          }}
-        >
-          <ExternalLink size={11} /> New Invoice
-        </a>
+        <div style={{ display: "flex", gap: 8 }}>
+          {invoices.length > 0 && (
+            <button
+              onClick={downloadStatement}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 9, background: "white", border: "1px solid rgba(197,160,89,0.3)", color: "#5C5447", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+            >
+              <Download size={11} /> Statement
+            </button>
+          )}
+          <a
+            href={`/billing?patient=${patient.id}`}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              padding: "7px 14px", borderRadius: 9,
+              background: "linear-gradient(135deg,#C5A059,#A8853A)",
+              color: "white", fontSize: 12, fontWeight: 600,
+              textDecoration: "none", boxShadow: "0 2px 6px rgba(197,160,89,0.35)",
+            }}
+          >
+            <ExternalLink size={11} /> New Invoice
+          </a>
+        </div>
       </div>
 
       {/* Summary cards */}

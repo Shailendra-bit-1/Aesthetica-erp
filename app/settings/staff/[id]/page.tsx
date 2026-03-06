@@ -532,6 +532,9 @@ interface CommissionRate {
   service_id: string | null;
   rate_pct: number;
   service_name?: string;
+  // GAP-60: effective date tracking
+  valid_from?: string | null;
+  valid_to?: string | null;
 }
 
 function CommissionRatesTab({ staffId, clinicId }: { staffId: string; clinicId: string }) {
@@ -585,7 +588,7 @@ function CommissionRatesTab({ staffId, clinicId }: { staffId: string; clinicId: 
     } else {
       await supabase.from("provider_commission_rates").insert({
         clinic_id: clinicId, provider_id: staffId, service_id: null, rate_pct: pct,
-        effective_from: new Date().toISOString().split("T")[0],
+        valid_from: new Date().toISOString().split("T")[0],
       });
     }
     setRates(prev => {
@@ -602,7 +605,7 @@ function CommissionRatesTab({ staffId, clinicId }: { staffId: string; clinicId: 
     if (rates.find(r => r.service_id === newSvcId)) { toast.error("Override already exists for this service"); return; }
     const { data, error } = await supabase.from("provider_commission_rates").insert({
       clinic_id: clinicId, provider_id: staffId, service_id: newSvcId, rate_pct: pct,
-      effective_from: new Date().toISOString().split("T")[0],
+      valid_from: new Date().toISOString().split("T")[0],
     }).select().single();
     if (error) { toast.error(error.message); return; }
     const svcName = services.find(s => s.id === newSvcId)?.name;
@@ -681,7 +684,12 @@ function CommissionRatesTab({ staffId, clinicId }: { staffId: string; clinicId: 
               <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 10, background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.12)" }}>
                 <div>
                   <p style={{ fontSize: 13, fontWeight: 600, color: "#1A1A1A", margin: 0 }}>{o.service_name ?? o.service_id}</p>
-                  <p style={{ fontSize: 11, color: "#8A8078", margin: "2px 0 0" }}>{o.rate_pct}% commission</p>
+                  <p style={{ fontSize: 11, color: "#8A8078", margin: "2px 0 0" }}>
+                    {o.rate_pct}% commission
+                    {/* GAP-60: show effective date */}
+                    {o.valid_from && <span style={{ marginLeft: 8, color: "#C5A059" }}>from {o.valid_from}</span>}
+                    {o.valid_to && <span style={{ color: "#9CA3AF" }}> → {o.valid_to}</span>}
+                  </p>
                 </div>
                 <button onClick={() => deleteOverride(o.id)}
                   style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>

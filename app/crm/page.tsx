@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
+import { normalizePhone } from "@/lib/phoneUtils";
 import TopBar from "@/components/TopBar";
 import CustomFieldsSection from "@/components/CustomFieldsSection";
 import { toast } from "sonner";
@@ -78,6 +80,7 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 export default function CRMPage() {
+  const router = useRouter();
   const { profile, activeClinicId } = useClinic();
 
   const [tab, setTab] = useState<"leads" | "campaigns" | "log" | "at_risk">("leads");
@@ -111,6 +114,8 @@ export default function CRMPage() {
   const [campaignForm, setCampaignForm] = useState({
     name: "", type: "whatsapp" as CampaignType, message_template: "", scheduled_at: "",
   });
+  const [segmentType, setSegmentType] = useState<"all" | "no_visit_days" | "tier" | "membership">("all");
+  const [segmentValue, setSegmentValue] = useState("");
 
   const clinicId = activeClinicId || profile?.clinic_id;
 
@@ -176,12 +181,36 @@ export default function CRMPage() {
   const convertLead = async (lead: Lead) => {
     if (!clinicId || lead.patient_id) return;
     try {
+      // GAP-7: pre-check for existing patient with same phone before creating duplicate
+      if (lead.phone) {
+        const normalized = normalizePhone(lead.phone);
+        const { data: existing } = await supabase
+          .from("patients")
+          .select("id, full_name")
+          .eq("clinic_id", clinicId)
+          .eq("phone", normalized)
+          .maybeSingle();
+        if (existing) {
+          const action = window.confirm(
+            `Patient "${existing.full_name}" already exists with this phone.\n\nClick OK to link lead to existing patient.\nClick Cancel to create a new patient record.`
+          );
+          if (action) {
+            // Link lead to existing patient
+            await supabase.from("crm_leads").update({ patient_id: existing.id, status: "converted" }).eq("id", lead.id);
+            fetchLeads();
+            toast.success(`Linked to existing patient: ${existing.full_name}`);
+            return;
+          }
+          // else: fall through to create new patient
+        }
+      }
+
       // C-5 fix: atomic RPC — patient INSERT + lead UPDATE in single transaction
       const { error } = await supabase.rpc("convert_lead", {
         p_lead_id:   lead.id,
         p_clinic_id: clinicId,
         p_full_name: lead.full_name,
-        p_phone:     lead.phone  || null,
+        p_phone:     lead.phone ? normalizePhone(lead.phone) : null,
         p_email:     lead.email  || null,
       });
       if (error) throw error;
@@ -194,16 +223,22 @@ export default function CRMPage() {
   const saveCampaign = async () => {
     if (!clinicId || !campaignForm.name) return;
     setSaving(true);
+    const target_segment = segmentType === "all" ? { type: "all" }
+      : segmentType === "no_visit_days" ? { type: "no_visit_days", days: parseInt(segmentValue) || 60 }
+      : segmentType === "tier" ? { type: "tier", tier: segmentValue }
+      : { type: "membership", status: segmentValue || "active" };
     await supabase.from("crm_campaigns").insert({
       clinic_id: clinicId, name: campaignForm.name, type: campaignForm.type,
       message_template: campaignForm.message_template || null,
       scheduled_at: campaignForm.scheduled_at || null,
       status: campaignForm.scheduled_at ? "scheduled" : "draft",
+      target_segment,
       created_by: profile?.id,
     });
     setSaving(false);
     setCampaignDrawer(false);
     setCampaignForm({ name: "", type: "whatsapp", message_template: "", scheduled_at: "" });
+    setSegmentType("all"); setSegmentValue("");
     fetchCampaigns();
   };
 
@@ -819,6 +854,43 @@ export default function CRMPage() {
                     style={{ borderColor: "rgba(197,160,89,0.3)" }} />
                 </div>
               </div>
+              {/* GAP-57: Target Segment */}
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Target Segment</label>
+                <select value={segmentType} onChange={e => { setSegmentType(e.target.value as typeof segmentType); setSegmentValue(""); }}
+                  className="w-full px-3 py-2 rounded-lg border outline-none text-sm bg-white mb-2"
+                  style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                  <option value="all">All Patients</option>
+                  <option value="no_visit_days">No Visit in X Days</option>
+                  <option value="tier">Patient Tier (VIP/HNI)</option>
+                  <option value="membership">Membership Status</option>
+                </select>
+                {segmentType === "no_visit_days" && (
+                  <input type="number" value={segmentValue} onChange={e => setSegmentValue(e.target.value)}
+                    placeholder="e.g. 90" className="w-full px-3 py-2 rounded-lg border outline-none text-sm"
+                    style={{ borderColor: "rgba(197,160,89,0.3)" }} />
+                )}
+                {segmentType === "tier" && (
+                  <select value={segmentValue} onChange={e => setSegmentValue(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border outline-none text-sm bg-white"
+                    style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                    <option value="">Select Tier</option>
+                    <option value="vip">VIP</option>
+                    <option value="hni">HNI</option>
+                    <option value="regular">Regular</option>
+                  </select>
+                )}
+                {segmentType === "membership" && (
+                  <select value={segmentValue} onChange={e => setSegmentValue(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border outline-none text-sm bg-white"
+                    style={{ borderColor: "rgba(197,160,89,0.3)" }}>
+                    <option value="active">Active Members</option>
+                    <option value="expired">Expired Members</option>
+                    <option value="">Any Membership</option>
+                  </select>
+                )}
+              </div>
+
               <div>
                 <label className="block text-xs font-medium mb-1.5" style={{ color: "#4b5563" }}>Message Template</label>
                 <textarea value={campaignForm.message_template} onChange={e => setCampaignForm(f => ({ ...f, message_template: e.target.value }))}

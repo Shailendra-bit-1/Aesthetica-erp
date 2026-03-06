@@ -1255,6 +1255,11 @@ function AddServiceDrawer({ editData, clinicId, isSuperAdmin, onClose, onSaved }
           </div>
         )}
 
+        {/* GAP-22: Consumables — edit mode only */}
+        {editData && clinicId && (
+          <ConsumablesSection serviceId={editData.id} clinicId={clinicId} />
+        )}
+
         {/* Footer */}
         <div className="flex gap-3 mt-8">
           <button
@@ -1662,6 +1667,112 @@ function PackageBuilderDrawer({ services, clinicId, isSuperAdmin, isAdmin, editD
 }
 
 // ── Export Button ──────────────────────────────────────────────────────────────
+
+// ── GAP-22: Consumables Section ───────────────────────────────────────────────
+
+interface Consumable {
+  id: string;
+  inventory_product_id: string;
+  quantity_per_session: number;
+  unit: string;
+  inventory_products?: { name: string } | null;
+}
+
+function ConsumablesSection({ serviceId, clinicId }: { serviceId: string; clinicId: string }) {
+  const [consumables, setConsumables] = useState<Consumable[]>([]);
+  const [products, setProducts]       = useState<{ id: string; name: string }[]>([]);
+  const [loading, setLoading]         = useState(true);
+  const [addProdId, setAddProdId]     = useState("");
+  const [addQty, setAddQty]           = useState("1");
+  const [addUnit, setAddUnit]         = useState("unit");
+  const [saving, setSaving]           = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      supabase.from("service_consumables")
+        .select("*, inventory_products(name)")
+        .eq("service_id", serviceId)
+        .eq("clinic_id", clinicId),
+      supabase.from("inventory_products")
+        .select("id, name")
+        .eq("clinic_id", clinicId)
+        .eq("product_type", "consumable")
+        .eq("is_active", true)
+        .order("name"),
+    ]).then(([{ data: c }, { data: p }]) => {
+      setConsumables((c ?? []) as Consumable[]);
+      setProducts(p ?? []);
+      setLoading(false);
+    });
+  }, [serviceId, clinicId]);
+
+  async function handleAdd() {
+    if (!addProdId) { toast.error("Select a product"); return; }
+    setSaving(true);
+    const { data, error } = await supabase.from("service_consumables").insert({
+      clinic_id: clinicId, service_id: serviceId,
+      inventory_product_id: addProdId,
+      quantity_per_session: parseFloat(addQty) || 1,
+      unit: addUnit.trim() || "unit",
+    }).select("*, inventory_products(name)").single();
+    setSaving(false);
+    if (error) { toast.error(error.message); return; }
+    setConsumables(c => [...c, data as Consumable]);
+    setAddProdId(""); setAddQty("1");
+    toast.success("Consumable linked");
+  }
+
+  async function handleRemove(id: string) {
+    await supabase.from("service_consumables").delete().eq("id", id);
+    setConsumables(c => c.filter(x => x.id !== id));
+    toast.success("Consumable removed");
+  }
+
+  return (
+    <div style={{ borderTop: "1px solid rgba(197,160,89,0.15)", paddingTop: 16, marginTop: 8 }}>
+      <p style={{ fontSize: 11, fontWeight: 700, color: "#9C9584", textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 10px" }}>Consumables per Session</p>
+      {loading ? (
+        <p style={{ fontSize: 12, color: "#9C9584" }}>Loading…</p>
+      ) : (
+        <>
+          {consumables.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+              {consumables.map(c => {
+                const name = (c.inventory_products as { name: string } | null)?.name ?? c.inventory_product_id;
+                return (
+                  <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", borderRadius: 8, background: "rgba(197,160,89,0.05)", border: "1px solid rgba(197,160,89,0.15)" }}>
+                    <span style={{ fontSize: 12, color: "#1a1714" }}>{name} — {c.quantity_per_session} {c.unit}/session</span>
+                    <button onClick={() => handleRemove(c.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}>
+                      <X size={12} color="#9C9584" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {products.length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <select value={addProdId} onChange={e => setAddProdId(e.target.value)}
+                style={{ flex: 2, minWidth: 120, padding: "6px 8px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", fontSize: 12, outline: "none" }}>
+                <option value="">Select product…</option>
+                {products.filter(p => !consumables.find(c => c.inventory_product_id === p.id)).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <input type="number" value={addQty} onChange={e => setAddQty(e.target.value)} placeholder="Qty" min="0.001" step="0.1"
+                style={{ width: 55, padding: "6px 8px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", fontSize: 12, outline: "none" }} />
+              <input type="text" value={addUnit} onChange={e => setAddUnit(e.target.value)} placeholder="unit"
+                style={{ width: 60, padding: "6px 8px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.25)", fontSize: 12, outline: "none" }} />
+              <button onClick={handleAdd} disabled={saving}
+                style={{ padding: "6px 12px", borderRadius: 7, background: "rgba(197,160,89,0.1)", border: "1px solid rgba(197,160,89,0.3)", color: "var(--gold)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                {saving ? "…" : "+ Link"}
+              </button>
+            </div>
+          )}
+          {products.length === 0 && <p style={{ fontSize: 11, color: "#9C9584" }}>No consumable-type products in inventory</p>}
+        </>
+      )}
+    </div>
+  );
+}
 
 function ExportButton({ services, packages }: { services: Service[]; packages: ServicePackage[] }) {
   function exportCsv() {

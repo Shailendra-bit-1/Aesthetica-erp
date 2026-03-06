@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
-import { FormInput, Plus, X, GripVertical, Copy, Trash2, Eye, EyeOff, Link, Check } from "lucide-react";
+import { FormInput, Plus, X, GripVertical, Copy, Trash2, Eye, EyeOff, Link, Check, MessageCircle, InboxIcon } from "lucide-react";
 
 type FieldType = "text" | "number" | "date" | "dropdown" | "checkbox" | "textarea" | "signature" | "file" | "section_header";
 type FormType = "intake" | "consent" | "feedback" | "survey" | "custom";
@@ -55,6 +55,9 @@ export default function FormsPage() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [showResponses, setShowResponses] = useState(false);
+  const [responses, setResponses] = useState<{ id: string; submitted_at: string; responses: Record<string, unknown>; patients: { full_name: string } | null }[]>([]);
+  const [responsesLoading, setResponsesLoading] = useState(false);
 
   const [form, setForm] = useState({
     name: "", form_type: "intake" as FormType, fields: [] as FormField[],
@@ -138,6 +141,28 @@ export default function FormsPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const loadResponses = async () => {
+    if (!selected?.id) return;
+    setResponsesLoading(true);
+    const { data } = await supabase.from("form_responses")
+      .select("id, submitted_at, responses, patients(full_name)")
+      .eq("form_id", selected.id)
+      .order("submitted_at", { ascending: false })
+      .limit(50);
+    setResponses((data ?? []).map((r: any) => ({
+      ...r,
+      patients: Array.isArray(r.patients) ? r.patients[0] : r.patients,
+    })));
+    setResponsesLoading(false);
+  };
+
+  const sendToPatient = () => {
+    if (!selected?.id || !clinicId) return;
+    const url = `${window.location.origin}/intake/${clinicId}?form=${selected.id}`;
+    const msg = encodeURIComponent(`Please fill in this form from Aesthetica Clinic:\n${url}`);
+    window.open(`https://wa.me/?text=${msg}`, "_blank");
+  };
+
   const selectedField = selectedFieldIdx !== null ? form.fields[selectedFieldIdx] : null;
 
   return (
@@ -216,10 +241,21 @@ export default function FormsPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     {selected?.id && (
-                      <button onClick={copyLink} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border"
-                        style={{ borderColor: "rgba(197,160,89,0.3)", color: copied ? "#16a34a" : "var(--gold)" }}>
-                        {copied ? <><Check size={12} /> Copied!</> : <><Link size={12} /> Get Link</>}
-                      </button>
+                      <>
+                        <button onClick={copyLink} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border"
+                          style={{ borderColor: "rgba(197,160,89,0.3)", color: copied ? "#16a34a" : "var(--gold)" }}>
+                          {copied ? <><Check size={12} /> Copied!</> : <><Link size={12} /> Get Link</>}
+                        </button>
+                        <button onClick={sendToPatient} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border"
+                          style={{ borderColor: "rgba(37,211,102,0.4)", color: "#16a34a", background: "rgba(37,211,102,0.06)" }}>
+                          <MessageCircle size={12} /> Send via WhatsApp
+                        </button>
+                        <button onClick={() => { setShowResponses(v => !v); if (!showResponses) loadResponses(); }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border"
+                          style={{ borderColor: "rgba(99,102,241,0.3)", color: showResponses ? "#4338CA" : "#6366F1", background: showResponses ? "rgba(99,102,241,0.08)" : "transparent" }}>
+                          <InboxIcon size={12} /> Responses {responses.length > 0 && `(${responses.length})`}
+                        </button>
+                      </>
                     )}
                     <button onClick={() => setPreviewMode(p => !p)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border"
@@ -233,6 +269,39 @@ export default function FormsPage() {
                     </button>
                   </div>
                 </div>
+
+                {/* GAP-49: Responses panel */}
+                {showResponses && selected?.id && (
+                  <div className="border-b overflow-y-auto" style={{ maxHeight: 280, borderColor: "rgba(99,102,241,0.15)", background: "rgba(99,102,241,0.02)" }}>
+                    <div className="px-5 py-3" style={{ borderBottom: "1px solid rgba(99,102,241,0.12)" }}>
+                      <h4 className="text-xs font-bold uppercase tracking-wider" style={{ color: "#6366F1" }}>Form Responses ({responses.length})</h4>
+                    </div>
+                    {responsesLoading ? (
+                      <p className="text-xs p-4" style={{ color: "#9ca3af" }}>Loading…</p>
+                    ) : responses.length === 0 ? (
+                      <p className="text-xs p-4" style={{ color: "#9ca3af" }}>No responses yet</p>
+                    ) : responses.map(r => (
+                      <details key={r.id} className="border-b px-5 py-2" style={{ borderColor: "rgba(99,102,241,0.08)" }}>
+                        <summary className="cursor-pointer text-xs flex items-center justify-between" style={{ color: "#4b5563" }}>
+                          <span style={{ fontFamily: "Georgia, serif" }}>{r.patients?.full_name ?? "Anonymous"}</span>
+                          <span style={{ color: "#9ca3af" }}>{new Date(r.submitted_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</span>
+                        </summary>
+                        <div className="mt-2 space-y-1">
+                          {form.fields.filter(f => f.type !== "section_header").map(f => {
+                            const val = (r.responses as Record<string, unknown>)[f.id];
+                            if (!val && val !== 0) return null;
+                            return (
+                              <div key={f.id} className="flex gap-3 text-xs">
+                                <span className="font-medium min-w-[120px]" style={{ color: "#6b7280" }}>{f.label}:</span>
+                                <span style={{ color: "#1C1917", fontFamily: "Georgia, serif" }}>{String(val)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </details>
+                    ))}
+                  </div>
+                )}
 
                 <div className="flex-1 overflow-y-auto p-6">
                   {previewMode ? (

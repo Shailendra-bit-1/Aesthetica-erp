@@ -56,6 +56,8 @@ interface KpiData {
   pendingAmount:     number;
   newThisMonth:      number;
   completedToday:    number;
+  svcRevenue:        number;
+  prdRevenue:        number;
 }
 
 interface Appointment {
@@ -244,8 +246,8 @@ export default function OverviewPage() {
       scope(supabase.from("appointments").select("id,service_name,start_time,end_time,status,provider_id,patient:patients!patient_id(full_name,patient_tier)").gte("start_time", todayStart()).lte("start_time", todayEnd()).order("start_time")),
       // Revenue collected today
       scope(supabase.from("pending_invoices").select("total_amount").eq("status","paid").gte("created_at", todayStart()).lte("created_at", todayEnd())),
-      // Revenue collected this month
-      scope(supabase.from("pending_invoices").select("total_amount").eq("status","paid").gte("created_at", monthStart())),
+      // Revenue collected this month (service types only — excludes retail_product)
+      scope(supabase.from("pending_invoices").select("total_amount,invoice_type").eq("status","paid").gte("created_at", monthStart())),
       // Pending invoice amount
       scope(supabase.from("pending_invoices").select("total_amount").eq("status","pending")),
       // Inventory low-stock alerts
@@ -264,7 +266,10 @@ export default function OverviewPage() {
 
     // Aggregate revenue
     const todayRev  = (paidTodayRes.data  ?? []).reduce((s: number, r: { total_amount?: number | null }) => s + (r.total_amount ?? 0), 0);
-    const monthRev  = (paidMonthRes.data  ?? []).reduce((s: number, r: { total_amount?: number | null }) => s + (r.total_amount ?? 0), 0);
+    const monthInvoices = (paidMonthRes.data ?? []) as { total_amount?: number | null; invoice_type?: string | null }[];
+    const monthRev  = monthInvoices.reduce((s, r) => s + (r.total_amount ?? 0), 0);
+    const prdRevActual = monthInvoices.filter(r => r.invoice_type === "retail_product").reduce((s, r) => s + (r.total_amount ?? 0), 0);
+    const svcRevActual = monthRev - prdRevActual;
     const pendingAmt= (pendingRes.data    ?? []).reduce((s: number, r: { total_amount?: number | null }) => s + (r.total_amount ?? 0), 0);
 
     // Completed today
@@ -287,6 +292,8 @@ export default function OverviewPage() {
       pendingAmount:     pendingAmt,
       newThisMonth:      newPatRes.count    ?? 0,
       completedToday,
+      svcRevenue:        svcRevActual,
+      prdRevenue:        prdRevActual,
     });
     setAppts(apptList);
     setInvAlerts((invRes.data ?? []) as InventoryAlert[]);
@@ -384,9 +391,9 @@ export default function OverviewPage() {
 
   const targetPct = kpi ? Math.min(100, Math.round((kpi.monthlyCollection / kpi.monthlyTarget) * 100)) : 0;
 
-  // Placeholder service/product revenue split (computed from invoice line items in future — for now use total)
-  const svcRevenue = kpi?.monthlyCollection ?? 0; // full collection shown under service bar until line-item split is wired
-  const prdRevenue = 0;
+  // Revenue split by invoice_type (retail_product vs everything else)
+  const svcRevenue = kpi?.svcRevenue ?? 0;
+  const prdRevenue = kpi?.prdRevenue ?? 0;
   const svcPct = monthlyServiceTarget > 0 ? Math.min(100, Math.round((svcRevenue / monthlyServiceTarget) * 100)) : 0;
   const prdPct = monthlyProductTarget > 0 ? Math.min(100, Math.round((prdRevenue / monthlyProductTarget) * 100)) : 0;
 

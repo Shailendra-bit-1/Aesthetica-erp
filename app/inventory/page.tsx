@@ -7,7 +7,7 @@ import {
   AlertTriangle, Calendar, Hash, FlaskConical, Wrench, RotateCcw,
   TrendingDown, TrendingUp, IndianRupee, Layers, ChevronRight,
   ArrowDownToLine, Tag, Filter, Eye, BarChart2, Sparkles,
-  Upload, FileText, AlertCircle, CheckCircle2,
+  Upload, FileText, AlertCircle, CheckCircle2, ArrowLeftRight, Send,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -180,7 +180,7 @@ async function consumeFIFO(params: {
 export default function InventoryPage() {
   const { profile, activeClinicId, loading: profileLoading } = useClinic();
 
-  const [tab,       setTab]       = useState<"stock" | "movements" | "catalog" | "suppliers">("stock");
+  const [tab,       setTab]       = useState<"stock" | "movements" | "catalog" | "suppliers" | "transfers" | "purchase_orders">("stock");
   const [products,  setProducts]  = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [batches,   setBatches]   = useState<Batch[]>([]);
@@ -351,10 +351,12 @@ export default function InventoryPage() {
 
   // ── Tabs ──
   const TABS = [
-    { key: "stock",     label: "Stock Overview" },
-    { key: "movements", label: "Movements"      },
-    { key: "catalog",   label: "Products"       },
-    { key: "suppliers", label: "Suppliers"      },
+    { key: "stock",           label: "Stock Overview"  },
+    { key: "movements",       label: "Movements"       },
+    { key: "catalog",         label: "Products"        },
+    { key: "suppliers",       label: "Suppliers"       },
+    { key: "transfers",       label: "Transfers"       },
+    { key: "purchase_orders", label: "Purchase Orders" },
   ] as const;
 
   return (
@@ -475,6 +477,17 @@ export default function InventoryPage() {
               suppliers={suppliers}
               onEdit={s => openDraw("supplier", null, s)}
             />
+          )}
+          {tab === "transfers" && (
+            <TransfersTab
+              clinicId={activeClinicId!}
+              products={products}
+              profile={profile}
+              isAdmin={isAdmin}
+            />
+          )}
+          {tab === "purchase_orders" && (
+            <PurchaseOrdersTab clinicId={activeClinicId!} profile={profile} />
           )}
         </div>}
       </div>
@@ -941,6 +954,344 @@ function SuppliersTab({ suppliers, onEdit }: { suppliers: Supplier[]; onEdit: (s
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Transfers Tab ─────────────────────────────────────────────────────────────
+
+interface InventoryTransfer {
+  id: string;
+  from_clinic_id: string;
+  to_clinic_id: string;
+  inventory_product_id: string;
+  quantity: number;
+  status: "pending" | "approved" | "completed" | "rejected";
+  notes: string | null;
+  created_at: string;
+  inventory_products: { name: string } | null;
+  from_clinic: { name: string } | null;
+  to_clinic: { name: string } | null;
+}
+
+function TransfersTab({ clinicId, products, profile, isAdmin }: {
+  clinicId: string;
+  products: Product[];
+  profile: { id: string; role: string | null; clinic_id: string | null } | null;
+  isAdmin: boolean;
+}) {
+  const [transfers, setTransfers] = useState<InventoryTransfer[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [showNew, setShowNew]     = useState(false);
+  const [clinics, setClinics]     = useState<{ id: string; name: string }[]>([]);
+
+  // New transfer form
+  const [toClinicId,  setToClinicId]  = useState("");
+  const [productId,   setProductId]   = useState(products[0]?.id ?? "");
+  const [quantity,    setQuantity]    = useState(1);
+  const [notes,       setNotes]       = useState("");
+  const [saving,      setSaving]      = useState(false);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    const [{ data: tr }, { data: cl }] = await Promise.all([
+      supabase.from("inventory_transfers")
+        .select("*, inventory_products(name), from_clinic:clinics!from_clinic_id(name), to_clinic:clinics!to_clinic_id(name)")
+        .or(`from_clinic_id.eq.${clinicId},to_clinic_id.eq.${clinicId}`)
+        .order("created_at", { ascending: false })
+        .limit(50),
+      supabase.from("clinics").select("id, name").order("name"),
+    ]);
+    setTransfers((tr ?? []) as InventoryTransfer[]);
+    setClinics((cl ?? []).filter(c => c.id !== clinicId));
+    setLoading(false);
+  }, [clinicId]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  async function submitTransfer() {
+    if (!toClinicId || !productId || quantity < 1) { toast.error("Fill all required fields"); return; }
+    setSaving(true);
+    const { error } = await supabase.from("inventory_transfers").insert({
+      from_clinic_id:       clinicId,
+      to_clinic_id:         toClinicId,
+      inventory_product_id: productId,
+      quantity,
+      status:               "pending",
+      requested_by:         profile?.id ?? null,
+      notes:                notes || null,
+    });
+    if (error) { toast.error("Failed to create transfer"); }
+    else { toast.success("Transfer request submitted"); setShowNew(false); setNotes(""); setQuantity(1); fetchData(); }
+    setSaving(false);
+  }
+
+  async function updateStatus(id: string, status: "approved" | "completed" | "rejected") {
+    const { error } = await supabase.from("inventory_transfers").update({
+      status,
+      approved_by: status !== "rejected" ? profile?.id ?? null : null,
+    }).eq("id", id);
+    if (error) toast.error("Update failed");
+    else { toast.success(`Transfer ${status}`); fetchData(); }
+  }
+
+  const STATUS_COLORS: Record<string, { color: string; bg: string }> = {
+    pending:   { color: "#D97706", bg: "rgba(217,119,6,0.1)" },
+    approved:  { color: "#2563eb", bg: "rgba(37,99,235,0.1)" },
+    completed: { color: "#16a34a", bg: "rgba(22,163,74,0.1)" },
+    rejected:  { color: "#dc2626", bg: "rgba(220,38,38,0.1)" },
+  };
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h3 className="text-sm font-semibold" style={{ fontFamily: "Georgia, serif", color: "var(--foreground)" }}>
+            Inter-Clinic Stock Transfers
+          </h3>
+          <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>Transfer inventory between chain clinics</p>
+        </div>
+        <button onClick={() => setShowNew(true)}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold"
+          style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.25)" }}>
+          <ArrowLeftRight size={12} /> New Transfer
+        </button>
+      </div>
+
+      {/* New transfer form */}
+      {showNew && (
+        <div className="mb-5 p-5 rounded-xl" style={{ background: "rgba(197,160,89,0.04)", border: "1px solid rgba(197,160,89,0.2)" }}>
+          <p className="text-xs font-bold uppercase tracking-wider mb-4" style={{ color: "#9C9584" }}>Request Transfer</p>
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <label className="text-xs font-medium block mb-1" style={{ color: "var(--text-muted)" }}>Destination Clinic *</label>
+              <select value={toClinicId} onChange={e => setToClinicId(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg text-sm" style={{ border: "1px solid var(--border)", background: "var(--surface)" }}>
+                <option value="">Select clinic…</option>
+                {clinics.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium block mb-1" style={{ color: "var(--text-muted)" }}>Product *</label>
+              <select value={productId} onChange={e => setProductId(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg text-sm" style={{ border: "1px solid var(--border)", background: "var(--surface)" }}>
+                {products.filter(p => p.is_active).map(p => <option key={p.id} value={p.id}>{p.name} ({p.current_stock} in stock)</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium block mb-1" style={{ color: "var(--text-muted)" }}>Quantity *</label>
+              <input type="number" value={quantity} min={1} onChange={e => setQuantity(Number(e.target.value))}
+                className="w-full px-3 py-2 rounded-lg text-sm" style={{ border: "1px solid var(--border)", background: "var(--surface)" }} />
+            </div>
+            <div>
+              <label className="text-xs font-medium block mb-1" style={{ color: "var(--text-muted)" }}>Notes</label>
+              <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional…"
+                className="w-full px-3 py-2 rounded-lg text-sm" style={{ border: "1px solid var(--border)", background: "var(--surface)" }} />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => setShowNew(false)}
+              className="px-4 py-2 rounded-lg text-xs" style={{ border: "1px solid var(--border)", background: "var(--surface)" }}>Cancel</button>
+            <button onClick={submitTransfer} disabled={saving}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold"
+              style={{ background: "var(--gold)", color: "white", border: "none" }}>
+              {saving ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />} Submit Request
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <p className="text-sm text-center py-8" style={{ color: "var(--text-muted)" }}>Loading transfers…</p>
+      ) : transfers.length === 0 ? (
+        <div className="py-16 text-center">
+          <ArrowLeftRight size={32} className="mx-auto mb-3 opacity-20" style={{ color: "var(--gold)" }} />
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>No transfers yet</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {transfers.map(tr => {
+            const isFrom  = tr.from_clinic_id === clinicId;
+            const sc      = STATUS_COLORS[tr.status] ?? STATUS_COLORS.pending;
+            return (
+              <div key={tr.id} className="flex items-center gap-4 px-4 py-3 rounded-xl"
+                style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+                <div style={{ width: 32, height: 32, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: isFrom ? "rgba(220,38,38,0.08)" : "rgba(22,163,74,0.08)", flexShrink: 0 }}>
+                  <ArrowLeftRight size={14} style={{ color: isFrom ? "#dc2626" : "#16a34a" }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold truncate" style={{ fontFamily: "Georgia, serif", color: "var(--foreground)" }}>
+                    {(tr.inventory_products as { name: string } | null)?.name ?? "Product"}
+                  </p>
+                  <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                    {(tr.from_clinic as { name: string } | null)?.name ?? "?"} → {(tr.to_clinic as { name: string } | null)?.name ?? "?"}
+                    {" · "}{tr.quantity} units
+                  </p>
+                </div>
+                <span className="text-xs font-semibold px-2 py-1 rounded-lg flex-shrink-0"
+                  style={{ color: sc.color, background: sc.bg }}>
+                  {tr.status}
+                </span>
+                {isAdmin && tr.status === "pending" && (
+                  <div className="flex gap-1 flex-shrink-0">
+                    <button onClick={() => updateStatus(tr.id, "approved")}
+                      className="text-xs px-2 py-1 rounded-lg font-semibold"
+                      style={{ background: "rgba(22,163,74,0.1)", color: "#16a34a", border: "1px solid rgba(22,163,74,0.2)" }}>Approve</button>
+                    <button onClick={() => updateStatus(tr.id, "rejected")}
+                      className="text-xs px-2 py-1 rounded-lg font-semibold"
+                      style={{ background: "rgba(220,38,38,0.08)", color: "#dc2626", border: "1px solid rgba(220,38,38,0.2)" }}>Reject</button>
+                  </div>
+                )}
+                {isAdmin && tr.status === "approved" && (
+                  <button onClick={() => updateStatus(tr.id, "completed")}
+                    className="text-xs px-2 py-1 rounded-lg font-semibold flex-shrink-0"
+                    style={{ background: "rgba(37,99,235,0.1)", color: "#2563eb", border: "1px solid rgba(37,99,235,0.2)" }}>Mark Received</button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── GAP-59: Purchase Orders Tab ───────────────────────────────────────────────
+
+interface PurchaseOrder {
+  id: string;
+  supplier_name: string | null;
+  items: { name: string; qty: number; unit_price: number }[];
+  status: "draft" | "sent" | "received" | "cancelled";
+  expected_date: string | null;
+  notes: string | null;
+  total_amount: number;
+  created_at: string;
+}
+
+const PO_STATUS: Record<string, { label: string; color: string; bg: string }> = {
+  draft:     { label: "Draft",     color: "#9C9584", bg: "rgba(156,149,132,0.1)" },
+  sent:      { label: "Sent",      color: "#C5A059", bg: "rgba(197,160,89,0.1)"  },
+  received:  { label: "Received",  color: "#059669", bg: "rgba(5,150,105,0.1)"   },
+  cancelled: { label: "Cancelled", color: "#DC2626", bg: "rgba(220,38,38,0.1)"   },
+};
+
+function PurchaseOrdersTab({ clinicId, profile }: { clinicId: string; profile: { role?: string | null } | null }) {
+  const [orders, setOrders] = useState<PurchaseOrder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ supplier_name: "", notes: "", expected_date: "", items: [{ name: "", qty: "1", unit_price: "0" }] });
+  const isAdmin = ["superadmin","chain_admin","clinic_admin"].includes(profile?.role ?? "");
+
+  useEffect(() => {
+    supabase.from("inventory_purchase_orders").select("*").eq("clinic_id", clinicId).order("created_at", { ascending: false })
+      .then(({ data }) => { setOrders((data ?? []) as PurchaseOrder[]); setLoading(false); });
+  }, [clinicId]);
+
+  async function handleCreate() {
+    setSaving(true);
+    const items = form.items.filter(i => i.name.trim()).map(i => ({ name: i.name.trim(), qty: parseFloat(i.qty) || 1, unit_price: parseFloat(i.unit_price) || 0 }));
+    const total_amount = items.reduce((s, i) => s + i.qty * i.unit_price, 0);
+    const { data, error } = await supabase.from("inventory_purchase_orders").insert({
+      clinic_id: clinicId, supplier_name: form.supplier_name.trim() || null,
+      items, notes: form.notes.trim() || null,
+      expected_date: form.expected_date || null, total_amount,
+    }).select("*").single();
+    setSaving(false);
+    if (error) { const { toast } = await import("sonner"); toast.error(error.message); return; }
+    setOrders(o => [data as PurchaseOrder, ...o]);
+    setShowForm(false);
+    setForm({ supplier_name: "", notes: "", expected_date: "", items: [{ name: "", qty: "1", unit_price: "0" }] });
+    const { toast } = await import("sonner"); toast.success("Purchase order created");
+  }
+
+  async function updateStatus(id: string, status: string) {
+    const { error } = await supabase.from("inventory_purchase_orders").update({ status }).eq("id", id);
+    if (!error) setOrders(o => o.map(x => x.id === id ? { ...x, status: status as PurchaseOrder["status"] } : x));
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-base font-semibold" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Purchase Orders</h2>
+        {isAdmin && (
+          <button onClick={() => setShowForm(v => !v)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white" style={{ background: "var(--gold)" }}>
+            <Plus size={13} /> New PO
+          </button>
+        )}
+      </div>
+
+      {showForm && (
+        <div className="mb-4 rounded-xl p-4 border" style={{ background: "#fff", borderColor: "rgba(197,160,89,0.2)" }}>
+          <p className="text-sm font-semibold mb-3" style={{ fontFamily: "Georgia, serif" }}>New Purchase Order</p>
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <label className="text-xs font-semibold uppercase" style={{ color: "#9C9584" }}>Supplier Name</label>
+              <input value={form.supplier_name} onChange={e => setForm(f => ({ ...f, supplier_name: e.target.value }))} placeholder="e.g. MedSupply Co." className="mt-1 w-full text-sm px-3 py-2 rounded-lg border outline-none" style={{ borderColor: "rgba(197,160,89,0.25)" }} />
+            </div>
+            <div>
+              <label className="text-xs font-semibold uppercase" style={{ color: "#9C9584" }}>Expected Date</label>
+              <input type="date" value={form.expected_date} onChange={e => setForm(f => ({ ...f, expected_date: e.target.value }))} className="mt-1 w-full text-sm px-3 py-2 rounded-lg border outline-none" style={{ borderColor: "rgba(197,160,89,0.25)" }} />
+            </div>
+          </div>
+          <div className="mb-3">
+            <label className="text-xs font-semibold uppercase" style={{ color: "#9C9584" }}>Items</label>
+            {form.items.map((item, idx) => (
+              <div key={idx} className="flex gap-2 mt-1">
+                <input value={item.name} onChange={e => setForm(f => { const items = [...f.items]; items[idx] = { ...items[idx], name: e.target.value }; return { ...f, items }; })} placeholder="Product name" className="flex-1 text-sm px-2 py-1.5 rounded border outline-none" style={{ borderColor: "rgba(197,160,89,0.25)" }} />
+                <input type="number" value={item.qty} onChange={e => setForm(f => { const items = [...f.items]; items[idx] = { ...items[idx], qty: e.target.value }; return { ...f, items }; })} placeholder="Qty" className="w-16 text-sm px-2 py-1.5 rounded border outline-none" style={{ borderColor: "rgba(197,160,89,0.25)" }} />
+                <input type="number" value={item.unit_price} onChange={e => setForm(f => { const items = [...f.items]; items[idx] = { ...items[idx], unit_price: e.target.value }; return { ...f, items }; })} placeholder="₹/unit" className="w-20 text-sm px-2 py-1.5 rounded border outline-none" style={{ borderColor: "rgba(197,160,89,0.25)" }} />
+                {form.items.length > 1 && <button onClick={() => setForm(f => ({ ...f, items: f.items.filter((_, i) => i !== idx) }))} className="text-red-400 hover:text-red-600"><X size={14} /></button>}
+              </div>
+            ))}
+            <button onClick={() => setForm(f => ({ ...f, items: [...f.items, { name: "", qty: "1", unit_price: "0" }] }))} className="mt-2 text-xs font-medium" style={{ color: "var(--gold)" }}>+ Add Item</button>
+          </div>
+          <div className="mb-3">
+            <label className="text-xs font-semibold uppercase" style={{ color: "#9C9584" }}>Notes</label>
+            <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2} className="mt-1 w-full text-sm px-3 py-2 rounded-lg border outline-none resize-none" style={{ borderColor: "rgba(197,160,89,0.25)" }} />
+          </div>
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => setShowForm(false)} className="px-3 py-1.5 text-xs rounded-lg border" style={{ borderColor: "rgba(197,160,89,0.3)" }}>Cancel</button>
+            <button onClick={handleCreate} disabled={saving} className="px-4 py-1.5 text-xs font-medium rounded-lg text-white" style={{ background: "var(--gold)" }}>{saving ? "Saving…" : "Create PO"}</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        [1,2,3].map(n => <div key={n} className="h-16 rounded-xl mb-2 animate-pulse" style={{ background: "rgba(197,160,89,0.06)" }} />)
+      ) : orders.length === 0 ? (
+        <div className="rounded-xl p-10 text-center" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.12)" }}>
+          <p className="text-sm" style={{ color: "#9ca3af" }}>No purchase orders yet</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {orders.map(po => {
+            const sc = PO_STATUS[po.status];
+            const itemCount = (po.items ?? []).length;
+            return (
+              <div key={po.id} className="rounded-xl px-4 py-3 flex items-center justify-between" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.12)" }}>
+                <div>
+                  <p className="text-sm font-medium" style={{ color: "#1a1714" }}>{po.supplier_name ?? "—"}</p>
+                  <p className="text-xs mt-0.5" style={{ color: "#9ca3af" }}>{itemCount} item{itemCount !== 1 ? "s" : ""} · ₹{(po.total_amount ?? 0).toLocaleString("en-IN")} · {po.expected_date ?? "No date"}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ color: sc.color, background: sc.bg }}>{sc.label}</span>
+                  {isAdmin && po.status === "draft" && (
+                    <button onClick={() => updateStatus(po.id, "sent")} className="text-xs px-2 py-1 rounded-lg border" style={{ borderColor: "rgba(197,160,89,0.3)", color: "#C5A059" }}>Mark Sent</button>
+                  )}
+                  {isAdmin && po.status === "sent" && (
+                    <button onClick={() => updateStatus(po.id, "received")} className="text-xs px-2 py-1 rounded-lg border" style={{ borderColor: "rgba(5,150,105,0.3)", color: "#059669" }}>Mark Received</button>
+                  )}
+                  {isAdmin && (po.status === "draft" || po.status === "sent") && (
+                    <button onClick={() => updateStatus(po.id, "cancelled")} className="text-xs px-2 py-1 rounded-lg border" style={{ borderColor: "rgba(220,38,38,0.25)", color: "#DC2626" }}>Cancel</button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

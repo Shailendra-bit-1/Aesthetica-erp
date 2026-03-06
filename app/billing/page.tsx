@@ -152,6 +152,8 @@ export default function BillingPage() {
   const [loadingDetail,  setLoadingDetail]  = useState(false);
   const [payInv,         setPayInv]         = useState<Invoice | null>(null);
   const [showNew,        setShowNew]        = useState(false);
+  const [showProforma,   setShowProforma]   = useState(false);
+  const [showSellPkg,    setShowSellPkg]    = useState(false);
   const [showWalletTopup,  setShowWalletTopup]  = useState(false);
   const [showGiftCards,    setShowGiftCards]    = useState(false);
 
@@ -258,6 +260,37 @@ export default function BillingPage() {
     setDetailInv(null);
   };
 
+  // GAP-31: Issue credit note for a paid invoice
+  const issueCreditNote = async (inv: Invoice) => {
+    const { error } = await supabase.rpc("create_invoice_with_items", {
+      p_clinic_id:       activeClinicId,
+      p_patient_id:      inv.patient_id ?? null,
+      p_patient_name:    inv.patient_name,
+      p_provider_id:     null,
+      p_provider_name:   null,
+      p_invoice_type:    "credit_note",
+      p_line_items:      [{ description: `Credit note for ${inv.invoice_number}`, quantity: 1, unit_price: -(inv.total_amount ?? 0), discount_pct: 0, gst_pct: 0 }],
+      p_discount_amount: 0,
+      p_gst_pct:         0,
+    });
+    if (error) { toast.error("Failed to issue credit note"); return; }
+    toast.success("Credit note issued");
+    await logAction({ action: "issue_credit_note", targetId: inv.id, targetName: inv.invoice_number });
+    fetchInvoices();
+    setPanelInv(null);
+  };
+
+  const convertProforma = async (inv: Invoice) => {
+    const { error } = await supabase.from("pending_invoices").update({
+      invoice_type: "ad_hoc", updated_at: new Date().toISOString(),
+    }).eq("id", inv.id);
+    if (error) { toast.error("Failed to convert"); return; }
+    toast.success("Proforma converted to invoice");
+    await logAction({ action: "convert_proforma", targetId: inv.id, targetName: inv.invoice_number });
+    fetchInvoices();
+    setPanelInv(null);
+  };
+
   const isAdmin = ["superadmin","chain_admin","clinic_admin"].includes(profile?.role ?? "");
 
   // ── Export ──
@@ -350,6 +383,20 @@ export default function BillingPage() {
               style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.3)" }}
             >
               <Gift size={16} /> Gift Cards
+            </button>
+            <button
+              onClick={() => setShowSellPkg(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
+              style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.3)" }}
+            >
+              <Package size={16} /> Sell Package
+            </button>
+            <button
+              onClick={() => setShowProforma(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
+              style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.3)" }}
+            >
+              <FileText size={16} /> New Proforma
             </button>
             <button
               onClick={() => setShowNew(true)}
@@ -474,6 +521,8 @@ export default function BillingPage() {
               onPay={() => setPayInv(panelInv)}
               onVoid={reason => { voidInvoice(panelInv, reason); setPanelInv(null); }}
               onFull={() => openDetail(panelInv)}
+              onConvertProforma={() => convertProforma(panelInv)}
+              onIssueCreditNote={() => issueCreditNote(panelInv)}
             />
           </div>
         )}
@@ -508,6 +557,21 @@ export default function BillingPage() {
           onSuccess={() => { setShowNew(false); fetchInvoices(); }}
         />
       )}
+      {showProforma && (
+        <NewInvoiceDrawer
+          clinicId={activeClinicId!}
+          isProforma
+          onClose={() => setShowProforma(false)}
+          onSuccess={() => { setShowProforma(false); fetchInvoices(); }}
+        />
+      )}
+      {showSellPkg && activeClinicId && (
+        <SellPackageDrawer
+          clinicId={activeClinicId}
+          onClose={() => setShowSellPkg(false)}
+          onSuccess={() => { setShowSellPkg(false); fetchInvoices(); toast.success("Package sold — invoice created"); }}
+        />
+      )}
       {showWalletTopup && activeClinicId && (
         <WalletTopupModal
           clinicId={activeClinicId}
@@ -529,19 +593,23 @@ export default function BillingPage() {
 
 function BillingSmartPanel({
   invoice: inv, payments, items, loading, isAdmin, todayRev, outstanding,
-  onClose, onPay, onVoid, onFull,
+  onClose, onPay, onVoid, onFull, onConvertProforma, onIssueCreditNote,
 }: {
   invoice: Invoice; payments: InvoicePayment[]; items: InvoiceItem[];
   loading: boolean; isAdmin: boolean; todayRev: number; outstanding: number;
   onClose: () => void; onPay: () => void;
   onVoid: (reason: string) => void; onFull: () => void;
+  onConvertProforma?: () => void;
+  onIssueCreditNote?: () => void;
 }) {
   const [showVoidInput, setShowVoidInput] = useState(false);
   const [voidReason, setVoidReason] = useState("");
+  const [converting, setConverting] = useState(false);
 
-  const cfg    = STATUS_CFG_BILLING[inv.status];
-  const isPaid = inv.status === "paid";
-  const isVoid = inv.status === "void";
+  const cfg         = STATUS_CFG_BILLING[inv.status];
+  const isPaid      = inv.status === "paid";
+  const isVoid      = inv.status === "void";
+  const isProforma  = inv.invoice_type === "proforma";
   const paidSoFar = payments.reduce((s, p) => s + p.amount, 0);
 
   return (
@@ -667,12 +735,30 @@ function BillingSmartPanel({
             </div>
 
             {/* Action buttons */}
-            {!isPaid && !isVoid && (
+            {isProforma && onConvertProforma && (
+              <button
+                onClick={onConvertProforma}
+                disabled={converting}
+                style={{ width: "100%", padding: "11px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #059669, #047857)", color: "white", fontSize: 14, fontWeight: 600, fontFamily: "Georgia, serif", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+              >
+                <Receipt size={15} /> Convert to Invoice
+              </button>
+            )}
+            {!isPaid && !isVoid && !isProforma && (
               <button
                 onClick={onPay}
                 style={{ width: "100%", padding: "11px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #C5A059, #A8853A)", color: "white", fontSize: 14, fontWeight: 600, fontFamily: "Georgia, serif", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 4px 14px rgba(197,160,89,0.35)" }}
               >
                 <IndianRupee size={15} /> Record Payment
+              </button>
+            )}
+            {/* GAP-31: Issue credit note for paid invoices */}
+            {isPaid && isAdmin && onIssueCreditNote && (
+              <button
+                onClick={onIssueCreditNote}
+                style={{ width: "100%", padding: "8px 0", borderRadius: 10, border: "1px solid rgba(124,58,237,0.3)", background: "rgba(124,58,237,0.05)", color: "#7C3AED", fontSize: 13, cursor: "pointer", fontFamily: "Georgia, serif" }}
+              >
+                Issue Credit Note
               </button>
             )}
 
@@ -1065,7 +1151,13 @@ function InvoiceDetailModal({ invoice: inv, payments, items, loading, isAdmin, o
                 {(inv.discount_amount ?? 0) > 0 && (
                   <ARow label="Discount"               value={`- ${fmt(inv.discount_amount)}`} color="#4A8A4A" />
                 )}
-                <ARow label={`GST (${inv.gst_pct ?? 18}%)`} value={fmt(inv.tax_amount ?? 0)} />
+                {/* GAP-13: Show CGST + SGST split for intra-state (standard) */}
+                {(inv.gst_pct ?? 0) > 0 ? (
+                  <>
+                    <ARow label={`CGST (${(inv.gst_pct ?? 18) / 2}%)`} value={fmt((inv.tax_amount ?? 0) / 2)} />
+                    <ARow label={`SGST (${(inv.gst_pct ?? 18) / 2}%)`} value={fmt((inv.tax_amount ?? 0) / 2)} />
+                  </>
+                ) : null}
                 <div className="border-t pt-2" style={{ borderColor: "rgba(197,160,89,0.2)" }}>
                   <ARow label="Grand Total" value={fmt(inv.total_amount ?? 0)} bold gold />
                 </div>
@@ -1943,12 +2035,157 @@ function GiftCardsModal({ clinicId, onClose }: { clinicId: string; onClose: () =
   );
 }
 
+// ── GAP-4: Sell Package Drawer ───────────────────────────────────────────────
+
+interface PkgOption { id: string; name: string; total_price: number; package_items: { sessions: number; service_id: string; services: { name: string } | null }[] }
+
+function SellPackageDrawer({ clinicId, onClose, onSuccess }: { clinicId: string; onClose: () => void; onSuccess: () => void }) {
+  const { profile } = useClinic();
+  const [patients, setPatients] = useState<{ id: string; full_name: string; phone: string | null }[]>([]);
+  const [packages, setPackages] = useState<PkgOption[]>([]);
+  const [patientQ,  setPatientQ]  = useState("");
+  const [patientId, setPatientId] = useState("");
+  const [patientName, setPatientName] = useState("");
+  const [pkgId, setPkgId] = useState("");
+  const [payMode, setPayMode] = useState("cash");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    supabase.from("service_packages")
+      .select("id, name, total_price, package_items(sessions, service_id, services(name))")
+      .eq("clinic_id", clinicId).eq("is_active", true)
+      .then(({ data }) => setPackages((data ?? []) as unknown as PkgOption[]));
+  }, [clinicId]);
+
+  useEffect(() => {
+    if (!patientQ || patientQ.length < 2) return;
+    supabase.from("patients").select("id, full_name, phone")
+      .eq("clinic_id", clinicId).ilike("full_name", `%${patientQ}%`).limit(5)
+      .then(({ data }) => setPatients((data ?? []) as { id: string; full_name: string; phone: string | null }[]));
+  }, [patientQ, clinicId]);
+
+  const selectedPkg = packages.find(p => p.id === pkgId);
+
+  async function handleSell() {
+    if (!patientId || !pkgId || !selectedPkg) return;
+    setSaving(true);
+    try {
+      const { data: inv, error: invErr } = await supabase.rpc("create_invoice_with_items", {
+        p_clinic_id:      clinicId,
+        p_patient_id:     patientId,
+        p_patient_name:   patientName,
+        p_provider_id:    null,
+        p_provider_name:  null,
+        p_invoice_type:   "package",
+        p_line_items:     [{ description: selectedPkg.name, quantity: 1, unit_price: selectedPkg.total_price, discount_pct: 0, gst_pct: 0 }],
+        p_discount_amount: 0,
+        p_gst_pct:        0,
+      });
+      if (invErr || !inv) throw invErr;
+      await supabase.rpc("record_payment", {
+        p_invoice_id: inv, p_clinic_id: clinicId,
+        p_amount: selectedPkg.total_price, p_payment_mode: payMode,
+        p_transaction_ref: null, p_notes: `Package sale: ${selectedPkg.name}`, p_recorded_by: profile?.full_name ?? null,
+      });
+      // Create service credits per package item
+      for (const item of (selectedPkg.package_items ?? [])) {
+        await supabase.from("patient_service_credits").insert({
+          patient_id:        patientId,
+          purchase_clinic_id: clinicId,
+          current_clinic_id:  clinicId,
+          service_id:         item.service_id,
+          package_id:         pkgId,
+          service_name:       item.services?.name ?? "Service",
+          total_sessions:     item.sessions ?? 1,
+          used_sessions:      0,
+          purchase_price:     selectedPkg.total_price,
+          per_session_value:  selectedPkg.total_price / Math.max(1, (selectedPkg.package_items ?? []).reduce((s, i) => s + (i.sessions ?? 1), 0)),
+          status:             "active",
+        });
+      }
+      onSuccess();
+    } catch (e) {
+      toast.error((e as Error)?.message ?? "Failed to sell package");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "flex-start", justifyContent: "flex-end" }}>
+      <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.35)" }} onClick={onClose} />
+      <div style={{ position: "relative", width: 420, height: "100vh", background: "white", boxShadow: "-8px 0 32px rgba(0,0,0,0.12)", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "20px 24px", borderBottom: "1px solid rgba(197,160,89,0.15)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Package size={18} style={{ color: "#C5A059" }} />
+            <span style={{ fontSize: 16, fontWeight: 600, fontFamily: "Georgia, serif", color: "#1C1917" }}>Sell Package</span>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "#9C9584" }}><X size={18} /></button>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Patient search */}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#5C5447", display: "block", marginBottom: 6 }}>Patient *</label>
+            <input value={patientId ? patientName : patientQ} onChange={e => { setPatientQ(e.target.value); setPatientId(""); setPatientName(""); }}
+              placeholder="Search patient name…"
+              style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, fontFamily: "Georgia, serif" }} />
+            {patients.length > 0 && !patientId && (
+              <div style={{ border: "1px solid rgba(197,160,89,0.2)", borderRadius: 8, marginTop: 4, background: "white", boxShadow: "0 4px 12px rgba(0,0,0,0.08)" }}>
+                {patients.map(p => (
+                  <button key={p.id} onClick={() => { setPatientId(p.id); setPatientName(p.full_name); setPatients([]); setPatientQ(""); }}
+                    style={{ display: "block", width: "100%", padding: "10px 12px", border: "none", background: "none", textAlign: "left", fontSize: 13, cursor: "pointer", color: "#1C1917", fontFamily: "Georgia, serif" }}>
+                    {p.full_name} {p.phone ? `· ${p.phone}` : ""}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {/* Package select */}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#5C5447", display: "block", marginBottom: 6 }}>Package *</label>
+            <select value={pkgId} onChange={e => setPkgId(e.target.value)}
+              style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, fontFamily: "Georgia, serif", background: "white" }}>
+              <option value="">Select package…</option>
+              {packages.map(p => <option key={p.id} value={p.id}>{p.name} — ₹{p.total_price.toLocaleString("en-IN")}</option>)}
+            </select>
+          </div>
+          {/* Package summary */}
+          {selectedPkg && (
+            <div style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(197,160,89,0.06)", border: "1px solid rgba(197,160,89,0.2)" }}>
+              <p style={{ fontSize: 13, fontWeight: 600, color: "#1C1917", margin: "0 0 8px", fontFamily: "Georgia, serif" }}>{selectedPkg.name}</p>
+              {(selectedPkg.package_items ?? []).map((item, i) => (
+                <p key={i} style={{ fontSize: 12, color: "#5C5447", margin: "2px 0" }}>• {item.services?.name ?? "Service"} × {item.sessions} sessions</p>
+              ))}
+              <p style={{ fontSize: 14, fontWeight: 700, color: "#C5A059", margin: "8px 0 0", fontFamily: "Georgia, serif" }}>₹{selectedPkg.total_price.toLocaleString("en-IN")}</p>
+            </div>
+          )}
+          {/* Payment mode */}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#5C5447", display: "block", marginBottom: 6 }}>Payment Mode</label>
+            <select value={payMode} onChange={e => setPayMode(e.target.value)}
+              style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, fontFamily: "Georgia, serif", background: "white" }}>
+              {["cash","card","upi","bank_transfer","wallet"].map(m => <option key={m} value={m}>{m.replace("_"," ").toUpperCase()}</option>)}
+            </select>
+          </div>
+        </div>
+        <div style={{ padding: "16px 24px", borderTop: "1px solid rgba(197,160,89,0.15)" }}>
+          <button onClick={handleSell} disabled={saving || !patientId || !pkgId}
+            style={{ width: "100%", padding: "12px", borderRadius: 10, border: "none", background: saving || !patientId || !pkgId ? "rgba(197,160,89,0.3)" : "var(--gold)", color: "white", fontSize: 14, fontWeight: 600, cursor: saving || !patientId || !pkgId ? "not-allowed" : "pointer", fontFamily: "Georgia, serif" }}>
+            {saving ? "Processing…" : "Sell Package & Create Invoice"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── New Invoice Drawer ────────────────────────────────────────────────────────
 
-function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
-  clinicId:  string;
-  onClose:   () => void;
-  onSuccess: () => void;
+function NewInvoiceDrawer({ clinicId, onClose, onSuccess, isProforma = false }: {
+  clinicId:   string;
+  onClose:    () => void;
+  onSuccess:  () => void;
+  isProforma?: boolean;
 }) {
   const [patients, setPatients] = useState<PatientOption[]>([]);
   const [services, setServices] = useState<ServiceOption[]>([]);
@@ -1963,6 +2200,13 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
   const [dueDate,   setDueDate]       = useState("");
   const [saving,    setSaving]        = useState(false);
   const [membershipBenefit, setMembershipBenefit] = useState<{ planName: string; discountPct: number } | null>(null);
+  // GAP-27: discount approval
+  const [discApprovalId,   setDiscApprovalId]   = useState<string | null>(null);
+  const [discOtpInput,     setDiscOtpInput]     = useState("");
+  const [discApproved,     setDiscApproved]     = useState(false);
+  const [discOtpSent,      setDiscOtpSent]      = useState(false);
+  const [discOtpDemo,      setDiscOtpDemo]      = useState<string | null>(null);
+  const DISCOUNT_THRESHOLD = 10; // % — approvals required above this
 
   useEffect(() => {
     (async () => {
@@ -2048,6 +2292,12 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
       toast.error("Add at least one line item with a description and price");
       return;
     }
+    // GAP-27: require approval if any line item exceeds discount threshold
+    const maxDisc = Math.max(...items.map(it => it.discount_pct ?? 0));
+    if (!isProforma && maxDisc > DISCOUNT_THRESHOLD && !discApproved) {
+      toast.error(`Discount exceeds ${DISCOUNT_THRESHOLD}% — approval required. Use the Approval section below.`);
+      return;
+    }
     setSaving(true);
     try {
       const svcNames = items.filter(it => it.description).map(it => it.description).join(", ");
@@ -2065,7 +2315,7 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
         p_provider_name: "",
         p_due_date:      dueDate || null,
         p_gst_pct:       effGstPct,
-        p_invoice_type:  "ad_hoc",
+        p_invoice_type:  isProforma ? "proforma" : "ad_hoc",
         p_notes:         notes || null,
         p_items: JSON.stringify(validItems.map(it => ({
           service_id:           it.service_id ?? null,
@@ -2096,8 +2346,8 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
         );
       }
 
-      await logAction({ action: "create_invoice", targetId: inv?.invoice_id, targetName: svcNames });
-      toast.success("Invoice created!");
+      await logAction({ action: isProforma ? "create_proforma" : "create_invoice", targetId: inv?.invoice_id, targetName: svcNames });
+      toast.success(isProforma ? "Proforma created!" : "Invoice created!");
       onSuccess();
     } catch (e: any) {
       toast.error(e.message ?? "Failed to create invoice");
@@ -2118,7 +2368,7 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
               <Receipt size={16} style={{ color: "var(--gold)" }} />
             </div>
             <p className="font-semibold" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>
-              New Invoice
+              {isProforma ? "New Proforma / Quote" : "New Invoice"}
             </p>
           </div>
           <button onClick={onClose} style={{ color: "var(--text-muted)" }}><X size={16} /></button>
@@ -2250,6 +2500,70 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess }: {
             />
           </div>
         </div>
+
+        {/* GAP-27: Discount approval panel (shown when discount > threshold) */}
+        {!isProforma && Math.max(...items.map(it => it.discount_pct ?? 0)) > DISCOUNT_THRESHOLD && !discApproved && (
+          <div className="mx-5 mb-3 p-4 rounded-xl" style={{ background: "rgba(180,60,60,0.06)", border: "1px solid rgba(180,60,60,0.25)" }}>
+            <p className="text-xs font-semibold mb-2" style={{ color: "#B43C3C" }}>
+              Discount &gt;{DISCOUNT_THRESHOLD}% requires manager approval
+            </p>
+            {!discOtpSent ? (
+              <button
+                onClick={async () => {
+                  const res = await fetch("/api/discounts/request", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ clinic_id: clinicId, discount_pct: Math.max(...items.map(it => it.discount_pct ?? 0)) }),
+                  });
+                  const json = await res.json();
+                  if (json.approval_id) {
+                    setDiscApprovalId(json.approval_id);
+                    setDiscOtpSent(true);
+                    setDiscOtpDemo(json.otp_demo ?? null);
+                    toast.success("OTP sent to clinic admin for approval");
+                  }
+                }}
+                className="text-xs font-semibold px-3 py-1.5 rounded-lg"
+                style={{ background: "rgba(180,60,60,0.1)", color: "#B43C3C", border: "1px solid rgba(180,60,60,0.3)", cursor: "pointer" }}
+              >
+                Request Approval OTP
+              </button>
+            ) : (
+              <div className="flex gap-2 items-center">
+                <input
+                  value={discOtpInput} onChange={e => setDiscOtpInput(e.target.value)}
+                  placeholder="Enter 6-digit OTP"
+                  maxLength={6}
+                  className="px-3 py-1.5 rounded-lg text-xs outline-none flex-1"
+                  style={{ border: "1px solid rgba(180,60,60,0.3)", background: "white" }}
+                />
+                <button
+                  onClick={async () => {
+                    const res = await fetch("/api/discounts/verify-otp", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ approval_id: discApprovalId, otp: discOtpInput }),
+                    });
+                    if (res.ok) { setDiscApproved(true); toast.success("Discount approved"); }
+                    else { toast.error("Invalid or expired OTP"); }
+                  }}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-lg"
+                  style={{ background: "#C5A059", color: "white", border: "none", cursor: "pointer" }}
+                >
+                  Verify
+                </button>
+                {discOtpDemo && (
+                  <span className="text-xs" style={{ color: "#9C9584" }}>Demo OTP: {discOtpDemo}</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        {discApproved && (
+          <div className="mx-5 mb-3 px-3 py-2 rounded-xl text-xs font-semibold" style={{ background: "rgba(46,125,110,0.08)", color: "#2E7D6E", border: "1px solid rgba(46,125,110,0.2)" }}>
+            Discount approved by manager
+          </div>
+        )}
 
         {/* Footer */}
         <div className="flex gap-3 px-5 py-4 border-t flex-shrink-0" style={{ borderColor: "var(--border)" }}>

@@ -221,7 +221,7 @@ function IntakePageInner() {
           lastInjectionDate:      showInjectionHistory && hadBotoxBefore ? lastInjectionDate      : undefined,
           injectionComplications: showInjectionHistory && hadBotoxBefore ? injectionComplications : undefined,
           notes: notes.trim() || undefined,
-          customFields: Object.keys(customFieldValues).length > 0 ? customFieldValues : undefined,
+          customFieldAnswers: Object.keys(customFieldValues).length > 0 ? customFieldValues : undefined,
           referralCode: refCode || undefined,
         };
       }

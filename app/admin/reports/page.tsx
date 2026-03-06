@@ -599,11 +599,21 @@ function BuilderTab({ clinicId, profile }: { clinicId: string; profile: { id: st
     const table = TABLE_MAP[form.base_entity];
     const fields = form.columns.map(c => c.field).join(",");
     try {
-      const { data } = await supabase.from(table).select(fields).eq("clinic_id", clinicId).limit(20);
+      // GAP-47: Apply filters to query
+      let q = supabase.from(table).select(fields).eq("clinic_id", clinicId).limit(20);
+      for (const f of form.filters) {
+        if (!f.field || !f.value) continue;
+        if (f.operator === "eq")   q = q.eq(f.field, f.value);
+        else if (f.operator === "neq")  q = q.neq(f.field, f.value);
+        else if (f.operator === "gt")   q = q.gt(f.field, f.value);
+        else if (f.operator === "lt")   q = q.lt(f.field, f.value);
+        else if (f.operator === "like") q = q.ilike(f.field, `%${f.value}%`);
+      }
+      const { data } = await q;
       setPreviewData((data as Record<string, unknown>[] | null) || []);
     } catch { setPreviewData([]); }
     setPreviewLoading(false);
-  }, [clinicId, form.columns, form.base_entity]);
+  }, [clinicId, form.columns, form.base_entity, form.filters]);
 
   const saveReport = async () => {
     if (!form.name || form.columns.length === 0) return;
@@ -788,6 +798,58 @@ function BuilderTab({ clinicId, profile }: { clinicId: string; profile: { id: st
 
                 {numericField && labelField && previewData.length > 0 && (
                   <SVGBarChart data={previewData} xKey={labelField.field} yKey={numericField.field} />
+                )}
+
+                {/* GAP-47: Filter UI */}
+                {form.columns.length > 0 && (
+                  <div style={{ marginBottom: 8, border: "1px solid rgba(197,160,89,0.15)", borderRadius: 10, padding: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                      <p className="text-xs font-medium" style={{ color: "rgba(197,160,89,0.8)", letterSpacing: "0.05em", margin: 0 }}>
+                        FILTERS ({form.filters.length})
+                      </p>
+                      <button
+                        onClick={() => setForm(f => ({ ...f, filters: [...f.filters, { field: availableFields[0]?.field ?? "", operator: "eq", value: "" }] }))}
+                        className="text-xs px-2 py-1 rounded"
+                        style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "none", cursor: "pointer" }}
+                      >
+                        + Add Filter
+                      </button>
+                    </div>
+                    {form.filters.map((filter, fi) => (
+                      <div key={fi} style={{ display: "flex", gap: 6, marginBottom: 4, alignItems: "center" }}>
+                        <select
+                          value={filter.field}
+                          onChange={e => setForm(f => { const filters = [...f.filters]; filters[fi] = { ...filters[fi], field: e.target.value }; return { ...f, filters }; })}
+                          style={{ fontSize: 11, padding: "4px 6px", borderRadius: 6, border: "1px solid rgba(197,160,89,0.2)", background: "white", color: "#1C1917", flex: 1 }}
+                        >
+                          {availableFields.map(af => <option key={af.field} value={af.field}>{af.label}</option>)}
+                        </select>
+                        <select
+                          value={filter.operator}
+                          onChange={e => setForm(f => { const filters = [...f.filters]; filters[fi] = { ...filters[fi], operator: e.target.value }; return { ...f, filters }; })}
+                          style={{ fontSize: 11, padding: "4px 6px", borderRadius: 6, border: "1px solid rgba(197,160,89,0.2)", background: "white", color: "#1C1917", width: 70 }}
+                        >
+                          <option value="eq">= equals</option>
+                          <option value="neq">≠ not</option>
+                          <option value="gt">&gt; gt</option>
+                          <option value="lt">&lt; lt</option>
+                          <option value="like">~ like</option>
+                        </select>
+                        <input
+                          value={filter.value}
+                          onChange={e => setForm(f => { const filters = [...f.filters]; filters[fi] = { ...filters[fi], value: e.target.value }; return { ...f, filters }; })}
+                          placeholder="value"
+                          style={{ fontSize: 11, padding: "4px 6px", borderRadius: 6, border: "1px solid rgba(197,160,89,0.2)", background: "white", color: "#1C1917", flex: 1 }}
+                        />
+                        <button
+                          onClick={() => setForm(f => ({ ...f, filters: f.filters.filter((_, i) => i !== fi) }))}
+                          style={{ background: "none", border: "none", cursor: "pointer", color: "#DC2626", padding: 2 }}
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 )}
 
                 {form.columns.length === 0 ? (

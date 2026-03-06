@@ -42,6 +42,8 @@ import {
   RefreshCw,
   BookOpen,
   ChevronRight,
+  PlayCircle,
+  Loader2,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -297,13 +299,15 @@ const OPERATORS = [
 ];
 
 const ADV_ACTION_TYPES = [
-  { value: "send_whatsapp", label: "Send WhatsApp",  icon: MessageSquare, paramKeys: ["message"]           },
-  { value: "send_sms",      label: "Send SMS",        icon: Smartphone,    paramKeys: ["message"]           },
-  { value: "send_email",    label: "Send Email",      icon: Mail,          paramKeys: ["subject", "body"]   },
-  { value: "nudge_staff",   label: "Notify Staff",    icon: Bell,          paramKeys: ["role", "message"]   },
-  { value: "create_task",   label: "Create Task",     icon: ClipboardList, paramKeys: ["title", "assigned_role"] },
-  { value: "update_field",  label: "Update Field",    icon: PenLine,       paramKeys: ["field_path", "value"]},
-  { value: "add_tag",       label: "Add Tag",         icon: Star,          paramKeys: ["tag"]               },
+  { value: "send_whatsapp",  label: "Send WhatsApp",   icon: MessageSquare, paramKeys: ["message"]                },
+  { value: "send_sms",       label: "Send SMS",         icon: Smartphone,    paramKeys: ["message"]                },
+  { value: "send_email",     label: "Send Email",       icon: Mail,          paramKeys: ["subject", "body"]        },
+  { value: "nudge_staff",    label: "Notify Staff",     icon: Bell,          paramKeys: ["role", "message"]        },
+  { value: "create_task",    label: "Create Task",      icon: ClipboardList, paramKeys: ["title", "assigned_role"] },
+  { value: "update_field",   label: "Update Field",     icon: PenLine,       paramKeys: ["field_path", "value"]   },
+  { value: "add_tag",        label: "Add Tag",          icon: Star,          paramKeys: ["tag"]                    },
+  // GAP-8: time-based delay — queues subsequent actions for later execution
+  { value: "delay_minutes",  label: "Wait (minutes)",  icon: Clock,         paramKeys: ["minutes"]                },
 ];
 
 const CATEGORY_COLORS: Record<string, { bg: string; color: string; label: string }> = {
@@ -2347,6 +2351,7 @@ export default function RulesPage() {
           onToggleNudgeRole={toggleNudgeRole}
           onAddCustomRole={handleAddCustomNudgeRole}
           onDeleteCustomRole={handleDeleteCustomNudgeRole}
+          advConditions={advConditions}
         />,
         document.body
       )}
@@ -2377,6 +2382,7 @@ function RuleDrawer({
   saving, previewMode, setPreviewMode,
   isSuperAdmin, onClose, onSave, onTriggerChange, onActionChange,
   onToggleClinic, onToggleNudgeRole, onAddCustomRole, onDeleteCustomRole,
+  advConditions,
 }: {
   form: RuleForm;
   setForm: React.Dispatch<React.SetStateAction<RuleForm>>;
@@ -2396,11 +2402,33 @@ function RuleDrawer({
   onToggleNudgeRole: (value: string) => void;
   onAddCustomRole: (label: string) => void;
   onDeleteCustomRole: (id: string, key: string) => void;
+  advConditions: ConditionRow[];
 }) {
   const [newRoleInput, setNewRoleInput] = useState("");
+  const [dryRunResult, setDryRunResult] = useState<{ passed: boolean; reason: string }[] | null>(null);
+  const [dryRunLoading, setDryRunLoading] = useState(false);
+  const [showDryRun, setShowDryRun] = useState(false);
   const selectedTrigger = triggers.find((t) => t.key === form.trigger_key);
   const preview = form.message_template ? buildPreview(form.message_template, form) : "";
   const isAllSelected = form.nudge_target_roles.includes("all");
+
+  async function runDryRun() {
+    setDryRunLoading(true);
+    setDryRunResult(null);
+    try {
+      const res = await fetch("/api/workflows/dry-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conditions: advConditions, trigger_key: form.trigger_key }),
+      });
+      const json = await res.json();
+      setDryRunResult(json.results ?? []);
+    } catch {
+      setDryRunResult([{ passed: false, reason: "Request failed" }]);
+    } finally {
+      setDryRunLoading(false);
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
@@ -2817,9 +2845,38 @@ function RuleDrawer({
           </div>
         </div>
 
+        {/* GAP-63: Dry-run result panel */}
+        {showDryRun && (
+          <div className="mx-7 mb-4 p-4 rounded-xl" style={{ background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.2)" }}>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs font-bold uppercase tracking-wider" style={{ color: "#6366F1" }}>Condition Dry Run</p>
+              <button onClick={runDryRun} disabled={dryRunLoading}
+                className="text-xs px-2 py-1 rounded-lg font-semibold flex items-center gap-1"
+                style={{ background: "rgba(99,102,241,0.1)", color: "#6366F1", border: "1px solid rgba(99,102,241,0.2)", cursor: "pointer" }}>
+                {dryRunLoading ? <Loader2 size={11} className="animate-spin" /> : <PlayCircle size={11} />}
+                {dryRunLoading ? "Running…" : "Run Again"}
+              </button>
+            </div>
+            {dryRunResult === null && !dryRunLoading && (
+              <p className="text-xs" style={{ color: "#9C9584" }}>Click "Run Again" to evaluate conditions against a sample event.</p>
+            )}
+            {dryRunResult && dryRunResult.length === 0 && (
+              <p className="text-xs" style={{ color: "#4A8A4A" }}>No conditions defined — rule will always fire.</p>
+            )}
+            {dryRunResult && dryRunResult.map((r, i) => (
+              <div key={i} className="flex items-start gap-2 mb-1.5">
+                <span className="text-xs font-bold mt-0.5" style={{ color: r.passed ? "#4A8A4A" : "#B43C3C", flexShrink: 0 }}>
+                  {r.passed ? "✓" : "✗"}
+                </span>
+                <span className="text-xs" style={{ color: r.passed ? "#4A8A4A" : "#B43C3C" }}>{r.reason}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Footer */}
         <div
-          className="px-7 py-5 border-t flex gap-3"
+          className="px-7 py-5 border-t flex gap-3 flex-wrap"
           style={{ borderColor: "rgba(197,160,89,0.15)", background: "rgba(197,160,89,0.03)" }}
         >
           <button
@@ -2828,6 +2885,14 @@ function RuleDrawer({
             style={{ border: "1px solid rgba(197,160,89,0.3)", color: "#7C6D3E" }}
           >
             Cancel
+          </button>
+          <button
+            onClick={() => { setShowDryRun(true); runDryRun(); }}
+            disabled={dryRunLoading}
+            className="py-2.5 px-4 rounded-xl text-sm font-medium border transition-all flex items-center gap-1.5"
+            style={{ border: "1px solid rgba(99,102,241,0.3)", color: "#6366F1", background: "rgba(99,102,241,0.06)" }}
+          >
+            <PlayCircle size={13} /> Test Rule
           </button>
           <button
             onClick={onSave}

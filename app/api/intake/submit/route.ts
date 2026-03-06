@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { normalizePhone } from "@/lib/phoneUtils";
 
 // POST /api/intake/submit
 // Public — inserts into `patients` then writes full medical history
@@ -19,6 +20,7 @@ export async function POST(req: NextRequest) {
       injectionComplications,
       notes,
       referralCode,
+      customFieldAnswers,
     } = body as {
       clinicId: string;
       fullName: string;
@@ -31,6 +33,7 @@ export async function POST(req: NextRequest) {
       injectionComplications?: string;
       notes?: string;
       referralCode?: string;
+      customFieldAnswers?: Record<string, unknown>;
     };
 
     if (!clinicId || !fullName || !phone || !concerns?.length) {
@@ -60,12 +63,13 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Step 2: Insert patient row and return the new id ──────────────────────
+    const normalizedPhone = normalizePhone(phone);
     const { data: patient, error: patientError } = await supabase
       .from("patients")
       .insert({
         clinic_id:          clinicId,
         full_name:          fullName,
-        phone,
+        phone: normalizedPhone,
         email:              email || null,
         primary_concern:    concerns.join(", "),
         previous_injections: previousInjections,
@@ -101,6 +105,20 @@ export async function POST(req: NextRequest) {
     // Log server-side but still return success to the patient.
     if (historyError) {
       console.error("[intake/submit] patient_medical_history insert failed:", historyError.message);
+    }
+
+    // ── Step 3b (GAP-23): Save custom field answers ───────────────────────────
+    if (customFieldAnswers && Object.keys(customFieldAnswers).length > 0) {
+      const cfRows = Object.entries(customFieldAnswers).map(([field_key, value]) => ({
+        clinic_id:   clinicId,
+        entity_type: "patient",
+        entity_id:   patient.id,
+        field_key,
+        value:       JSON.stringify(value),
+      }));
+      await supabase.from("custom_field_values").upsert(cfRows, {
+        onConflict: "clinic_id,entity_type,entity_id,field_key",
+      });
     }
 
     // ── Step 4 (N2-2): Referral reward — credit referrer's wallet ─────────────

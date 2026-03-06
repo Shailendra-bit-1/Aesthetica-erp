@@ -95,6 +95,8 @@ export default function StaffHRPage() {
   const [scorecardsLoading, setScorecardsLoading] = useState(false);
 
   const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
+  // GAP-61: Configurable leave allocations from system_settings
+  const [leaveAllocations, setLeaveAllocations] = useState<Record<string, number | null>>({ casual: 12, sick: 10, earned: 15, unpaid: null, other: null });
   const [leaveDrawer, setLeaveDrawer] = useState(false);
   const [saving, setSaving] = useState(false);
   const [inviteDrawer, setInviteDrawer] = useState(false);
@@ -193,6 +195,15 @@ export default function StaffHRPage() {
     if (!clinicId) return;
     setLoading(true);
     Promise.all([fetchStaff(), fetchAttendance(), fetchLeaves()]).finally(() => setLoading(false));
+    // GAP-61: Load leave allocations from system_settings
+    supabase.from("system_settings")
+      .select("value")
+      .eq("clinic_id", clinicId)
+      .eq("key", "leave_allocations")
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.value) setLeaveAllocations(data.value as Record<string, number | null>);
+      });
   }, [clinicId, fetchStaff, fetchAttendance, fetchLeaves]);
 
   useEffect(() => {
@@ -443,8 +454,8 @@ export default function StaffHRPage() {
 
         {/* LEAVES TAB */}
         {tab === "leaves" && (() => {
-          // Leave balance calculations
-          const LEAVE_ALLOCATIONS: Record<LeaveType, number | null> = { casual: 12, sick: 10, earned: 15, unpaid: null, other: null };
+          // Leave balance calculations — GAP-61: uses configurable allocations from system_settings
+          const LEAVE_ALLOCATIONS = leaveAllocations as Record<LeaveType, number | null>;
           const currentYear = new Date().getFullYear();
           const selectedStaff = selectedStaffId ? staffList.find(s => s.id === selectedStaffId) : null;
           const staffLeaves = selectedStaffId

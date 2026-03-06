@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import TopBar from "@/components/TopBar";
-import { Webhook, Plus, X, Eye, RefreshCw, Trash2, ToggleLeft, Check, AlertCircle, Clock } from "lucide-react";
+import { Webhook, Plus, X, Eye, RefreshCw, Trash2, ToggleLeft, Check, AlertCircle, Clock, Send, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 
 interface WebhookEndpoint {
   id: string;
@@ -142,6 +143,20 @@ export default function WebhooksPage() {
     fetchEndpoints();
   };
 
+  const [testing, setTesting] = useState<string | null>(null);
+
+  const testEndpoint = async (id: string) => {
+    setTesting(id);
+    const res = await fetch("/api/admin/webhooks/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint_id: id }),
+    });
+    const json = await res.json();
+    setTesting(null);
+    if (json.ok) toast.success(`Test delivered — HTTP ${json.status} in ${json.latency_ms}ms`);
+    else toast.error(`Test failed — HTTP ${json.status ?? "error"} (${json.latency_ms ?? 0}ms): ${json.error ?? json.response ?? ""}`);
+  };
+
   const retryDelivery = async (d: WebhookDelivery) => {
     await supabase.from("webhook_deliveries").update({ status: "pending", attempt_count: d.attempt_count + 1 }).eq("id", d.id);
     fetchDeliveries();
@@ -210,6 +225,10 @@ export default function WebhooksPage() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2 ml-4">
+                        <button onClick={() => testEndpoint(ep.id)} disabled={testing === ep.id} title="Test endpoint"
+                          className="p-2 rounded-lg hover:bg-amber-50 transition-colors">
+                          {testing === ep.id ? <Loader2 size={15} className="animate-spin" style={{ color: "#C5A059" }} /> : <Send size={15} style={{ color: "#C5A059" }} />}
+                        </button>
                         <button onClick={() => toggleEndpoint(ep.id, ep.is_active)}
                           className="p-2 rounded-lg hover:bg-gray-100 transition-colors" title={ep.is_active ? "Disable" : "Enable"}>
                           <ToggleLeft size={16} style={{ color: ep.is_active ? "#16a34a" : "#9ca3af" }} />

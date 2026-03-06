@@ -67,6 +67,7 @@ interface ReferralData {
 }
 
 interface PortalData {
+  clinic_id: string;
   patient: PortalPatient;
   appointments: PortalAppointment[];
   invoices: PortalInvoice[];
@@ -152,6 +153,17 @@ export default function PortalDashboard() {
   const [formValues,     setFormValues]     = useState<Record<string, string | string[]>>({});
   const [submitting,     setSubmitting]     = useState(false);
   const [submitSuccess,  setSubmitSuccess]  = useState<string | null>(null);
+  // GAP-36: consent form e-signature
+  const [signatureName,  setSignatureName]  = useState("");
+  const [signatureAgreed, setSignatureAgreed] = useState(false);
+  // GAP-62: portal self-booking
+  const [showBooking,    setShowBooking]    = useState(false);
+  const [bookServices,   setBookServices]   = useState<{ id: string; name: string; duration_minutes: number }[]>([]);
+  const [bookServiceId,  setBookServiceId]  = useState("");
+  const [bookDate,       setBookDate]       = useState("");
+  const [bookTime,       setBookTime]       = useState("10:00");
+  const [bookNotes,      setBookNotes]      = useState("");
+  const [bookSaving,     setBookSaving]     = useState(false);
 
   const fetchForms = async () => {
     if (!token) return;
@@ -168,19 +180,29 @@ export default function PortalDashboard() {
     }
   };
 
-  const submitForm = async (formId: string) => {
+  const submitForm = async (formId: string, form?: PortalForm) => {
+    // GAP-36: require signature for consent forms
+    if (form?.form_type === "consent") {
+      if (!signatureName.trim()) { alert("Please enter your full name as signature before submitting."); return; }
+      if (!signatureAgreed)      { alert("Please confirm that you agree to the consent form."); return; }
+    }
     setSubmitting(true);
     try {
+      const consentData = form?.form_type === "consent"
+        ? { _signature_name: signatureName.trim(), _signed_at: new Date().toISOString(), _agreed: true }
+        : {};
       const res  = await fetch("/api/portal/forms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, form_id: formId, responses: formValues }),
+        body: JSON.stringify({ token, form_id: formId, responses: { ...formValues, ...consentData } }),
       });
       const json = await res.json();
       if (json.error) throw new Error(json.error);
       setSubmitSuccess(formId);
       setActiveForm(null);
       setFormValues({});
+      setSignatureName("");
+      setSignatureAgreed(false);
       fetchForms(); // refresh responses
     } catch (e) {
       alert((e as Error).message || "Submission failed. Please try again.");
@@ -219,7 +241,7 @@ export default function PortalDashboard() {
 
   if (!data) return null;
 
-  const { patient, appointments, invoices, wallet, loyalty, photos, referral } = data;
+  const { clinic_id: clinicId, patient, appointments, invoices, wallet, loyalty, photos, referral } = data;
   const tierStyle = TIER_STYLES[loyalty.tier] ?? TIER_STYLES.Bronze;
 
   const now = new Date();
@@ -301,6 +323,97 @@ export default function PortalDashboard() {
         {/* ─── Appointments Tab ─── */}
         {tab === "appointments" && (
           <div>
+            {/* GAP-62: Book Appointment button */}
+            <button
+              onClick={async () => {
+                setShowBooking(true);
+                if (bookServices.length === 0 && clinicId) {
+                  const res = await fetch(`/api/portal/services?clinic_id=${clinicId}`);
+                  const json = await res.json();
+                  const svcs = json.services ?? [];
+                  setBookServices(svcs);
+                  if (svcs.length > 0) setBookServiceId(svcs[0].id);
+                }
+              }}
+              style={{
+                display: "flex", alignItems: "center", gap: 6, padding: "9px 16px", borderRadius: 10,
+                background: "#C5A059", border: "none", color: "white", fontSize: 13, fontWeight: 700,
+                cursor: "pointer", width: "100%", justifyContent: "center", marginBottom: 14,
+              }}
+            >
+              <Calendar size={14} /> Book New Appointment
+            </button>
+
+            {/* Booking modal */}
+            {showBooking && (
+              <div style={{ marginBottom: 16, padding: 18, borderRadius: 14, background: "#fff", border: "1px solid rgba(197,160,89,0.25)", boxShadow: "0 4px 20px rgba(0,0,0,0.08)" }}>
+                <p style={{ fontFamily: "Georgia, serif", fontWeight: 700, fontSize: 15, marginBottom: 14, color: "#1a1714" }}>Request Appointment</p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 4 }}>Service</label>
+                    <select value={bookServiceId} onChange={e => setBookServiceId(e.target.value)}
+                      style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 13, background: "#faf9f7" }}>
+                      {bookServices.map(s => <option key={s.id} value={s.id}>{s.name} ({s.duration_minutes} min)</option>)}
+                    </select>
+                  </div>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 4 }}>Preferred Date</label>
+                      <input type="date" value={bookDate} onChange={e => setBookDate(e.target.value)}
+                        min={new Date().toISOString().slice(0, 10)}
+                        style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 13, boxSizing: "border-box" }} />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 4 }}>Preferred Time</label>
+                      <input type="time" value={bookTime} onChange={e => setBookTime(e.target.value)}
+                        style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 13, boxSizing: "border-box" }} />
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 4 }}>Notes (optional)</label>
+                    <textarea value={bookNotes} onChange={e => setBookNotes(e.target.value)} rows={2}
+                      placeholder="Any special requirements…"
+                      style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #e5e7eb", fontSize: 13, resize: "none", boxSizing: "border-box", fontFamily: "inherit" }} />
+                  </div>
+                  <p style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>
+                    This is a request — the clinic will confirm your appointment shortly.
+                  </p>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setShowBooking(false)}
+                      style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "1px solid #e5e7eb", background: "none", fontSize: 13, cursor: "pointer" }}>Cancel</button>
+                    <button
+                      onClick={async () => {
+                        if (!bookDate || !bookServiceId) { alert("Please select a service and date"); return; }
+                        setBookSaving(true);
+                        const svc = bookServices.find(s => s.id === bookServiceId);
+                        const startDt = new Date(`${bookDate}T${bookTime}`);
+                        const endDt   = new Date(startDt.getTime() + (svc?.duration_minutes ?? 60) * 60000);
+                        const res = await fetch("/api/portal/book", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            token,
+                            service_id:   bookServiceId,
+                            service_name: svc?.name ?? "Appointment",
+                            start_time:   startDt.toISOString(),
+                            end_time:     endDt.toISOString(),
+                            notes:        bookNotes || null,
+                          }),
+                        });
+                        const json = await res.json();
+                        if (json.error) { alert(json.error); }
+                        else { alert("Appointment requested! The clinic will confirm shortly."); setShowBooking(false); setBookNotes(""); setBookDate(""); }
+                        setBookSaving(false);
+                      }}
+                      disabled={bookSaving}
+                      style={{ flex: 2, padding: "10px 0", borderRadius: 9, background: "#C5A059", border: "none", color: "white", fontSize: 13, fontWeight: 700, cursor: bookSaving ? "not-allowed" : "pointer" }}>
+                      {bookSaving ? "Requesting…" : "Request Appointment"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Sub-filter */}
             <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
               {(["upcoming", "past"] as const).map(f => (
@@ -532,8 +645,8 @@ export default function PortalDashboard() {
                           <span style={{ fontSize: 10, fontWeight: 700, color: tc.color, background: tc.bg, padding: "2px 8px", borderRadius: 10 }}>{tc.label}</span>
                         </div>
                         {alreadySubmitted ? (
-                          <span style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", borderRadius: 20, background: "rgba(22,163,74,0.1)", fontSize: 11, fontWeight: 700, color: "#16a34a", flexShrink: 0 }}>
-                            <CheckCircle size={11} /> Submitted
+                          <span style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", borderRadius: 20, background: form.form_type === "consent" ? "rgba(124,58,237,0.1)" : "rgba(22,163,74,0.1)", fontSize: 11, fontWeight: 700, color: form.form_type === "consent" ? "#7c3aed" : "#16a34a", flexShrink: 0 }}>
+                            <CheckCircle size={11} /> {form.form_type === "consent" ? "Signed" : "Submitted"}
                           </span>
                         ) : submitSuccess === form.id ? (
                           <span style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", borderRadius: 20, background: "rgba(22,163,74,0.1)", fontSize: 11, fontWeight: 700, color: "#16a34a", flexShrink: 0 }}>
@@ -638,8 +751,42 @@ export default function PortalDashboard() {
                             })}
                           </div>
 
+                          {/* GAP-36: consent form e-signature */}
+                          {form.form_type === "consent" && (
+                            <div style={{ marginTop: 18, padding: 16, borderRadius: 12, background: "rgba(124,58,237,0.04)", border: "1px solid rgba(124,58,237,0.2)" }}>
+                              <p style={{ fontSize: 12, fontWeight: 700, color: "#7c3aed", marginBottom: 10 }}>
+                                Digital Signature Required
+                              </p>
+                              <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>
+                                By typing your full name below and checking the box, you confirm that you have read and agree to this consent form.
+                              </p>
+                              <input
+                                value={signatureName}
+                                onChange={e => setSignatureName(e.target.value)}
+                                placeholder="Type your full name…"
+                                style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid rgba(124,58,237,0.3)", fontSize: 13, marginBottom: 10, boxSizing: "border-box", outline: "none", fontFamily: "Georgia, serif", fontStyle: "italic" }}
+                              />
+                              <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                                <input
+                                  type="checkbox"
+                                  checked={signatureAgreed}
+                                  onChange={e => setSignatureAgreed(e.target.checked)}
+                                  style={{ accentColor: "#7c3aed", marginTop: 2, flexShrink: 0 }}
+                                />
+                                <span style={{ fontSize: 12, color: "#374151", lineHeight: 1.4 }}>
+                                  I confirm that I have read and understood this consent form, and I voluntarily agree to its terms.
+                                </span>
+                              </label>
+                              {signatureName && signatureAgreed && (
+                                <p style={{ fontSize: 11, color: "#7c3aed", marginTop: 8 }}>
+                                  Signed as: <strong style={{ fontFamily: "Georgia, serif", fontStyle: "italic" }}>{signatureName}</strong>
+                                </p>
+                              )}
+                            </div>
+                          )}
+
                           <button
-                            onClick={() => submitForm(form.id)}
+                            onClick={() => submitForm(form.id, form)}
                             disabled={submitting}
                             style={{
                               marginTop: 18, width: "100%", padding: "12px 0", borderRadius: 10,

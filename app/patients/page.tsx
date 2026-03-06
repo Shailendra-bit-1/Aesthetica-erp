@@ -25,7 +25,15 @@ interface Patient {
   allergies: string[] | null;
   fitzpatrick_type: number | null;
   preferred_provider: string | null;
+  patient_tier: string | null;
 }
+
+const TIER_BADGE: Record<string, { label: string; bg: string; color: string }> = {
+  vip:       { label: "VIP",      bg: "rgba(197,160,89,0.15)", color: "#8B6914" },
+  hni:       { label: "HNI",      bg: "rgba(124,58,237,0.12)", color: "#7C3AED" },
+  regular:   { label: "Regular",  bg: "rgba(107,114,128,0.1)", color: "#6B7280" },
+  at_risk:   { label: "At Risk",  bg: "rgba(220,38,38,0.1)",   color: "#DC2626" },
+};
 
 // ── PHI masking helpers ───────────────────────────────────────────────────────
 
@@ -80,7 +88,7 @@ export default function PatientsPage() {
         .from("patients")
         .select(`
           id, full_name, email, phone, primary_concern, created_at,
-          date_of_birth, allergies, fitzpatrick_type,
+          date_of_birth, allergies, fitzpatrick_type, patient_tier,
           provider:profiles!preferred_provider_id(full_name)
         `)
         .eq("clinic_id", activeClinicId)
@@ -376,9 +384,16 @@ export default function PatientsPage() {
                                 )}
                               </div>
                               <div>
-                                <span className="text-sm font-medium block" style={{ color: "#1C1917", fontFamily: "Georgia, serif" }}>
-                                  {p.full_name}
-                                </span>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-medium block" style={{ color: "#1C1917", fontFamily: "Georgia, serif" }}>
+                                    {p.full_name}
+                                  </span>
+                                  {p.patient_tier && TIER_BADGE[p.patient_tier] && (
+                                    <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 4, background: TIER_BADGE[p.patient_tier].bg, color: TIER_BADGE[p.patient_tier].color, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                                      {TIER_BADGE[p.patient_tier].label}
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                                   {age && (
                                     <span className="text-xs" style={{ color: "#9C9584" }}>{age}</span>

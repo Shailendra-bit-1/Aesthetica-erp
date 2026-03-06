@@ -105,6 +105,23 @@ export function ClinicProvider({ children }: { children: ReactNode }) {
           .order("name");
         setClinics(all ?? []);
       }
+
+      // GAP-24: Chain admins load all clinics in their chain
+      if (resolved.role === "chain_admin" && resolved.clinic_id) {
+        const { data: myCli } = await supabase
+          .from("clinics")
+          .select("chain_id")
+          .eq("id", resolved.clinic_id)
+          .maybeSingle();
+        if (myCli?.chain_id) {
+          const { data: chainClis } = await supabase
+            .from("clinics")
+            .select("id, name, location, subscription_status")
+            .eq("chain_id", myCli.chain_id)
+            .order("name");
+          setClinics(chainClis ?? []);
+        }
+      }
     } catch {
       // Swallow — loading stays false, profile stays null (unauthenticated state)
     } finally {

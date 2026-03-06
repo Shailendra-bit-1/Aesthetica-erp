@@ -744,10 +744,22 @@ function CommissionsTab({ commissions, loading, onRefresh, isAdmin }: {
   onRefresh: () => void;
   isAdmin: boolean;
 }) {
-  const [markingPaid, setMarkingPaid] = useState<string | null>(null);
-  const pending = commissions.filter(c => c.status === "pending");
-  const paid    = commissions.filter(c => c.status === "paid");
+  const [markingPaid,  setMarkingPaid]  = useState<string | null>(null);
+  const [staffFilter,  setStaffFilter]  = useState("");
+  const [dateFrom,     setDateFrom]     = useState("");
+  const [dateTo,       setDateTo]       = useState("");
+
+  const filtered = commissions.filter(c => {
+    if (staffFilter && c.provider_name !== staffFilter) return false;
+    if (dateFrom && c.created_at < dateFrom) return false;
+    if (dateTo && c.created_at > dateTo + "T23:59:59") return false;
+    return true;
+  });
+
+  const pending = filtered.filter(c => c.status === "pending");
+  const paid    = filtered.filter(c => c.status === "paid");
   const totalPending = pending.reduce((s, c) => s + c.commission_amount, 0);
+  const uniqueStaff = Array.from(new Set(commissions.map(c => c.provider_name))).sort();
 
   async function markPaid(id: string) {
     setMarkingPaid(id);
@@ -760,7 +772,7 @@ function CommissionsTab({ commissions, loading, onRefresh, isAdmin }: {
   function exportCsv() {
     const rows = [
       ["Provider", "Patient", "Service", "Sale Amount", "Commission %", "Commission Amount", "Status", "Date", "Paid At"],
-      ...commissions.map(c => [
+      ...filtered.map(c => [
         c.provider_name, c.patient_name ?? "", c.service_name,
         c.sale_amount, c.commission_pct, c.commission_amount,
         c.status, new Date(c.created_at).toLocaleDateString("en-IN"),
@@ -779,6 +791,27 @@ function CommissionsTab({ commissions, loading, onRefresh, isAdmin }: {
 
   return (
     <div>
+      {/* GAP-40: Date range + staff filter */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <select value={staffFilter} onChange={e => setStaffFilter(e.target.value)}
+          style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 12, background: "white" }}>
+          <option value="">All staff</option>
+          {uniqueStaff.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+          style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 12 }} />
+        <span style={{ fontSize: 12, color: "#9C9584" }}>to</span>
+        <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+          style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 12 }} />
+        {(staffFilter || dateFrom || dateTo) && (
+          <button onClick={() => { setStaffFilter(""); setDateFrom(""); setDateTo(""); }}
+            style={{ padding: "5px 10px", borderRadius: 7, border: "1px solid rgba(107,114,128,0.2)", background: "white", cursor: "pointer", fontSize: 11, color: "#6B7280" }}>
+            Clear filters
+          </button>
+        )}
+        <span style={{ marginLeft: "auto", fontSize: 12, color: "#9C9584" }}>{filtered.length} of {commissions.length} records</span>
+      </div>
+
       {/* Summary banner */}
       {pending.length > 0 && (
         <div style={{ padding: "14px 20px", borderRadius: 14, marginBottom: 20, background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.3)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -799,7 +832,7 @@ function CommissionsTab({ commissions, loading, onRefresh, isAdmin }: {
       )}
 
       <div className="space-y-2">
-        {commissions.map(c => (
+        {filtered.map(c => (
           <div key={c.id} style={{ padding: "14px 18px", borderRadius: 12, background: "white", border: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 14 }}>
             <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(197,160,89,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontFamily: "Georgia, serif", fontWeight: 700, color: "#C5A059", fontSize: 14 }}>
               {c.provider_name.split(" ").map(n => n[0]).slice(0, 2).join("")}

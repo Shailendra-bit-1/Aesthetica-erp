@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
       });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 401 });
+      return NextResponse.json({ error: "Invalid or expired OTP" }, { status: 401 });
     }
 
     return NextResponse.json({ ok: true, token });

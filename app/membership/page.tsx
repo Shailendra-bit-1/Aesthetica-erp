@@ -256,6 +256,31 @@ export default function MembershipPage() {
         p_expires_at: expires_at,
       });
       if (error) throw error;
+
+      // GAP-3: create invoice so membership revenue appears in dashboard
+      if (plan && plan.price > 0) {
+        const patient = patientResults.find(p => p.id === assignForm.patient_id) ?? { id: assignForm.patient_id, full_name: "Member" };
+        await supabase.rpc("create_invoice_with_items", {
+          p_clinic_id:     clinicId,
+          p_patient_id:    assignForm.patient_id,
+          p_patient_name:  patient.full_name,
+          p_provider_id:   null,
+          p_provider_name: "",
+          p_due_date:      null,
+          p_gst_pct:       0,
+          p_invoice_type:  "membership",
+          p_notes:         `Membership: ${plan.name}`,
+          p_items: JSON.stringify([{
+            service_id:   null,
+            description:  `${plan.name} (${plan.duration_type})`,
+            quantity:     1,
+            unit_price:   plan.price,
+            discount_pct: 0,
+            gst_pct:      0,
+          }]),
+        });
+      }
+
       setAssignDrawer(false);
       setAssignForm({ patient_search: "", patient_id: "", plan_id: "", auto_renew: true });
       fetchMemberships();
@@ -283,6 +308,29 @@ export default function MembershipPage() {
       p_expires_at: expires_at,
     });
     if (error) { alert(error.message); return; }
+
+    // GAP-3: create renewal invoice
+    if (m.membership_plans?.price > 0) {
+      await supabase.rpc("create_invoice_with_items", {
+        p_clinic_id:     clinicId,
+        p_patient_id:    m.patient_id,
+        p_patient_name:  m.patients.full_name,
+        p_provider_id:   null,
+        p_provider_name: "",
+        p_due_date:      null,
+        p_gst_pct:       0,
+        p_invoice_type:  "membership",
+        p_notes:         `Membership Renewal: ${m.membership_plans.name}`,
+        p_items: JSON.stringify([{
+          service_id:   null,
+          description:  `${m.membership_plans.name} Renewal (${m.membership_plans.duration_type})`,
+          quantity:     1,
+          unit_price:   m.membership_plans.price,
+          discount_pct: 0,
+          gst_pct:      0,
+        }]),
+      });
+    }
     fetchMemberships();
   };
 
