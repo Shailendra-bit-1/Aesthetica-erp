@@ -10,6 +10,7 @@ import {
   AlertTriangle, Package, Sparkles, Gift,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { withSupabaseRetry } from "@/lib/withRetry";
 import { useClinic } from "@/contexts/ClinicContext";
 import { toast } from "sonner";
 import TopBar from "@/components/TopBar";
@@ -1364,27 +1365,31 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
 
       // N5: If split enabled, also record second payment
       if (splitEnabled && pay2 > 0) {
-        await supabase.rpc("record_payment", {
-          p_invoice_id:      inv.id,
-          p_clinic_id:       clinicId,
-          p_amount:          pay2,
-          p_payment_mode:    mode2,
-          p_transaction_ref: null,
-          p_notes:           "Split payment (part 2)",
-          p_recorded_by:     null,
-        });
+        await withSupabaseRetry(() =>
+          supabase.rpc("record_payment", {
+            p_invoice_id:      inv.id,
+            p_clinic_id:       clinicId,
+            p_amount:          pay2,
+            p_payment_mode:    mode2,
+            p_transaction_ref: null,
+            p_notes:           "Split payment (part 2)",
+            p_recorded_by:     null,
+          })
+        );
       }
 
       // C-3 fix: single atomic RPC — inserts payment + recomputes invoice status
-      const { data: newStatus, error: pe } = await supabase.rpc("record_payment", {
-        p_invoice_id:      inv.id,
-        p_clinic_id:       clinicId,
-        p_amount:          pay,
-        p_payment_mode:    mode,
-        p_transaction_ref: ref   || null,
-        p_notes:           notes || null,
-        p_recorded_by:     null,
-      });
+      const { data: newStatus, error: pe } = await withSupabaseRetry(() =>
+        supabase.rpc("record_payment", {
+          p_invoice_id:      inv.id,
+          p_clinic_id:       clinicId,
+          p_amount:          pay,
+          p_payment_mode:    mode,
+          p_transaction_ref: ref   || null,
+          p_notes:           notes || null,
+          p_recorded_by:     null,
+        })
+      );
       if (pe) throw pe;
 
       // Deduct gift card balance if used
@@ -2082,11 +2087,13 @@ function SellPackageDrawer({ clinicId, onClose, onSuccess }: { clinicId: string;
         p_gst_pct:        0,
       });
       if (invErr || !inv) throw invErr;
-      await supabase.rpc("record_payment", {
-        p_invoice_id: inv, p_clinic_id: clinicId,
-        p_amount: selectedPkg.total_price, p_payment_mode: payMode,
-        p_transaction_ref: null, p_notes: `Package sale: ${selectedPkg.name}`, p_recorded_by: profile?.full_name ?? null,
-      });
+      await withSupabaseRetry(() =>
+        supabase.rpc("record_payment", {
+          p_invoice_id: inv, p_clinic_id: clinicId,
+          p_amount: selectedPkg.total_price, p_payment_mode: payMode,
+          p_transaction_ref: null, p_notes: `Package sale: ${selectedPkg.name}`, p_recorded_by: profile?.full_name ?? null,
+        })
+      );
       // Create service credits per package item
       for (const item of (selectedPkg.package_items ?? [])) {
         await supabase.from("patient_service_credits").insert({

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { withSupabaseRetry } from "@/lib/withRetry";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -25,16 +26,18 @@ export async function POST(req: NextRequest) {
     }
 
     // Insert appointment with "planned" status (front desk will confirm)
-    const { error } = await supabaseAdmin.from("appointments").insert({
-      clinic_id:    session.clinic_id,
-      patient_id:   session.patient_id,
-      service_id,
-      service_name: service_name ?? "Appointment",
-      start_time,
-      end_time,
-      status:       "planned",
-      notes:        notes ? `[Patient-requested via portal] ${notes}` : "[Patient-requested via portal]",
-    });
+    const { error } = await withSupabaseRetry(() =>
+      supabaseAdmin.from("appointments").insert({
+        clinic_id:    session.clinic_id,
+        patient_id:   session.patient_id,
+        service_id,
+        service_name: service_name ?? "Appointment",
+        start_time,
+        end_time,
+        status:       "planned",
+        notes:        notes ? `[Patient-requested via portal] ${notes}` : "[Patient-requested via portal]",
+      })
+    );
 
     if (error) throw error;
     return NextResponse.json({ ok: true });

@@ -12,6 +12,7 @@ import {
   Printer, Ban,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { withSupabaseRetry } from "@/lib/withRetry";
 import { useClinic } from "@/contexts/ClinicContext";
 import { toast } from "sonner";
 import TopBar from "@/components/TopBar";
@@ -2198,22 +2199,24 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
 
       const firstSlot = slots[0];
       // GAP-28: use server-side RPC with conflict check
-      const { data: safeResult, error } = await supabase.rpc("create_appointment_safe", {
-        p_clinic_id:            activeClinicId,
-        p_patient_id:           selectedPatient.id,
-        p_provider_id:          providerId || null,
-        p_service_id:           serviceId,
-        p_service_name:         svc?.name ?? "Service",
-        p_start_time:           firstSlot.start.toISOString(),
-        p_end_time:             firstSlot.end.toISOString(),
-        p_notes:                notes || null,
-        p_room:                 room || null,
-        p_credit_id:            useCredit && selectedCreditId ? selectedCreditId : null,
-        p_credit_reserved:      useCredit && selectedCreditId && settings?.credit_lock ? true : false,
-        p_recurrence_group_id:  recurrenceGroupId,
-        p_created_by:           creatorId,
-        p_allow_double_booking: settings?.enable_double_booking ?? false,
-      });
+      const { data: safeResult, error } = await withSupabaseRetry(() =>
+        supabase.rpc("create_appointment_safe", {
+          p_clinic_id:            activeClinicId,
+          p_patient_id:           selectedPatient.id,
+          p_provider_id:          providerId || null,
+          p_service_id:           serviceId,
+          p_service_name:         svc?.name ?? "Service",
+          p_start_time:           firstSlot.start.toISOString(),
+          p_end_time:             firstSlot.end.toISOString(),
+          p_notes:                notes || null,
+          p_room:                 room || null,
+          p_credit_id:            useCredit && selectedCreditId ? selectedCreditId : null,
+          p_credit_reserved:      useCredit && selectedCreditId && settings?.credit_lock ? true : false,
+          p_recurrence_group_id:  recurrenceGroupId,
+          p_created_by:           creatorId,
+          p_allow_double_booking: settings?.enable_double_booking ?? false,
+        })
+      );
 
       if (error) throw error;
       const rpcResult = safeResult as { conflict: boolean; id?: string; conflict_patient?: string; conflict_service?: string };
