@@ -1,11 +1,17 @@
 # AESTHETICA CLINIC ERP — FINAL PLAN
-## Single Source of Truth | Version 1.0 | 2026-03-07
+## Single Source of Truth | Version 2.0 | 2026-03-07
 
 ---
 
 > This document supersedes MASTER_PLAN.md and GAP_ANALYSIS.md.
 > Everything Claude builds must follow this document exactly.
 > No feature, table, route, or UI decision should contradict what is written here.
+>
+> **v2.0 Master Overrides applied:**
+> - Design: Navy/White SaaS theme replaces Gold/Linen
+> - Navigation: Top Bar replaces sidebar
+> - Logic: Counsellor Claim System, HSN/SAC mandatory, Force-Overlap walk-ins
+> - Infrastructure: Part 16 — Scaling & Stability added
 
 ---
 
@@ -43,6 +49,10 @@ The system must be so easy that a superadmin can configure everything — roles,
 | Retry | `withSupabaseRetry()` for all mutations, `withRetry()` for fetch calls |
 
 ### Standard Page Skeleton (Every page must follow this)
+
+The global layout has a fixed Top Bar at the top and no sidebar.
+All pages render inside the workspace area below the Top Bar.
+
 ```tsx
 "use client";
 import { supabase } from "@/lib/supabase";
@@ -52,69 +62,120 @@ import TopBar from "@/components/TopBar";
 export default function MyPage() {
   const { profile, activeClinicId: clinicId } = useClinic();
   return (
+    // Top Bar is rendered once in the root layout — do NOT render it per-page
     <div className="min-h-screen" style={{ background: "var(--bg)" }}>
-      <TopBar />
       <div className="max-w-7xl mx-auto px-6 py-8">
-        {/* content */}
+        {/* Page Header */}
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <nav className="text-sm text-[var(--text-secondary)] mb-1">
+              {/* Breadcrumb: Home / Module / Page */}
+            </nav>
+            <h1 className="text-2xl font-semibold text-[var(--text-primary)]">
+              Page Title
+            </h1>
+          </div>
+          <div className="flex gap-3">
+            {/* Primary action button */}
+          </div>
+        </div>
+        {/* Toolbar — filters, search, secondary actions */}
+        {/* Main content */}
       </div>
     </div>
   );
 }
 ```
 
+**Root layout structure (`app/layout.tsx`):**
+```tsx
+<body>
+  <TopBar />                    {/* fixed top, z-50 */}
+  <main className="pt-16">     {/* padding-top = TopBar height */}
+    {children}
+  </main>
+  <CommandBar />                {/* portal, rendered globally */}
+  <NotificationCenter />        {/* portal */}
+</body>
+```
+
 ---
 
-## PART 3 — DESIGN SYSTEM (LOCKED)
+## PART 3 — DESIGN SYSTEM (LOCKED — v2.0)
 
-**Decision: Gold/Linen theme is the confirmed identity. Navy theme from MASTER_PLAN is rejected.**
+**Decision: Navy/White SaaS theme. Replaces the previous Gold/Linen theme.**
 
-The entire codebase uses Gold/Linen. Switching to Navy would require rebuilding every component. Gold is more premium for an aesthetics brand.
+The UI must match modern SaaS clinic software (Mangomint/Zenoti tier). Navy communicates authority and clinical professionalism. The full codebase will be migrated to use CSS variables so a single token change propagates everywhere.
 
-### Color Tokens
-| Token | Value | Usage |
-|---|---|---|
-| `--gold` | `#C5A059` | Primary buttons, active states, borders, accents |
-| `--gold-light` | `#D4B476` | Hover states |
-| `--gold-dark` | `#A8863E` | Pressed states |
-| `--bg` | `#F9F7F2` | Page background (Linen) |
-| `--surface` | `#FFFFFF` | Cards, modals, drawers |
-| `--text-primary` | `#1A1A1A` | Headings |
-| `--text-secondary` | `#6B7280` | Labels, metadata |
-| `--border` | `#E5E0D8` | Dividers, input borders |
-| `--success` | `#16A34A` | Paid, completed, active |
-| `--warning` | `#D97706` | Pending, partial |
-| `--danger` | `#DC2626` | Error, cancelled, overdue |
-| `--info` | `#2563EB` | Info states |
+### CSS Variables (set in `globals.css` `:root`)
+```css
+:root {
+  --primary:        #0B2A4A;   /* Navy — primary buttons, active nav, accents */
+  --primary-hover:  #1F4E79;   /* Navy hover */
+  --primary-light:  #2E6CB8;   /* Accent blue — links, icons, secondary actions */
+  --primary-subtle: #EFF4FB;   /* Light blue tint — hover backgrounds, badges */
+
+  --bg:             #F7F9FC;   /* Near-white page background */
+  --surface:        #FFFFFF;   /* Cards, modals, drawers, panels */
+  --surface-muted:  #F1F5F9;   /* Muted surface — table rows alt, input bg */
+
+  --text-primary:   #0F172A;   /* Near-black headings */
+  --text-secondary: #64748B;   /* Slate — labels, metadata, placeholder */
+  --text-inverse:   #FFFFFF;   /* Text on dark/navy backgrounds */
+
+  --border:         #E2E8F0;   /* Dividers, input borders */
+  --border-strong:  #CBD5E1;   /* Stronger border for active/focused */
+
+  --success:        #16A34A;   /* Paid, completed, active, present */
+  --success-bg:     #F0FDF4;   /* Success badge background */
+  --warning:        #D97706;   /* Pending, partial, half-day */
+  --warning-bg:     #FFFBEB;   /* Warning badge background */
+  --danger:         #DC2626;   /* Error, cancelled, overdue, absent */
+  --danger-bg:      #FEF2F2;   /* Danger badge background */
+  --info:           #2563EB;   /* Info, confirmed, in-progress */
+  --info-bg:        #EFF6FF;   /* Info badge background */
+  --neutral:        #6B7280;   /* No-show, expired, draft */
+  --neutral-bg:     #F9FAFB;   /* Neutral badge background */
+}
+```
 
 ### Typography
-| Element | Font | Size | Weight |
-|---|---|---|---|
-| Page title | Georgia | 24px | 600 |
-| Section title | Georgia | 18px | 600 |
-| Card title | Inter/system | 15px | 600 |
-| Body | Inter/system | 14px | 400 |
-| Table cell | Inter/system | 13px | 400 |
-| Badge/label | Inter/system | 11px | 500 |
+| Element | Font Stack | Size | Weight | Color |
+|---|---|---|---|---|
+| Page title | Inter, -apple-system, sans-serif | 24px | 700 | `--text-primary` |
+| Section title | Inter | 18px | 600 | `--text-primary` |
+| Card title | Inter | 15px | 600 | `--text-primary` |
+| Body text | Inter | 14px | 400 | `--text-primary` |
+| Table cell | Inter | 13px | 400 | `--text-primary` |
+| Label / caption | Inter | 12px | 500 | `--text-secondary` |
+| Badge text | Inter | 11px | 600 | varies |
+
+Georgia/serif is **removed** from the design system entirely.
 
 ### Component Rules
-- **Buttons**: Primary = gold bg + white text, rounded-lg. Secondary = white bg + gold border + gold text.
-- **Cards**: white bg, rounded-xl, subtle shadow (`shadow-sm`), border `var(--border)`.
-- **Modals**: Centered overlay, rounded-2xl, max-w-2xl default.
-- **Drawers**: Slide from right, w-[480px] default, w-[720px] for complex forms.
-- **Tables**: Striped rows (`bg-gray-50` alternate), sticky header, hover highlight.
-- **Badges**: Rounded-full, color-coded per status (see status colors below).
-- **Skeleton loaders**: Required on every data-loading state. Never blank screens.
-- **Error states**: Show retry button. Never silent failures.
+- **Buttons — Primary**: `bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] rounded-lg px-4 py-2 font-medium`
+- **Buttons — Secondary**: `bg-white text-[var(--primary)] border border-[var(--primary)] hover:bg-[var(--primary-subtle)] rounded-lg`
+- **Buttons — Danger**: `bg-[var(--danger)] text-white hover:opacity-90 rounded-lg`
+- **Cards**: `bg-white rounded-xl shadow-sm border border-[var(--border)]`
+- **Modals**: Centered overlay with navy header bar, `rounded-2xl`, `max-w-2xl` default, `max-w-4xl` for complex
+- **Drawers**: Slide from right, `w-[480px]` default, `w-[720px]` for complex forms. Navy header stripe.
+- **Tables**: `bg-[var(--surface-muted)]` alternate rows, sticky header with navy background, hover highlight
+- **Input fields**: `border border-[var(--border)] rounded-lg focus:border-[var(--primary)] focus:ring-1 focus:ring-[var(--primary)]`
+- **Badges**: `rounded-full text-xs font-semibold px-2 py-0.5` — use `--success-bg/--success` pair etc.
+- **Skeleton loaders**: Required on every data-loading state. Use `animate-pulse bg-[var(--surface-muted)]`. Never blank screens.
+- **Error states**: Show retry button with `--danger` color. Never silent failures.
+- **Top Bar**: `bg-[var(--primary)] text-white h-16 fixed top-0 left-0 right-0 z-50`
+- **Active nav item**: `bg-white/10 rounded-md`
 
-### Status Color System
-| Status | Badge Color |
+### Status Badge System
+| Status | Badge Classes |
 |---|---|
-| Active / Paid / Completed | Green |
-| Pending / Partial / Planned | Amber |
-| Cancelled / Overdue / Lost | Red |
-| Confirmed / In Progress | Blue |
-| No Show / Expired | Gray |
-| Draft | Light purple |
+| Active / Paid / Completed / Present | `bg-[var(--success-bg)] text-[var(--success)]` |
+| Pending / Partial / Planned / Warning | `bg-[var(--warning-bg)] text-[var(--warning)]` |
+| Cancelled / Overdue / Lost / Danger | `bg-[var(--danger-bg)] text-[var(--danger)]` |
+| Confirmed / In Progress / Info | `bg-[var(--info-bg)] text-[var(--info)]` |
+| No Show / Expired / Neutral | `bg-[var(--neutral-bg)] text-[var(--neutral)]` |
+| Draft | `bg-purple-50 text-purple-600` |
 
 ---
 
@@ -184,45 +245,84 @@ This is enforced at API level via role check, not just UI hiding.
 
 ## PART 6 — NAVIGATION & LAYOUT
 
-### Current Layout (Sidebar) — Keep As Is
-The sidebar navigation is established and users are familiar with it. Do NOT migrate to top-bar navigation — this would require rebuilding the entire layout. The sidebar is mobile-responsive.
+### Layout: Top Bar Navigation (v2.0 Override)
 
-### Sidebar Structure (Confirmed)
+The sidebar is replaced by a fixed Top Bar. This is the primary navigation pattern.
+
+**Top Bar Layout (desktop):**
 ```
-MAIN
-  Dashboard
-  Patients
-  Scheduler
-  Billing
-  Membership
-  Counselling
-  CRM
-  Staff HR
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ [A] Aesthetica  [Clinic ▼]  Dashboard  Patients  Scheduler  Billing  CRM   │
+│                             Reports  [Apps ⊞]  [⌘K Search...]  [🔔]  [P▼] │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-ADMIN
-  Reports
-  Form Builder
-  Webhooks
-  Plugins
-  Payroll
-  Simulator (dev)
+**Top Bar Component (`components/TopBar.tsx`) elements:**
+1. **Logo + Wordmark** — left side, links to `/`
+2. **Clinic Switcher** — dropdown showing active clinic name; chain_admin/superadmin can switch
+3. **Primary Nav Links** — Dashboard, Patients, Scheduler, Billing, CRM, Reports
+4. **Apps Menu** — grid icon opens a module grid overlay (see below)
+5. **Command Bar trigger** — `⌘K` pill button, opens CommandBar
+6. **Notification Bell** — `🔔` with unread count badge
+7. **Profile Menu** — initials avatar dropdown: Profile, Settings, Switch Role, Sign Out
 
-SETTINGS
-  Services
-  Settings
+**Apps Menu Grid (click ⊞):**
+```
+PATIENT MANAGEMENT     OPERATIONS          SALES
+  Patients               Scheduler           CRM
+  Medical Records        Rooms               Counselling
+  Intake Portal          Inventory           Packages
+
+FINANCE                ADMIN               SETTINGS
+  Billing                Staff HR            Services
+  Memberships            Payroll             Integrations
+  Wallet                 God Mode            Webhooks
+                         Form Builder
+                         Reports
+                         Simulator
+```
+
+**TopBar accepts NO props** — `<TopBar />` only. All data comes from context.
+
+**TopBar is NOT rendered per-page.** It is rendered once in `app/layout.tsx` and all pages sit in `<main className="pt-16">`.
+
+### Mobile Navigation (Bottom Bar)
+On viewport `< 768px`, the Top Bar collapses and a bottom navigation bar appears:
+```
+[Home]  [Patients]  [Scheduler]  [CRM]  [Apps]
+```
+
+### Tablet Navigation
+Top Bar stays. Clinic name truncates. Primary nav shows 4 items; overflow goes to Apps.
+
+### Breadcrumb (per page)
+Every page shows a breadcrumb below the Top Bar:
+```
+Dashboard / Patients / Rahul Sharma
+```
+Implemented as a `<Breadcrumb>` component, passed via page-level `<PageHeader>` component.
+
+### Page Structure Pattern
+Every module page follows this structure:
+```
+[Top Bar — fixed, from layout]
+[Page Header — breadcrumb + title + primary action button]
+[Toolbar — filters, search, sort, export]
+[Content — table / cards / scheduler / form]
+[Footer actions — where applicable]
 ```
 
 ### Command Bar (Cmd+K) — TO BE BUILT
 A global command palette triggered by `Cmd+K` (Mac) / `Ctrl+K` (Windows).
 
 **Capabilities:**
-1. **Navigation** — jump to any module
+1. **Navigation** — jump to any module instantly
 2. **Quick Create** — New Patient, New Appointment, New Invoice, New Lead
-3. **Search** — across patients (name, phone), invoices (number), appointments
+3. **Search** — live results across patients (name, phone), invoices (number), appointments
 
 **Role-aware:** shows only commands the user has permission to execute.
 
-**Implementation:** `components/CommandBar.tsx` using a modal overlay with `cmdk` library or custom implementation with keyboard navigation (↑↓ arrows, Enter to select, Esc to close).
+**Implementation:** `components/CommandBar.tsx` — modal portal, keyboard navigable (↑↓ arrows, Enter to select, Esc to close), results debounced 200ms, max 5 per category.
 
 **Must open in < 100ms.**
 
@@ -256,6 +356,7 @@ A global command palette triggered by `Cmd+K` (Mac) / `Ctrl+K` (Windows).
 | Workflow Designer | LIVE | 50 templates, DLQ, dry-run |
 | God Mode | LIVE | Clinics, plans, dev panel, demo manager |
 | Integration Simulator | LIVE | Razorpay, Meta, Google, WhatsApp mocks |
+| Top Bar Navigation | MISSING | Replace sidebar — rebuild TopBar + root layout |
 | Command Bar (Cmd+K) | MISSING | Build per Section 9.10 |
 | Room Management | MISSING | Rooms as entities, Room View in scheduler |
 | Proforma Lifecycle | MISSING | Draft/Approved/Converted/Expired |
@@ -488,26 +589,66 @@ workflow_action_log   id, rule_id, clinic_id, action_type,
 
 ### Tables To Be Created (MISSING)
 ```
-rooms                 id, clinic_id, name, type, capacity, is_active
+rooms                 id, clinic_id, name, type, capacity, is_active,
+                      metadata JSONB DEFAULT '{}'
                       (entities for Room View scheduler)
-
-proforma_invoices     DECISION: reuse pending_invoices.invoice_type='proforma'
-                      but add status column:
-                      ALTER TABLE pending_invoices
-                      ADD COLUMN proforma_status
-                        TEXT CHECK (proforma_status IN
-                        ('draft','approved','converted','expired'))
-                        DEFAULT NULL;
-                      (NULL = regular invoice, not a proforma)
 
 patient_tags          id, clinic_id, patient_id, tag, created_by, created_at
 
 purchase_orders       id, clinic_id, vendor_id, status, items (JSONB),
-                      total_amount, ordered_at, received_at
+                      total_amount, ordered_at, received_at,
+                      metadata JSONB DEFAULT '{}'
 
 service_consumables   id, service_id, inventory_product_id,
                       quantity_per_session
                       (links services to inventory for auto-deduction)
+
+clinic_feature_flags  id, clinic_id, flag_key, is_enabled, config JSONB DEFAULT '{}'
+                      UNIQUE(clinic_id, flag_key)
+                      (granular per-clinic behavioral flags — see Part 16)
+```
+
+### Column Alterations Required (MISSING)
+```sql
+-- Proforma lifecycle
+ALTER TABLE pending_invoices
+  ADD COLUMN proforma_status TEXT
+    CHECK (proforma_status IN ('draft','approved','converted','expired'))
+    DEFAULT NULL;
+
+-- Counsellor Claim System
+ALTER TABLE counselling_sessions
+  ADD COLUMN claimed_by UUID REFERENCES profiles(id) DEFAULT NULL,
+  ADD COLUMN claimed_at TIMESTAMPTZ DEFAULT NULL,
+  ADD COLUMN claim_status TEXT
+    CHECK (claim_status IN ('unclaimed','claimed','admin_override'))
+    DEFAULT 'unclaimed';
+
+-- HSN/SAC on services
+ALTER TABLE services
+  ADD COLUMN hsn_sac_code VARCHAR(8) DEFAULT NULL,
+  ADD COLUMN gst_category TEXT
+    CHECK (gst_category IN ('exempt','5%','12%','18%','28%'))
+    DEFAULT '18%';
+
+-- HSN/SAC on invoice line items
+ALTER TABLE invoice_line_items
+  ADD COLUMN hsn_sac_code VARCHAR(8) DEFAULT NULL;
+
+-- Room assignment on appointments
+ALTER TABLE appointments
+  ADD COLUMN room_id UUID REFERENCES rooms(id) DEFAULT NULL;
+
+-- JSONB metadata on all core tables (see Part 16)
+ALTER TABLE patients              ADD COLUMN metadata JSONB DEFAULT '{}';
+ALTER TABLE appointments          ADD COLUMN metadata JSONB DEFAULT '{}';
+ALTER TABLE pending_invoices      ADD COLUMN metadata JSONB DEFAULT '{}';
+ALTER TABLE clinical_encounters   ADD COLUMN metadata JSONB DEFAULT '{}';
+ALTER TABLE crm_leads             ADD COLUMN metadata JSONB DEFAULT '{}';
+ALTER TABLE counselling_sessions  ADD COLUMN metadata JSONB DEFAULT '{}';
+ALTER TABLE services              ADD COLUMN metadata JSONB DEFAULT '{}';
+ALTER TABLE inventory_products    ADD COLUMN metadata JSONB DEFAULT '{}';
+ALTER TABLE profiles              ADD COLUMN metadata JSONB DEFAULT '{}';
 ```
 
 ---
@@ -610,17 +751,26 @@ Planned → Confirmed → Arrived → Consultation Done → Treatment Done → C
 3. **Day / Week / Month toggle** — current (keep)
 4. **List View** — for reception call list (TO BE BUILT)
 
-#### Walk-in Button (Missing)
-Top of scheduler: `+ Walk-in` button.
-Flow:
-1. Select/create patient
-2. Auto-assigns to next available slot for selected doctor
-3. Creates appointment with status = `arrived`
+#### Walk-in Button — Force-Overlap (Missing)
+Top of scheduler: `+ Walk-in` button. Walk-ins are **force-overlapped** — they bypass all conflict checks with no warning and no confirmation dialog.
 
-#### Double Booking
-Allow overlapping appointments on same doctor/room.
-Show warning: "Doctor already has an appointment at this time. Proceed?" with Confirm / Cancel.
-Do NOT block — just warn.
+**Force-Overlap logic:**
+- Walk-in appointment is created immediately, regardless of whether the doctor/room slot is already occupied.
+- No warning shown. No confirmation required. This matches real Indian clinic chaos where walk-ins cannot be turned away.
+- Walk-in appointment is created with status = `arrived` and visually rendered as an **orange stacked card** on the scheduler.
+- The `create_appointment_safe` RPC's conflict check is **bypassed** for walk-ins. Use a direct insert with service role.
+
+**Walk-in Flow:**
+1. Staff clicks `+ Walk-in` button
+2. Mini form opens: Patient (search/create) + Doctor + Service (optional)
+3. System auto-fills start_time = now, end_time = now + service.duration_minutes (default 15min)
+4. Appointment created immediately — no slot validation
+5. Card appears on scheduler with orange color + "Walk-in" badge
+
+#### Double Booking (Regular Appointments)
+Regular (non-walk-in) appointments show a warning on conflict but allow override.
+Show: "Dr [Name] already has an appointment at this time. Proceed anyway?" with Confirm / Cancel.
+Do NOT block — just warn. Walk-ins never show this warning (Force-Overlap).
 
 #### Appointment Card (each card shows)
 - Patient name
@@ -694,10 +844,40 @@ NULL          = regular invoice (not a proforma)
 - Patient agrees → Convert to Invoice button → creates real invoice, sets proforma_status = converted
 - Validity expires (cron or check on load) → status = expired
 
+**Counsellor Claim System (New Logic):**
+
+When a doctor sends a patient to counselling, the session appears as **Unclaimed** in the counselling dashboard. Any available counsellor in the clinic can **Claim** it. Once claimed:
+- Only the claiming counsellor can edit the session notes, pipeline stage, and proforma.
+- Other counsellors see the session as locked (read-only with "Claimed by [Name]" label).
+- Clinic admin can **Override Claim** to reassign to a different counsellor.
+- If unclaimed for > 30 minutes, a notification fires to all counsellors: "Patient waiting for counsellor."
+
+**DB change:**
+```sql
+ALTER TABLE counselling_sessions
+  ADD COLUMN claimed_by UUID REFERENCES profiles(id) DEFAULT NULL,
+  ADD COLUMN claimed_at TIMESTAMPTZ DEFAULT NULL,
+  ADD COLUMN claim_status TEXT
+    CHECK (claim_status IN ('unclaimed', 'claimed', 'admin_override'))
+    DEFAULT 'unclaimed';
+```
+
+**API routes:**
+```
+POST /api/counselling/claim       Counsellor claims a session
+POST /api/counselling/unclaim     Admin overrides / releases claim
+```
+
+**UI — Counselling Dashboard:**
+- Shows two columns: **Unclaimed** (red border, pulsing dot) and **My Sessions** (claimed by me)
+- Unclaimed cards have a prominent `[ Claim ]` button
+- Claimed-by-others cards are grayed out with a lock icon
+
 **Counsellor Restrictions:**
 - Can create proforma
 - Cannot create invoice
 - Cannot collect payment
+- Cannot edit another counsellor's claimed session
 - These are enforced at API level
 
 ---
@@ -723,10 +903,47 @@ void (manual)
 
 Split payments supported — multiple `invoice_payments` rows per invoice.
 
-#### GST
-- GST % configurable per line item
-- Total GST shown separately on invoice
-- GSTR-1 HSN/SAC export (MISSING — P2)
+#### GST & HSN/SAC (Mandatory)
+
+HSN/SAC codes are **mandatory** on every invoice line item for GST compliance (GSTR-1 filing). This is not optional — it is a legal requirement for clinics above the GST threshold.
+
+**DB changes:**
+```sql
+-- Add to services table (default HSN/SAC per service type)
+ALTER TABLE services
+  ADD COLUMN hsn_sac_code VARCHAR(8) DEFAULT NULL,
+  ADD COLUMN gst_category TEXT
+    CHECK (gst_category IN ('exempt','5%','12%','18%','28%'))
+    DEFAULT '18%';
+
+-- Add to invoice_line_items (required, not nullable for invoices)
+ALTER TABLE invoice_line_items
+  ADD COLUMN hsn_sac_code VARCHAR(8) DEFAULT NULL;
+```
+
+**Enforcement:**
+- When creating an invoice line item, `hsn_sac_code` is **required**. If the service has a default HSN/SAC code, it is auto-populated. If not, the billing staff must enter it before saving.
+- Proforma invoices: HSN/SAC required on conversion to invoice, not on draft creation.
+- API route `POST /api/billing/invoice` returns 400 if any line item is missing `hsn_sac_code`.
+
+**Default HSN/SAC codes for aesthetic services:**
+| Service Category | HSN/SAC | GST Rate |
+|---|---|---|
+| Consultation / Doctor Services | 999311 | 0% (exempt) |
+| Laser / Aesthetic Procedures | 999316 | 18% |
+| Facials / Skincare Treatments | 999721 | 18% |
+| Dermatology / Medical Services | 999312 | 5% |
+| Retail Products | varies by product | 12–18% |
+
+**GSTR-1 Export:**
+- Report at `/admin/reports` → "GSTR-1 Export"
+- Groups line items by HSN/SAC code with aggregate taxable value and GST amount
+- Downloadable as CSV in GSTR-1 format
+
+**GST rules:**
+- GST % configurable per service (pulled from `services.gst_category`)
+- Total GST shown as separate line on invoice (CGST + SGST split for intrastate, IGST for interstate)
+- Reverse charge: supported via `is_reverse_charge` boolean on invoice (future)
 
 #### Discount Approval Flow (LIVE)
 1. Staff requests discount → OTP sent to clinic admin
@@ -933,39 +1150,57 @@ These are flows that exist in the UI but don't work end-to-end correctly.
 
 **Fix:** Migration to add new status values (see Section 9.6).
 
+### P0-7: Walk-in Force-Overlap
+**Broken:** Walk-ins go through `create_appointment_safe` which performs conflict check and may fail or warn.
+
+**Fix:** Walk-in route `POST /api/appointments/walkin` uses a direct insert (bypasses conflict RPC). Sets `is_walkin = true` on appointment. Scheduler renders it with orange color.
+```sql
+ALTER TABLE appointments ADD COLUMN is_walkin BOOLEAN DEFAULT false;
+```
+
+### P0-8: Counsellor Claim System
+**Missing:** Multiple counsellors can simultaneously work on the same patient's counselling session, creating data conflicts.
+
+**Fix:** Add `claimed_by`, `claimed_at`, `claim_status` columns to `counselling_sessions`. Build Claim/Unclaim UI and API routes (see Section 9.4).
+
 ---
 
 ## PART 11 — FEATURE BUILD QUEUE (By Priority)
 
 ### P1 — High Priority (Build After P0 Fixes)
-1. Command Bar (Cmd+K) — `components/CommandBar.tsx`
-2. Appointment Room View — `rooms` table + scheduler tab
-3. Walk-in Button in scheduler
-4. Patient Packages tab (dedicated)
-5. Patient Activity Timeline tab
-6. Patient Documents tab
-7. Doctor Queue View
-8. Patient Tags (`patient_tags` table + UI)
-9. Duplicate Patient Detection on create
+1. **Top Bar Navigation** — rebuild `components/TopBar.tsx` + Apps Menu + update `app/layout.tsx`
+2. **Navy/White theme migration** — update `globals.css` CSS variables, sweep all hardcoded hex colors
+3. **Command Bar (Cmd+K)** — `components/CommandBar.tsx`
+4. **HSN/SAC on services + line items** — DB migration + validation in billing UI
+5. Appointment Room View — `rooms` table + scheduler tab
+6. Walk-in Force-Overlap button in scheduler
+7. Patient Packages tab (dedicated)
+8. Patient Activity Timeline tab
+9. Patient Documents tab
+10. Doctor Queue View
+11. Patient Tags (`patient_tags` table + UI)
+12. Duplicate Patient Detection on create
 
 ### P2 — Medium Priority
-10. Service Consumables auto-deduction (`service_consumables` table + `consume_session()` update)
-11. GSTR-1 / HSN-SAC report
-12. CRM campaign segment targeting UI (currently only template, no segment builder)
-13. List View in scheduler (for reception call list)
-14. Appointment drag-and-drop rescheduling
-15. Bulk rescheduling (doctor unavailable → move all appointments)
-16. Patient Blacklist feature
+13. Service Consumables auto-deduction (`service_consumables` table + `consume_session()` update)
+14. GSTR-1 HSN/SAC report (CSV export in GSTR-1 format)
+15. CRM campaign segment targeting UI (currently only template, no segment builder)
+16. List View in scheduler (for reception call list)
+17. Appointment drag-and-drop rescheduling
+18. Bulk rescheduling (doctor unavailable → move all appointments)
+19. Patient Blacklist feature
+20. System Health Monitor tab in God Mode (see Part 16)
+21. Granular Feature Flags UI in God Mode (see Part 16)
 
 ### P3 — Polish / Nice-to-Have
-17. Purchase Orders workflow
-18. Mobile bottom navigation bar
-19. Smart conflict warnings (room/doctor)
-20. Superadmin: Create Organization/Chain from UI
-21. Appointment buffer time configuration per service
-22. Doctor availability schedule builder
-23. AI command suggestions in Command Bar
-24. Patient lifetime value tracking
+22. Purchase Orders workflow
+23. Mobile bottom navigation bar
+24. Smart room/doctor conflict warnings
+25. Superadmin: Create Organization/Chain from UI
+26. Appointment buffer time configuration per service
+27. Doctor availability schedule builder
+28. AI command suggestions in Command Bar
+29. Patient lifetime value tracking
 
 ---
 
@@ -1017,10 +1252,16 @@ POST /api/workflows/dry-run       Test a rule without executing
 ```
 GET  /api/rooms                   List rooms for clinic
 POST /api/rooms                   Create room
-POST /api/appointments/walkin     Quick walk-in flow
+POST /api/appointments/walkin     Force-overlap walk-in (bypasses conflict check)
 POST /api/proforma/convert        Convert proforma → invoice
 PATCH /api/proforma/[id]/approve  Approve proforma (admin)
-POST /api/counselling/refer       Doctor → counsellor handoff
+POST /api/counselling/refer       Doctor → counsellor handoff (creates unclaimed session)
+POST /api/counselling/claim       Counsellor claims a session
+POST /api/counselling/unclaim     Admin overrides claim
+GET  /api/billing/gstr1           GSTR-1 export (HSN/SAC grouped, CSV)
+GET  /api/health                  System health check (for God Mode monitor)
+GET  /api/admin/feature-flags     List clinic_feature_flags
+PUT  /api/admin/feature-flags     Upsert a clinic feature flag
 ```
 
 ---
@@ -1068,40 +1309,59 @@ Do NOT start implementation until this plan is reviewed and approved.
 Once approved, implement in this exact order:
 
 ```
-PHASE A — Critical Fixes (P0 Broken Flows)
+PHASE A — Critical DB Migrations (run first, unblocks everything)
   A1. DB migration: add appointment statuses (consultation_done, treatment_done)
   A2. DB migration: add CRM stages (appointment_booked, visited)
   A3. DB migration: add proforma_status column to pending_invoices
-  A4. Fix Doctor → Counsellor handoff flow
-  A5. Build Proforma lifecycle (approve / convert / expire)
-  A6. Fix Counsellor payment restriction at API level
-  A7. Fix CRM auto-stage sync on appointment creation
+  A4. DB migration: add counselling_sessions claim columns
+  A5. DB migration: add is_walkin column to appointments
+  A6. DB migration: add hsn_sac_code + gst_category to services
+  A7. DB migration: add hsn_sac_code to invoice_line_items
+  A8. DB migration: add metadata JSONB to 9 core tables
+  A9. DB migration: create clinic_feature_flags table
+  A10. DB migration: create rooms table
 
-PHASE B — High Impact New Features (P1)
-  B1. Command Bar (Cmd+K)
-  B2. Walk-in Button in scheduler
-  B3. Patient: Packages tab
-  B4. Patient: Activity Timeline tab
-  B5. Patient: Documents tab
-  B6. Patient Tags
-  B7. Duplicate Patient Detection
-  B8. Room Management + Room View in scheduler
-  B9. Doctor Queue View
+PHASE B — Logic Fixes (P0 Broken Flows)
+  B1. Fix Doctor → Counsellor handoff (notification + session creation)
+  B2. Build Proforma lifecycle (approve / convert / expire)
+  B3. Fix Counsellor payment restriction at API level
+  B4. Fix CRM auto-stage sync on appointment creation
+  B5. Build Counsellor Claim System (API + UI)
+  B6. Build Walk-in Force-Overlap (API route + scheduler button)
 
-PHASE C — Medium Priority (P2)
-  C1. Service Consumables auto-deduction
-  C2. GSTR-1 / HSN-SAC report
-  C3. CRM campaign segment builder
-  C4. List View in scheduler
-  C5. Appointment drag-and-drop
-  C6. Patient Blacklist
+PHASE C — Visual Overhaul (P1 — Design)
+  C1. Update globals.css with Navy/White CSS variables
+  C2. Rebuild TopBar.tsx — Navy bg, top nav links, Apps Menu grid, Clinic Switcher
+  C3. Update app/layout.tsx — TopBar in root, main pt-16, remove sidebar
+  C4. Sweep all pages — replace hardcoded hex colors with CSS variables
+  C5. Build CommandBar.tsx (Cmd+K)
+  C6. Mobile bottom nav bar
 
-PHASE D — Polish (P3)
-  D1. Purchase Orders
-  D2. Mobile bottom nav
-  D3. Smart conflict warnings
-  D4. Doctor availability schedule builder
-  D5. Superadmin org/chain creator
+PHASE D — High Impact Features (P1 — Features)
+  D1. HSN/SAC mandatory validation in billing UI + GSTR-1 export
+  D2. Room Management — CRUD + Room View tab in scheduler
+  D3. Patient: Packages tab
+  D4. Patient: Activity Timeline tab
+  D5. Patient: Documents tab
+  D6. Patient Tags (patient_tags table + header chips + filter)
+  D7. Duplicate Patient Detection on create
+  D8. Doctor Queue View
+
+PHASE E — Medium Priority (P2)
+  E1. Service Consumables auto-deduction
+  E2. System Health Monitor tab in God Mode
+  E3. Granular Feature Flags UI in God Mode
+  E4. CRM campaign segment builder
+  E5. List View in scheduler
+  E6. Appointment drag-and-drop
+  E7. Patient Blacklist
+
+PHASE F — Polish (P3)
+  F1. Purchase Orders
+  F2. Smart conflict warnings
+  F3. Doctor availability schedule builder
+  F4. Superadmin org/chain creator
+  F5. AI command suggestions in Command Bar
 ```
 
 ---
@@ -1110,15 +1370,194 @@ PHASE D — Polish (P3)
 
 | Decision | Choice | Reason |
 |---|---|---|
-| Color theme | Gold/Linen (`#C5A059` / `#F9F7F2`) | Entire codebase uses this; Navy would require full rebuild |
-| Navigation | Sidebar (existing) | Established, mobile-responsive; top-bar migration not worth disruption |
+| Color theme | **Navy/White** (`#0B2A4A` / `#F7F9FC`) | v2.0 override — SaaS-grade clinical look, CSS variables make migration clean |
+| Navigation | **Top Bar** (rebuild required) | v2.0 override — modern SaaS pattern, mobile bottom bar for small screens |
 | Proforma storage | Extend `pending_invoices` with `proforma_status` | Avoids duplicate table; same query patterns |
 | CRM stages | Extend existing enum with 2 new values | Backward compatible migration |
 | Room View | New `rooms` table + `room_id` FK on `appointments` | Clean entity-based approach |
-| Double booking | Allow with warning | Matches real Indian clinic behavior |
+| Walk-in behavior | **Force-Overlap** — bypass conflict check entirely | Matches real Indian clinic chaos; walk-ins cannot be turned away |
+| Double booking (regular) | Allow with warning | Matches real Indian clinic behavior |
 | Counsellor restriction | API-level check (not just UI) | Security — UI hiding is not a security control |
+| Counsellor concurrency | **Claim System** — one counsellor per session | Prevents data conflicts when multiple counsellors are active |
+| HSN/SAC codes | **Mandatory** on all invoice line items | Legal GST compliance requirement |
+| JSONB metadata | Added to 9 core tables | Extensibility without schema migrations |
+| Granular flags | `clinic_feature_flags` table | Per-clinic behavioral overrides beyond module toggles |
+
+---
+
+## PART 16 — SCALING & STABILITY
+
+### 16.1 — Granular Feature Flags
+
+Beyond module-level on/off (`clinic_modules`), clinics need **behavioral flags** — fine-grained settings that control how a feature works, not just whether it's active.
+
+**Table:** `clinic_feature_flags`
+```sql
+CREATE TABLE clinic_feature_flags (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  clinic_id       UUID NOT NULL REFERENCES clinics(id) ON DELETE CASCADE,
+  flag_key        TEXT NOT NULL,
+  is_enabled      BOOLEAN NOT NULL DEFAULT true,
+  config          JSONB NOT NULL DEFAULT '{}',
+  set_by          UUID REFERENCES profiles(id),
+  set_at          TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(clinic_id, flag_key)
+);
+```
+
+**Standard flags (seeded for every clinic on creation):**
+| Flag Key | Default | Description |
+|---|---|---|
+| `allow_walkin_overlap` | `true` | Walk-ins force-overlap without warning |
+| `require_hsn_sac` | `true` | Block invoice save if HSN/SAC missing |
+| `counsellor_claim_required` | `true` | Counselling sessions must be claimed before editing |
+| `discount_otp_required` | `true` | OTP required for any manual discount |
+| `max_discount_pct` | `config: {max: 30}` | Maximum discount a staff can request |
+| `allow_double_booking` | `true` | Regular appointments can overlap with warning |
+| `proforma_approval_required` | `false` | Proforma must be approved by admin before counsellor can share |
+| `session_expiry_days` | `config: {days: 365}` | Default expiry for purchased service credits |
+| `walkin_auto_checkin` | `true` | Walk-ins start as `arrived` automatically |
+| `notify_counsellor_on_refer` | `true` | Fire notification to counsellors on doctor handoff |
+
+**Usage in code:**
+```ts
+// Server-side check
+const { data: flag } = await supabaseAdmin
+  .from("clinic_feature_flags")
+  .select("is_enabled, config")
+  .eq("clinic_id", clinicId)
+  .eq("flag_key", "require_hsn_sac")
+  .maybeSingle();
+
+const requireHsn = flag?.is_enabled ?? true;
+```
+
+**God Mode UI:** Superadmin can view and override any flag for any clinic in the "Dev Panel" tab. Each clinic can also configure their own flags in Settings → Clinic Preferences.
+
+---
+
+### 16.2 — System Health Monitor (God Mode Tab 5)
+
+A new **"Health"** tab in God Mode (`/admin/god-mode`) shows real-time and recent system status across all clinics.
+
+**Sections:**
+
+**Database Health**
+- Connection pool usage (Supabase dashboard API)
+- Slowest queries (last 1h from `pg_stat_statements`)
+- Table sizes and dead row counts
+- Pending migrations vs applied migrations
+
+**Application Health**
+- Failed webhook deliveries in last 24h (from `webhook_deliveries` where `status='failed'`)
+- DLQ items pending resolution (from `workflow_dlq` where `status='pending'`)
+- Recent API errors (from `audit_logs` where `action LIKE 'error.%'`)
+
+**Feature Usage**
+- Top 10 most-used modules (from `feature_usage_log`)
+- Clinics with zero activity in last 30 days
+- Trial clinics expiring in next 7 days
+
+**Notifications & Realtime**
+- Unread notification backlog per clinic
+- Realtime subscription status (can check if Supabase Realtime channel is connected)
+
+**Implementation:**
+- `app/admin/god-mode/page.tsx` — add Tab 5 "Health"
+- `GET /api/health` route returns JSON summary of all health signals
+- Auto-refreshes every 60 seconds on the page
+- Red/amber/green status indicators per section
+
+---
+
+### 16.3 — JSONB Metadata on Core Tables
+
+Every core entity table has a `metadata JSONB DEFAULT '{}'` column. This enables:
+- Plugins to store extra data without schema changes
+- Workflow rules to attach custom attributes
+- Future AI features to store computed signals
+- Integration systems to attach external IDs
+
+**Tables with metadata column (migrations in Part 8):**
+```
+patients, appointments, pending_invoices, clinical_encounters,
+crm_leads, counselling_sessions, services, inventory_products, profiles
+```
+
+**Convention:**
+- Keys are namespaced: `{ "razorpay": { "order_id": "..." }, "meta": { "lead_id": "..." } }`
+- Never store PHI (personal health information) in metadata — use proper typed columns for clinical data
+- Metadata is indexed with GIN: `CREATE INDEX ON tablename USING GIN (metadata)`
+
+**Usage pattern:**
+```ts
+// Write
+await supabase.from("appointments")
+  .update({ metadata: { razorpay: { payment_id: "pay_abc123" } } })
+  .eq("id", appointmentId);
+
+// Read specific key
+const { data } = await supabase.from("appointments")
+  .select("metadata->razorpay")
+  .eq("id", appointmentId);
+```
+
+---
+
+### 16.4 — Performance Targets (Non-Negotiable)
+
+| Operation | Target p95 | Current (stress test) |
+|---|---|---|
+| Dashboard load | < 500ms | 420ms |
+| Patient EMR load | < 500ms | 364ms |
+| Appointment booking | < 300ms | 266ms |
+| Invoice creation | < 600ms | 559ms |
+| Command Bar open | < 100ms | not built |
+| Scheduler initial load | < 800ms | ~600ms est |
+| Patient search (Cmd+K) | < 200ms | not built |
+
+**Performance rules:**
+- All Supabase mutations use `withSupabaseRetry()` (3 attempts, exponential backoff)
+- All fetch calls use `withRetry()` for transient failures
+- RLS policies use `(SELECT auth.uid())` not bare `auth.uid()`
+- All FK columns have indexes (128+ already applied)
+- Unbounded queries must have `.limit()` — minimum `.limit(300)`
+- Patient picker queries max `.limit(300)`
+- Scheduler loads only current visible date range — not all-time appointments
+
+---
+
+### 16.5 — Audit & Compliance
+
+All state-changing actions must be logged via `logAction()`:
+
+```ts
+await logAction({
+  actor_id: profile.id,
+  actor_name: profile.full_name,
+  clinic_id: clinicId,
+  action: "appointment.create",   // format: entity.verb
+  target_id: appointment.id,
+  target_name: patient.full_name,
+  ...auditMeta(),                 // spreads impersonation context
+});
+```
+
+**Required audit actions (must be logged, no exceptions):**
+- `patient.create`, `patient.update`, `patient.deactivate`
+- `appointment.create`, `appointment.cancel`, `appointment.no_show`
+- `invoice.create`, `invoice.void`, `invoice.refund`
+- `payment.record`, `wallet.debit`, `wallet.credit`
+- `discount.request`, `discount.approve`, `discount.reject`
+- `counselling.claim`, `counselling.unclaim`, `counselling.convert`
+- `proforma.create`, `proforma.approve`, `proforma.convert`, `proforma.expire`
+- `staff.invite`, `staff.deactivate`, `role.change`
+- `module.enable`, `module.disable`, `kill_switch.toggle`
+
+**Demo clinic suppression:** `logAction()` silently skips insert if `clinicId` is a demo clinic.
 
 ---
 
 *Last updated: 2026-03-07*
-*Status: DRAFT — Awaiting review and approval before any implementation begins*
+*Version: 2.0 — Master Overrides Applied*
+*Status: DRAFT — Awaiting final review and approval before Phase A implementation begins*
