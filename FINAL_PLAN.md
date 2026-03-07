@@ -1558,6 +1558,37 @@ await logAction({
 
 ---
 
-*Last updated: 2026-03-07*
+*Last updated: 2026-03-08*
 *Version: 2.0 — Master Overrides Applied*
 *Status: DRAFT — Awaiting final review and approval before Phase A implementation begins*
+
+---
+
+## PART 17 — PRE-IMPLEMENTATION AUDIT FINDINGS
+
+A 360-degree live audit of the codebase and DB was completed on 2026-03-08.
+Full report: **`PRE_IMPLEMENTATION_AUDIT.md`** (24 Draft Amendments, DA-26 through DA-49)
+
+### Critical Findings (must fix before any Phase A work):
+
+| ID | Finding | Severity |
+|---|---|---|
+| DA-26 | OTP exposed in `/api/discounts/request` response body | CRITICAL |
+| DA-27 | `inventory_transfers` + `workflow_scheduled_actions` have RLS disabled | CRITICAL |
+| DA-28 | Open unauthenticated INSERT on `form_responses` | CRITICAL |
+| DA-29 | Bare `auth.uid()` in RLS policies — per-row re-evaluation performance issue | HIGH |
+| DA-30 | Full phone number shown in GlobalSearchPalette (PHI leak) | HIGH |
+| DA-31 | 10 tables missing `clinic_id` — multi-tenant isolation gap | HIGH |
+| DA-32 | Doctor → Counsellor handoff not implemented (P0-1 fix missing) | HIGH |
+| DA-33 | Proforma convert does not lock price or copy line items | HIGH |
+| DA-36 | `consume_session()` does not deduct inventory (three-way sync broken) | HIGH |
+| DA-39 | Clinical encounters can be deleted by admins (not immutable at DB level) | HIGH |
+| DA-41 | Void invoice does not reverse wallet payments | HIGH |
+| DA-42 | Sale commission not tracked — only delivery commission exists | HIGH |
+
+### Phase 0 — Security Hotfixes (deploy to staging immediately):
+1. Remove `otp_demo` key from discount API response (DA-26)
+2. Enable RLS on `inventory_transfers` and `workflow_scheduled_actions` (DA-27)
+3. Fix open form_responses INSERT policy (DA-28)
+
+See `PRE_IMPLEMENTATION_AUDIT.md` for full remediation order and acceptance criteria.
