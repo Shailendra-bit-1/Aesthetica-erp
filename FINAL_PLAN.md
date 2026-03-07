@@ -1,13 +1,20 @@
 # AESTHETICA CLINIC ERP — FINAL PLAN
-## Single Source of Truth | Version 2.0 | 2026-03-07
+## Single Source of Truth | Version 2.1 | 2026-03-08
 
 ---
 
-> This document supersedes MASTER_PLAN.md and GAP_ANALYSIS.md.
-> Everything Claude builds must follow this document exactly.
-> No feature, table, route, or UI decision should contradict what is written here.
+> This document supersedes MASTER_PLAN.md, GAP_ANALYSIS.md, and PRE_IMPLEMENTATION_AUDIT.md.
+> **Everything Claude builds must follow this document exactly.**
+> No feature, table, route, API, or UI decision should contradict what is written here.
 >
-> **v2.0 Master Overrides applied:**
+> **v2.1 additions (audit-validated 2026-03-08):**
+> - Security: 3 critical security fixes folded in (OTP leak, RLS gaps, PHI masking)
+> - DB: 12 missing column alterations added (clinic_id, commission tracking, proforma FK)
+> - Flows: 5 new P0 broken flows documented (void reversal, price lock, immutability, sale commission)
+> - Execution: Phase 0 (security hotfixes) added before Phase A
+> - All 24 Draft Amendments (DA-26→DA-49) resolved into plan sections
+>
+> **v2.0 Master Overrides (unchanged):**
 > - Design: Navy/White SaaS theme replaces Gold/Linen
 > - Navigation: Top Bar replaces sidebar
 > - Logic: Counsellor Claim System, HSN/SAC mandatory, Force-Overlap walk-ins
@@ -609,14 +616,21 @@ clinic_feature_flags  id, clinic_id, flag_key, is_enabled, config JSONB DEFAULT 
 ```
 
 ### Column Alterations Required (MISSING)
+
+> All of these run in Phase A migrations before any feature code is written.
+
 ```sql
--- Proforma lifecycle
+-- ─── Proforma lifecycle ───────────────────────────────────────────────────────
 ALTER TABLE pending_invoices
   ADD COLUMN proforma_status TEXT
     CHECK (proforma_status IN ('draft','approved','converted','expired'))
-    DEFAULT NULL;
+    DEFAULT NULL,
+  ADD COLUMN source_proforma_id UUID REFERENCES pending_invoices(id),
+  ADD COLUMN proforma_approved_by UUID REFERENCES profiles(id),
+  ADD COLUMN proforma_approved_at TIMESTAMPTZ,
+  ADD COLUMN proforma_expires_at TIMESTAMPTZ;
 
--- Counsellor Claim System
+-- ─── Counsellor Claim System ──────────────────────────────────────────────────
 ALTER TABLE counselling_sessions
   ADD COLUMN claimed_by UUID REFERENCES profiles(id) DEFAULT NULL,
   ADD COLUMN claimed_at TIMESTAMPTZ DEFAULT NULL,
@@ -624,31 +638,81 @@ ALTER TABLE counselling_sessions
     CHECK (claim_status IN ('unclaimed','claimed','admin_override'))
     DEFAULT 'unclaimed';
 
--- HSN/SAC on services
+-- ─── HSN/SAC on services ─────────────────────────────────────────────────────
 ALTER TABLE services
   ADD COLUMN hsn_sac_code VARCHAR(8) DEFAULT NULL,
   ADD COLUMN gst_category TEXT
     CHECK (gst_category IN ('exempt','5%','12%','18%','28%'))
     DEFAULT '18%';
 
--- HSN/SAC on invoice line items
+-- ─── HSN/SAC on invoice line items ───────────────────────────────────────────
 ALTER TABLE invoice_line_items
   ADD COLUMN hsn_sac_code VARCHAR(8) DEFAULT NULL;
 
--- Room assignment on appointments
+-- ─── Room assignment on appointments ─────────────────────────────────────────
 ALTER TABLE appointments
   ADD COLUMN room_id UUID REFERENCES rooms(id) DEFAULT NULL;
 
--- JSONB metadata on all core tables (see Part 16)
-ALTER TABLE patients              ADD COLUMN metadata JSONB DEFAULT '{}';
-ALTER TABLE appointments          ADD COLUMN metadata JSONB DEFAULT '{}';
-ALTER TABLE pending_invoices      ADD COLUMN metadata JSONB DEFAULT '{}';
-ALTER TABLE clinical_encounters   ADD COLUMN metadata JSONB DEFAULT '{}';
-ALTER TABLE crm_leads             ADD COLUMN metadata JSONB DEFAULT '{}';
-ALTER TABLE counselling_sessions  ADD COLUMN metadata JSONB DEFAULT '{}';
-ALTER TABLE services              ADD COLUMN metadata JSONB DEFAULT '{}';
-ALTER TABLE inventory_products    ADD COLUMN metadata JSONB DEFAULT '{}';
-ALTER TABLE profiles              ADD COLUMN metadata JSONB DEFAULT '{}';
+-- ─── Walk-in flag ─────────────────────────────────────────────────────────────
+ALTER TABLE appointments
+  ADD COLUMN is_walkin BOOLEAN NOT NULL DEFAULT false;
+
+-- ─── Sale commission tracking on package credits ──────────────────────────────
+-- Tracks who sold the package (separate from who delivers sessions)
+ALTER TABLE patient_service_credits
+  ADD COLUMN sold_by_provider_id UUID REFERENCES profiles(id),
+  ADD COLUMN sale_commission_pct  NUMERIC(5,2) NOT NULL DEFAULT 0,
+  ADD COLUMN sale_commission_amount NUMERIC(12,2) NOT NULL DEFAULT 0;
+
+-- ─── clinic_id on tables that are missing it (multi-tenant isolation) ─────────
+ALTER TABLE patient_notes
+  ADD COLUMN clinic_id UUID REFERENCES clinics(id);
+UPDATE patient_notes pn SET clinic_id = p.clinic_id
+  FROM patients p WHERE pn.patient_id = p.id;
+ALTER TABLE patient_notes ALTER COLUMN clinic_id SET NOT NULL;
+CREATE INDEX ON patient_notes(clinic_id);
+
+ALTER TABLE patient_packages
+  ADD COLUMN clinic_id UUID REFERENCES clinics(id);
+UPDATE patient_packages pp SET clinic_id = p.clinic_id
+  FROM patients p WHERE pp.patient_id = p.id;
+
+ALTER TABLE prescriptions
+  ADD COLUMN clinic_id UUID REFERENCES clinics(id);
+UPDATE prescriptions pr SET clinic_id = ce.clinic_id
+  FROM clinical_encounters ce WHERE pr.encounter_id = ce.id;
+
+-- package_items, package_members: inherit from patient_service_credits
+ALTER TABLE package_items
+  ADD COLUMN clinic_id UUID REFERENCES clinics(id);
+ALTER TABLE package_members
+  ADD COLUMN clinic_id UUID REFERENCES clinics(id);
+
+-- service_transfers
+ALTER TABLE service_transfers
+  ADD COLUMN clinic_id UUID REFERENCES clinics(id);
+
+-- Create indexes for all new clinic_id columns
+CREATE INDEX IF NOT EXISTS idx_patient_notes_clinic ON patient_notes(clinic_id);
+CREATE INDEX IF NOT EXISTS idx_prescriptions_clinic ON prescriptions(clinic_id);
+CREATE INDEX IF NOT EXISTS idx_package_items_clinic ON package_items(clinic_id);
+CREATE INDEX IF NOT EXISTS idx_package_members_clinic ON package_members(clinic_id);
+CREATE INDEX IF NOT EXISTS idx_service_transfers_clinic ON service_transfers(clinic_id);
+
+-- ─── Provider ID on clinical encounters (FK, was only text) ───────────────────
+-- provider_id already exists as a column; ensure it is populated going forward.
+-- The API route must pass profile.id as provider_id on every SOAP save.
+
+-- ─── JSONB metadata on all core tables (see Part 16) ─────────────────────────
+ALTER TABLE patients              ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE appointments          ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE pending_invoices      ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE clinical_encounters   ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE crm_leads             ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE counselling_sessions  ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE services              ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE inventory_products    ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE profiles              ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
 ```
 
 ---
@@ -946,9 +1010,21 @@ ALTER TABLE invoice_line_items
 - Reverse charge: supported via `is_reverse_charge` boolean on invoice (future)
 
 #### Discount Approval Flow (LIVE)
-1. Staff requests discount → OTP sent to clinic admin
+1. Staff requests discount → OTP sent to clinic admin via SMS/email
 2. Admin approves OTP → discount applied
 3. Logged in `discount_approvals`
+4. **OTP must NEVER appear in the API response body** (see P0-9)
+
+#### Void Invoice — Wallet Reversal (Fix Required — see P0-13)
+Voiding an invoice must reverse all wallet payments made against it.
+Call `credit_wallet()` RPC for each `invoice_payments` row with `payment_mode = 'wallet'` before updating status to void.
+
+#### Gift Card Validation (Required)
+Before accepting a gift card payment, the `record_payment` RPC (or the API route) must validate:
+1. Gift card exists and belongs to this clinic
+2. Gift card is not expired (`expires_at > NOW()`)
+3. Gift card remaining balance >= payment amount
+Raise an error if any check fails — do not silently accept.
 
 ---
 
@@ -990,17 +1066,114 @@ When a lead's status moves to `appointment_booked`:
 #### Stock Movement Types
 `purchase | sale | consumption | transfer | adjustment`
 
-#### Service Consumables (Missing — P2)
-Each service can define which inventory items it consumes per session.
+#### Three-Way Sync on Session Completion (Fix Required)
+When a service session is consumed (`consume_session()` RPC is called), three things must happen atomically:
 
-Table: `service_consumables (service_id, inventory_product_id, quantity_per_session)`
+| Step | Action | Current Status |
+|---|---|---|
+| (a) Package credit deduction | `patient_service_credits.used_sessions++` | ✅ Live |
+| (b) Commission record creation | Insert into `staff_commissions` | ✅ Live |
+| (c) Inventory stock deduction | Deduct from `inventory_batches` via `service_consumables` | ❌ **Missing** |
 
-When a session is consumed via `consume_session()` RPC:
-- Auto-deduct from inventory for each linked consumable
-- Creates `inventory_movements` row with type = `consumption`
+**Fix — update `consume_session()` RPC to include:**
+```sql
+-- After existing credit + commission logic, add:
+INSERT INTO inventory_transactions (
+  product_id, clinic_id, type, quantity_change, reference_id, reference_type, notes
+)
+SELECT
+  sc.inventory_product_id,
+  p_clinic_id,
+  'consumption',
+  -sc.quantity_per_session,
+  p_credit_id,
+  'credit_consumption',
+  'Auto-deducted on session consume'
+FROM service_consumables sc
+WHERE sc.service_id = (
+  SELECT service_id FROM patient_service_credits WHERE id = p_credit_id
+);
+
+-- Update batch quantities (FIFO — earliest non-zero batch first)
+UPDATE inventory_batches ib
+SET quantity_remaining = quantity_remaining - sc.quantity_per_session
+FROM service_consumables sc
+  JOIN (
+    SELECT id FROM inventory_batches
+    WHERE product_id = sc.inventory_product_id
+      AND quantity_remaining >= sc.quantity_per_session
+    ORDER BY expiry_date NULLS LAST, received_at ASC
+    LIMIT 1
+  ) oldest ON ib.id = oldest.id
+WHERE sc.service_id = (
+  SELECT service_id FROM patient_service_credits WHERE id = p_credit_id
+);
+```
+
+#### Service Consumables Table (Missing)
+```sql
+CREATE TABLE service_consumables (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  service_id          UUID NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  inventory_product_id UUID NOT NULL REFERENCES inventory_products(id),
+  quantity_per_session NUMERIC(10,3) NOT NULL DEFAULT 1,
+  unit                TEXT DEFAULT 'unit',
+  UNIQUE(service_id, inventory_product_id)
+);
+```
+
+**UI:** In `/settings/services`, each service has a "Consumables" tab where clinic admin maps inventory products to the service with quantities.
 
 #### Purchase Orders (Missing — P3)
 Full PO workflow: create PO → approve → receive → auto-update stock.
+
+---
+
+### 9.7b — COMMISSION TRACKING (Sale vs Delivery)
+
+Indian aesthetic clinics have two distinct commission types that must both be tracked:
+
+| Type | When | Who | Table |
+|---|---|---|---|
+| **Sale commission** | At package purchase | Counsellor / doctor who sold | `staff_commissions` (type='sale') |
+| **Delivery commission** | At each session | Doctor / therapist who performed | `staff_commissions` (type='delivery') |
+
+**Current gap:** Only delivery commission is tracked. The counsellor who sold a ₹50,000 package gets ₹0 unless they also deliver sessions.
+
+**Required columns on `patient_service_credits` (see Part 8):**
+```sql
+sold_by_provider_id  UUID REFERENCES profiles(id)
+sale_commission_pct  NUMERIC(5,2) DEFAULT 0
+sale_commission_amount NUMERIC(12,2) DEFAULT 0
+```
+
+**At package purchase time** (when creating `patient_service_credits`):
+```ts
+// Calculate and store sale commission
+const saleCommAmt = (credit.purchase_price * credit.sale_commission_pct) / 100;
+
+// Insert staff_commissions row for the seller
+await supabase.from("staff_commissions").insert({
+  provider_id: credit.sold_by_provider_id,
+  clinic_id,
+  patient_id: credit.patient_id,
+  service_name: credit.service_name,
+  sale_amount: credit.purchase_price,
+  commission_pct: credit.sale_commission_pct,
+  commission_amount: saleCommAmt,
+  commission_type: "sale",   // add this column to staff_commissions
+  status: "pending",
+  credit_id: credit.id,
+});
+```
+
+**`staff_commissions` requires a new `commission_type` column:**
+```sql
+ALTER TABLE staff_commissions
+  ADD COLUMN commission_type TEXT
+    CHECK (commission_type IN ('sale', 'delivery'))
+    DEFAULT 'delivery';
+```
 
 ---
 
@@ -1117,51 +1290,128 @@ God Mode at `/admin/god-mode` — 4 tabs (LIVE):
 ## PART 10 — BROKEN FLOWS TO FIX (P0 — Fix First)
 
 These are flows that exist in the UI but don't work end-to-end correctly.
+All P0 items must be resolved before Phase B starts.
 
 ### P0-1: Doctor → Counsellor Handoff
 **Broken:** Doctor saves SOAP note but counsellor is not notified and no counselling row is created.
 
 **Fix:**
-1. After SOAP save, show "Send to Counsellor" button
-2. On click: insert `counselling_sessions` row, fire notification to all counsellors in clinic, update appointment status to `consultation_done`
+1. After SOAP save, show "Send to Counsellor" button in EMR tab
+2. On click: `POST /api/counselling/refer` → insert `counselling_sessions` row (`claim_status='unclaimed'`), fire notification to all counsellors in clinic, update appointment status to `consultation_done`
 
 ### P0-2: Proforma Lifecycle
-**Broken:** Proforma has no status. Counsellor creates it, nothing happens after.
+**Broken:** Proforma has no status lifecycle. Counsellor creates it, nothing happens after.
 
-**Fix:** Add `proforma_status` column. Build Convert-to-Invoice, Approve, Expire actions.
+**Fix:** Add `proforma_status`, `source_proforma_id`, `proforma_expires_at` columns (Part 8 migrations). Build Convert-to-Invoice, Approve, and Expire actions (Section 9.5).
 
 ### P0-3: Appointment Status — Missing Values
 **Broken:** `consultation_done` and `treatment_done` statuses don't exist in DB constraint.
 
-**Fix:** Migration to add statuses (see Section 9.2).
+**Fix:** Migration in Part 8 Column Alterations. After migration, add action menu items in scheduler card.
 
 ### P0-4: CRM Auto-Stage Sync
 **Broken:** Booking appointment from a lead does not update lead status to `appointment_booked`.
 
-**Fix:** When appointment created from lead context, update `crm_leads.status = 'appointment_booked'`.
+**Fix:** When appointment created from CRM lead context, update `crm_leads.status = 'appointment_booked'` in the same API transaction.
 
 ### P0-5: Counsellor Payment Restriction
-**Broken:** Role check not consistently enforced at API level.
+**Broken:** Role check not enforced at API level — only hidden in UI.
 
-**Fix:** All invoice-create and record-payment API routes must check `profile.role !== 'counsellor'` and return 403.
+**Fix:** All invoice-create and record-payment API routes must check `profile.role !== 'counsellor'` server-side and return 403. UI hiding alone is not a security control.
 
 ### P0-6: CRM Stage Values
 **Broken:** `appointment_booked` and `visited` don't exist in DB constraint.
 
-**Fix:** Migration to add new status values (see Section 9.6).
+**Fix:** Migration in Part 8 Column Alterations (see Section 9.6).
 
 ### P0-7: Walk-in Force-Overlap
-**Broken:** Walk-ins go through `create_appointment_safe` which performs conflict check and may fail or warn.
+**Broken:** Walk-ins go through `create_appointment_safe` which performs conflict check.
 
-**Fix:** Walk-in route `POST /api/appointments/walkin` uses a direct insert (bypasses conflict RPC). Sets `is_walkin = true` on appointment. Scheduler renders it with orange color.
-```sql
-ALTER TABLE appointments ADD COLUMN is_walkin BOOLEAN DEFAULT false;
-```
+**Fix:** `POST /api/appointments/walkin` uses direct service-role insert (bypasses conflict RPC). Sets `is_walkin = true`. Scheduler renders as orange stacked card. Migration in Part 8.
 
 ### P0-8: Counsellor Claim System
-**Missing:** Multiple counsellors can simultaneously work on the same patient's counselling session, creating data conflicts.
+**Missing:** Multiple counsellors can simultaneously work on the same patient's counselling session.
 
-**Fix:** Add `claimed_by`, `claimed_at`, `claim_status` columns to `counselling_sessions`. Build Claim/Unclaim UI and API routes (see Section 9.4).
+**Fix:** Add `claimed_by`, `claimed_at`, `claim_status` columns to `counselling_sessions` (Part 8 migration). Build Claim/Unclaim UI and API routes (see Section 9.4).
+
+### P0-9: OTP Exposed in Discount API Response (CRITICAL SECURITY)
+**Broken:** `POST /api/discounts/request` returns `otp_demo: otp` in the response body. Any browser client can read the OTP directly, bypassing the entire approval gate.
+
+**Fix:** Remove `otp_demo` from response unconditionally:
+```ts
+// WRONG — remove this
+return NextResponse.json({ ok: true, otp_demo: otp });
+
+// CORRECT
+return NextResponse.json({ ok: true, message: "OTP sent to registered number" });
+```
+OTP is delivered via SMS/email only. Never in API response body. Ever.
+
+### P0-10: PHI Masking Missing in Global Search
+**Broken:** `GlobalSearchPalette` shows full patient phone number in plain text:
+```ts
+subtitle: p.phone ? `Patient · ${p.phone}` : "Patient"  // WRONG
+```
+
+**Fix:**
+```ts
+const masked = p.phone ? `·· ·· ···${p.phone.slice(-4)}` : "";
+subtitle: masked ? `Patient · ${masked}` : "Patient"
+```
+Also add `autocomplete="off"` on the search input. Search results must be scoped to `activeClinicId`.
+
+### P0-11: Proforma Convert Does Not Lock Price
+**Broken:** Two broken convert paths:
+- `billing/page.tsx convertProforma()` only flips `invoice_type` — no line items copied, no price locked, no proforma linkage.
+- `counselling/page.tsx convertToInvoice()` uses `unit_price: t.mrp` (the full list price) not the counsellor-quoted discounted price.
+
+**Fix:**
+1. `convertProforma()` must copy all `invoice_line_items` from the source proforma to the new invoice, locking `unit_price` at the quoted value with `discount_pct = 0`, and set `source_proforma_id` on the new invoice.
+2. Set `proforma_status = 'converted'` on the source proforma.
+3. `convertToInvoice()` in counselling must calculate and store `quoted_price = mrp * (1 - discount_pct/100)` as `unit_price` with `discount_pct = 0`.
+
+### P0-12: Clinical Encounters Deletable (Not Immutable)
+**Broken:** RLS policy `"Admins manage clinical_encounters"` uses `FOR ALL` — grants DELETE and UPDATE to admins. SOAP notes must be permanent records (HIPAA clinical documentation standard).
+
+**Fix:** Drop the `FOR ALL` policy. Replace with:
+```sql
+DROP POLICY "Admins manage clinical_encounters" ON clinical_encounters;
+
+-- INSERT only — no UPDATE, no DELETE for anyone (not even superadmin)
+CREATE POLICY "clinical_encounters_insert" ON clinical_encounters
+  FOR INSERT WITH CHECK (clinic_id = get_viewer_clinic_id());
+
+CREATE POLICY "clinical_encounters_select" ON clinical_encounters
+  FOR SELECT USING (
+    clinic_id = get_viewer_clinic_id()
+    OR EXISTS (SELECT 1 FROM profiles WHERE id = (SELECT auth.uid()) AND role IN ('superadmin','chain_admin'))
+  );
+-- No UPDATE policy. No DELETE policy. Encounters are immutable.
+```
+Amendments must be added as new `patient_notes` rows, never as edits to existing encounters.
+
+### P0-13: Void Invoice Does Not Reverse Wallet Payment
+**Broken:** `voidInvoice()` only sets `status = 'void'`. If patient paid via wallet, the wallet balance is never restored.
+
+**Fix:** Before voiding, reverse all wallet payments:
+```ts
+// In voidInvoice(), before updating status:
+const { data: walletPayments } = await supabase
+  .from("invoice_payments")
+  .select("amount")
+  .eq("invoice_id", invoiceId)
+  .eq("payment_mode", "wallet");
+
+for (const p of walletPayments ?? []) {
+  await supabase.rpc("credit_wallet", {
+    p_patient_id: invoice.patient_id,
+    p_amount: p.amount,
+    p_reason: `Void reversal: invoice ${invoice.invoice_number}`,
+    p_reference_id: invoiceId,
+    p_reference_type: "invoice_void"
+  });
+}
+```
 
 ---
 
@@ -1250,55 +1500,84 @@ POST /api/workflows/dry-run       Test a rule without executing
 
 ### APIs To Be Created
 ```
-GET  /api/rooms                   List rooms for clinic
-POST /api/rooms                   Create room
-POST /api/appointments/walkin     Force-overlap walk-in (bypasses conflict check)
-POST /api/proforma/convert        Convert proforma → invoice
-PATCH /api/proforma/[id]/approve  Approve proforma (admin)
-POST /api/counselling/refer       Doctor → counsellor handoff (creates unclaimed session)
-POST /api/counselling/claim       Counsellor claims a session
-POST /api/counselling/unclaim     Admin overrides claim
-GET  /api/billing/gstr1           GSTR-1 export (HSN/SAC grouped, CSV)
-GET  /api/health                  System health check (for God Mode monitor)
-GET  /api/admin/feature-flags     List clinic_feature_flags
-PUT  /api/admin/feature-flags     Upsert a clinic feature flag
+GET   /api/rooms                    List rooms for clinic
+POST  /api/rooms                    Create room
+POST  /api/appointments/walkin      Force-overlap walk-in (bypasses conflict check, sets is_walkin=true)
+POST  /api/proforma/convert         Convert proforma → invoice (copies line items, locks price)
+PATCH /api/proforma/[id]/approve    Approve proforma (admin only)
+PATCH /api/proforma/[id]/expire     Expire proforma (cron or manual)
+POST  /api/counselling/refer        Doctor → counsellor handoff (creates unclaimed session + notification)
+POST  /api/counselling/claim        Counsellor claims a session
+POST  /api/counselling/unclaim      Admin overrides / releases claim
+GET   /api/billing/gstr1            GSTR-1 export (HSN/SAC grouped, date range, CSV)
+GET   /api/health                   System health check (for God Mode monitor)
+GET   /api/admin/feature-flags      List clinic_feature_flags for a clinic
+PUT   /api/admin/feature-flags      Upsert a clinic feature flag
+POST  /api/service-consumables      Link inventory product to service with quantity_per_session
+GET   /api/service-consumables      List consumables for a service
 ```
 
 ---
 
 ## PART 13 — DB HELPER FUNCTIONS (Reference)
 
-| Function | Purpose |
-|---|---|
-| `check_clinic_access(clinic_id, feature_name)` | Entitlement check (kill switch → plan → module) |
-| `create_appointment_safe(...)` | Server-side conflict check + insert |
-| `consume_session(...)` | Atomic credit deduction + commission |
-| `record_payment(...)` | Atomic payment + wallet debit |
-| `debit_wallet(patient_id, amount)` | Wallet deduction (raises on insufficient) |
-| `assign_membership_safe(...)` | Prevents duplicate active memberships |
-| `increment_no_show(...)` | Restores credit + decrements used_sessions |
-| `earn_loyalty_points(...)` | Loyalty point award |
-| `update_expired_memberships()` | Fire-and-forget on membership page load |
-| `mark_overdue_invoices()` | Fire-and-forget on billing page load |
-| `get_viewer_clinic_id()` | SECURITY DEFINER — used in RLS policies |
-| `get_viewer_role()` | SECURITY DEFINER — used in RLS policies |
-| `record_feature_usage(...)` | Logs to feature_usage_log |
-| `logAction(...)` | Audit trail — skips silently for demo clinics |
+| Function | Purpose | Status |
+|---|---|---|
+| `check_clinic_access(clinic_id, feature_name)` | Entitlement check (kill switch → plan → module) | ✅ Live |
+| `create_appointment_safe(...)` | Server-side conflict check + insert | ✅ Live |
+| `consume_session(...)` | Atomic credit deduction + commission + **inventory** | ⚠️ Needs inventory step (Phase B) |
+| `record_payment(...)` | Atomic payment + wallet debit | ✅ Live |
+| `debit_wallet(patient_id, amount)` | Wallet deduction (raises on insufficient) | ✅ Live |
+| `credit_wallet(patient_id, amount, reason, ...)` | Wallet top-up / reversal | ✅ Live |
+| `assign_membership_safe(...)` | Prevents duplicate active memberships | ✅ Live |
+| `increment_no_show(...)` | Restores credit + decrements used_sessions | ✅ Live |
+| `earn_loyalty_points(...)` | Loyalty point award | ✅ Live |
+| `update_expired_memberships()` | Fire-and-forget on membership page load | ✅ Live |
+| `mark_overdue_invoices()` | Fire-and-forget on billing page load | ✅ Live |
+| `get_viewer_clinic_id()` | SECURITY DEFINER — used in RLS policies | ✅ Live |
+| `get_viewer_role()` | SECURITY DEFINER — used in RLS policies | ✅ Live |
+| `record_feature_usage(...)` | Logs to feature_usage_log | ✅ Live |
+| `logAction(...)` | Audit trail — skips silently for demo clinics | ✅ Live |
+| `validate_gift_card(gift_card_id, amount, clinic_id)` | Checks expiry, balance, clinic scope | ❌ Missing (Phase B) |
+| `evaluate_workflow_rules(clinic_id, trigger, context)` | Fires matching rules for a trigger event | ❌ Missing (Phase B) |
+
+**All SECURITY DEFINER functions MUST have `SET search_path = 'public'`.**
 
 ---
 
 ## PART 14 — SECURITY RULES (Non-Negotiable)
 
-1. **RLS on all tables** — every table has Row Level Security enabled
-2. **No bare `auth.uid()`** in RLS policies — always `(SELECT auth.uid())` to prevent per-row re-evaluation
-3. **All SECURITY DEFINER functions** have `SET search_path = 'public'`
-4. **Service role** only used in `/api/**` server routes — never in client components
-5. **No PHI in localStorage** — auth tokens and patient data only in cookies / server state
-6. **Portal routes** — token-based auth (`portal_sessions` table), no Supabase JWT
-7. **Superadmin routes** — always check `profile.role === 'superadmin'` server-side
-8. **Counsellor restriction** — API-level check, not just UI hiding
-9. **Demo clinics** — `logAction()` silently skips audit insert for demo clinic_id
-10. **Webhook endpoints** — HMAC signature verification on all inbound webhooks
+1. **RLS on ALL tables** — every table in the `public` schema must have `rowsecurity = true` AND at least one policy. No exceptions. Confirmed violated by `inventory_transfers` and `workflow_scheduled_actions` — fix is in Phase 0.
+
+2. **No bare `auth.uid()`** in RLS policies — always `(SELECT auth.uid())` to prevent per-row re-evaluation. Bare `auth.uid()` causes O(n) policy evaluation instead of O(1), causing linear query degradation under load.
+
+3. **All SECURITY DEFINER functions** must have `SET search_path = 'public'` to prevent search path injection.
+
+4. **Service role** only used in `/api/**` server routes — never in client components or `"use client"` pages.
+
+5. **No PHI in localStorage** — auth tokens and patient data only in cookies / server state. PHI includes: full name, phone, email, DOB, diagnosis, treatment notes.
+
+6. **PHI masking in list views** — phone numbers shown as `·· ·· ···XXXX` (last 4 only) in all list views, search results, and autocomplete dropdowns. Full reveal only on explicit user action (click to reveal, logged in audit).
+
+7. **Portal routes** — token-based auth (`portal_sessions` table), no Supabase JWT. Service role for portal API operations.
+
+8. **Superadmin routes** — always check `profile.role === 'superadmin'` server-side via `getUser()`. Client-side role claims are not trusted.
+
+9. **Counsellor restriction** — API-level check (`profile.role !== 'counsellor'`), not just UI hiding. Return 403 for invoice-create and record-payment routes if role is counsellor.
+
+10. **Demo clinics** — `logAction()` silently skips audit insert for demo clinic_id.
+
+11. **Webhook endpoints** — HMAC-SHA256 signature verification on all inbound webhooks. Reject any request with invalid or missing signature.
+
+12. **OTP delivery** — OTPs for discount approval must be delivered via SMS/email only. OTP must NEVER appear in any API response body. No `otp_demo` or similar fields in responses — not in development, not in production.
+
+13. **No open `using(true)` INSERT policies** — reference tables (medical_codes, rule_templates, etc.) may have open SELECT policies for authenticated users. But INSERT/UPDATE/DELETE must always be restricted. Form submissions via portal/intake must go through a server-side API route using service role, never direct client write.
+
+14. **clinic_id on every data table** — every table storing clinic-specific data must have a `clinic_id` column and an RLS policy scoping it to `get_viewer_clinic_id()`. Tables without `clinic_id` cannot have proper multi-tenant isolation.
+
+15. **Clinical encounters are immutable** — no UPDATE or DELETE RLS policies on `clinical_encounters`. Not even for superadmin. Amendments are new `patient_notes` rows. This is a HIPAA clinical documentation requirement.
+
+16. **Scheduler checkout must pass `service_id`** — all invoice line items created from session checkout must carry the actual `service_id` UUID (not null) so HSN/SAC codes can be resolved for GSTR-1 filing.
 
 ---
 
@@ -1306,28 +1585,46 @@ PUT  /api/admin/feature-flags     Upsert a clinic feature flag
 
 Do NOT start implementation until this plan is reviewed and approved.
 
-Once approved, implement in this exact order:
+Once approved, implement in this exact order. Do not skip phases.
 
 ```
-PHASE A — Critical DB Migrations (run first, unblocks everything)
-  A1. DB migration: add appointment statuses (consultation_done, treatment_done)
-  A2. DB migration: add CRM stages (appointment_booked, visited)
-  A3. DB migration: add proforma_status column to pending_invoices
-  A4. DB migration: add counselling_sessions claim columns
-  A5. DB migration: add is_walkin column to appointments
-  A6. DB migration: add hsn_sac_code + gst_category to services
-  A7. DB migration: add hsn_sac_code to invoice_line_items
-  A8. DB migration: add metadata JSONB to 9 core tables
-  A9. DB migration: create clinic_feature_flags table
-  A10. DB migration: create rooms table
+PHASE 0 — Security Hotfixes (deploy to staging immediately — no feature code until these are done)
+  0-1. Remove otp_demo from /api/discounts/request response (P0-9)
+  0-2. Enable RLS on inventory_transfers + add clinic-scoped policy
+  0-3. Enable RLS on workflow_scheduled_actions + add clinic-scoped policy
+  0-4. Fix form_responses INSERT policy — remove open anon policy, restrict to clinic or portal token
+  0-5. Replace bare auth.uid() with (SELECT auth.uid()) across all RLS policies
+  0-6. Drop clinical_encounters FOR ALL policy → INSERT + SELECT only (P0-12)
+
+PHASE A — DB Migrations (run after Phase 0, unblocks all feature code)
+  A1.  Add appointment statuses: consultation_done, treatment_done (P0-3)
+  A2.  Add CRM stages: appointment_booked, visited (P0-6)
+  A3.  Add proforma columns: proforma_status, source_proforma_id, expires_at, approved_by (P0-2)
+  A4.  Add counselling_sessions claim columns: claimed_by, claimed_at, claim_status (P0-8)
+  A5.  Add appointments.is_walkin column (P0-7)
+  A6.  Add hsn_sac_code + gst_category to services
+  A7.  Add hsn_sac_code to invoice_line_items
+  A8.  Add metadata JSONB to 9 core tables (Part 16)
+  A9.  Create clinic_feature_flags table (Part 16)
+  A10. Create rooms table (Section 9.11)
+  A11. Create service_consumables table (Section 9.7)
+  A12. Add sold_by_provider_id + sale_commission_pct + sale_commission_amount to patient_service_credits
+  A13. Add commission_type column to staff_commissions
+  A14. Add clinic_id to: patient_notes, patient_packages, prescriptions, package_items, package_members, service_transfers (backfill + index)
+  A15. Add source_proforma_id FK on pending_invoices (self-referential)
 
 PHASE B — Logic Fixes (P0 Broken Flows)
-  B1. Fix Doctor → Counsellor handoff (notification + session creation)
-  B2. Build Proforma lifecycle (approve / convert / expire)
-  B3. Fix Counsellor payment restriction at API level
-  B4. Fix CRM auto-stage sync on appointment creation
-  B5. Build Counsellor Claim System (API + UI)
-  B6. Build Walk-in Force-Overlap (API route + scheduler button)
+  B1. Fix Doctor → Counsellor handoff — POST /api/counselling/refer + notification (P0-1)
+  B2. Build Proforma lifecycle — approve / convert / expire with price locking (P0-2, P0-11)
+  B3. Fix Counsellor payment restriction at API level (P0-5)
+  B4. Fix CRM auto-stage sync on appointment creation (P0-4)
+  B5. Build Counsellor Claim System — POST /api/counselling/claim + /unclaim + UI (P0-8)
+  B6. Build Walk-in Force-Overlap — POST /api/appointments/walkin + scheduler button (P0-7)
+  B7. Fix GlobalSearchPalette PHI masking — mask phone to last 4 digits (P0-10)
+  B8. Fix void invoice wallet reversal — credit_wallet() call before status = void (P0-13)
+  B9. Fix scheduler checkout to pass service_id (not null) in invoice line items
+  B10. Wire sale commission at package purchase time (Section 9.7b)
+  B11. Wire inventory deduction into consume_session() RPC (Section 9.7 three-way sync)
 
 PHASE C — Visual Overhaul (P1 — Design)
   C1. Update globals.css with Navy/White CSS variables
@@ -1340,7 +1637,7 @@ PHASE C — Visual Overhaul (P1 — Design)
 PHASE D — High Impact Features (P1 — Features)
   D1. HSN/SAC mandatory validation in billing UI + GSTR-1 export
   D2. Room Management — CRUD + Room View tab in scheduler
-  D3. Patient: Packages tab
+  D3. Patient: Packages tab (dedicated, with redeem/freeze/transfer)
   D4. Patient: Activity Timeline tab
   D5. Patient: Documents tab
   D6. Patient Tags (patient_tags table + header chips + filter)
@@ -1348,17 +1645,17 @@ PHASE D — High Impact Features (P1 — Features)
   D8. Doctor Queue View
 
 PHASE E — Medium Priority (P2)
-  E1. Service Consumables auto-deduction
+  E1. Service Consumables UI — map products to services in /settings/services
   E2. System Health Monitor tab in God Mode
-  E3. Granular Feature Flags UI in God Mode
+  E3. Granular Feature Flags UI in God Mode (clinic_feature_flags CRUD)
   E4. CRM campaign segment builder
-  E5. List View in scheduler
-  E6. Appointment drag-and-drop
+  E5. List View in scheduler (reception call list)
+  E6. Appointment drag-and-drop rescheduling
   E7. Patient Blacklist
 
 PHASE F — Polish (P3)
-  F1. Purchase Orders
-  F2. Smart conflict warnings
+  F1. Purchase Orders workflow
+  F2. Smart room/doctor conflict warnings
   F3. Doctor availability schedule builder
   F4. Superadmin org/chain creator
   F5. AI command suggestions in Command Bar
@@ -1382,6 +1679,12 @@ PHASE F — Polish (P3)
 | HSN/SAC codes | **Mandatory** on all invoice line items | Legal GST compliance requirement |
 | JSONB metadata | Added to 9 core tables | Extensibility without schema migrations |
 | Granular flags | `clinic_feature_flags` table | Per-clinic behavioral overrides beyond module toggles |
+| OTP delivery | SMS/email only — **never in API response** | Audit DA-26: OTP was exposed in response body — security vulnerability |
+| Clinical encounter mutability | **Immutable** — INSERT only, no UPDATE/DELETE | HIPAA clinical documentation standard; audit DA-39 |
+| Commission tracking | **Two types**: sale commission + delivery commission | Audit DA-42: counsellors who sell packages must also earn commission |
+| PHI in list views | **Masked** — phone shows last 4 digits only | HIPAA/privacy requirement; audit DA-30 |
+| Three-way sync | `consume_session()` must include inventory deduction | Audit DA-36: inventory was not part of the sync |
+| Proforma price lock | `unit_price = quoted_price`, `discount_pct = 0` | Audit DA-33: price must be locked at conversion, not recalculated |
 
 ---
 
@@ -1559,36 +1862,40 @@ await logAction({
 ---
 
 *Last updated: 2026-03-08*
-*Version: 2.0 — Master Overrides Applied*
-*Status: DRAFT — Awaiting final review and approval before Phase A implementation begins*
+*Version: 2.1 — Master Overrides Applied + Pre-Implementation Audit Resolved*
+*Status: APPROVED — Ready for implementation. Start with Phase 0 security hotfixes.*
 
 ---
 
-## PART 17 — PRE-IMPLEMENTATION AUDIT FINDINGS
+## PART 17 — AUDIT TRAIL
 
-A 360-degree live audit of the codebase and DB was completed on 2026-03-08.
-Full report: **`PRE_IMPLEMENTATION_AUDIT.md`** (24 Draft Amendments, DA-26 through DA-49)
+All findings from the 360-degree pre-implementation audit (2026-03-08, DA-26 → DA-49) have been folded into this document:
 
-### Critical Findings (must fix before any Phase A work):
+| Finding | Folded Into |
+|---|---|
+| DA-26: OTP in API response | Part 10 P0-9, Part 14 Rule 12 |
+| DA-27: RLS disabled on 2 tables | Part 14 Rule 1, Part 15 Phase 0 |
+| DA-28: Open form_responses INSERT | Part 14 Rule 13, Part 15 Phase 0 |
+| DA-29: Bare auth.uid() in policies | Part 14 Rule 2, Part 15 Phase 0 |
+| DA-30: PHI in search results | Part 10 P0-10, Part 14 Rule 6 |
+| DA-31: clinic_id missing on 10 tables | Part 8 Column Alterations, Part 15 Phase A |
+| DA-32: Doctor→Counsellor handoff | Part 10 P0-1, Part 9.3 |
+| DA-33: Proforma price not locked | Part 10 P0-11, Part 9.4 |
+| DA-34: CRM status constraint | Part 9.6, Part 15 Phase A |
+| DA-35: Appointment status constraint | Part 9.2, Part 15 Phase A |
+| DA-36: Inventory not in consume_session | Part 9.7 Three-Way Sync |
+| DA-37: workflow_scheduled_actions no engine | Part 12 APIs To Be Created |
+| DA-38: Rules not wired to API triggers | Part 13 DB Functions |
+| DA-39: Encounters deletable | Part 10 P0-12, Part 14 Rule 15 |
+| DA-40: provider_id missing on encounter insert | Part 9.3 |
+| DA-41: Void invoice no wallet reversal | Part 10 P0-13, Part 9.5 |
+| DA-42: Sale commission not tracked | Part 9.7b Commission Tracking |
+| DA-43: service_id null in checkout | Part 14 Rule 16, Part 15 Phase B |
+| DA-44: Gift card not validated | Part 9.5 Gift Card Validation |
+| DA-45: profiles.email contradiction | CLAUDE.md to be updated — remove email from profiles |
+| DA-46: is_walkin column missing | Part 8 Column Alterations, Part 10 P0-7 |
+| DA-47: counselling claim columns missing | Part 8 Column Alterations, Part 10 P0-8 |
+| DA-48: proforma_status column missing | Part 8 Column Alterations, Part 10 P0-2 |
+| DA-49: 109 tables undocumented | Schema is larger than documented — SSOT is the live DB |
 
-| ID | Finding | Severity |
-|---|---|---|
-| DA-26 | OTP exposed in `/api/discounts/request` response body | CRITICAL |
-| DA-27 | `inventory_transfers` + `workflow_scheduled_actions` have RLS disabled | CRITICAL |
-| DA-28 | Open unauthenticated INSERT on `form_responses` | CRITICAL |
-| DA-29 | Bare `auth.uid()` in RLS policies — per-row re-evaluation performance issue | HIGH |
-| DA-30 | Full phone number shown in GlobalSearchPalette (PHI leak) | HIGH |
-| DA-31 | 10 tables missing `clinic_id` — multi-tenant isolation gap | HIGH |
-| DA-32 | Doctor → Counsellor handoff not implemented (P0-1 fix missing) | HIGH |
-| DA-33 | Proforma convert does not lock price or copy line items | HIGH |
-| DA-36 | `consume_session()` does not deduct inventory (three-way sync broken) | HIGH |
-| DA-39 | Clinical encounters can be deleted by admins (not immutable at DB level) | HIGH |
-| DA-41 | Void invoice does not reverse wallet payments | HIGH |
-| DA-42 | Sale commission not tracked — only delivery commission exists | HIGH |
-
-### Phase 0 — Security Hotfixes (deploy to staging immediately):
-1. Remove `otp_demo` key from discount API response (DA-26)
-2. Enable RLS on `inventory_transfers` and `workflow_scheduled_actions` (DA-27)
-3. Fix open form_responses INSERT policy (DA-28)
-
-See `PRE_IMPLEMENTATION_AUDIT.md` for full remediation order and acceptance criteria.
+**The raw audit report is preserved in `PRE_IMPLEMENTATION_AUDIT.md` for reference.**
