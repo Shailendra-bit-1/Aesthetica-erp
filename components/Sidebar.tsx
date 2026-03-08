@@ -36,6 +36,7 @@ import {
   MessageCirclePlus,
   FlaskConical,
   Stethoscope,
+  Trash2,
 } from "lucide-react";
 import clsx from "clsx";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -77,6 +78,7 @@ const ADMIN_ITEMS = [
   { label: "Beta Feedback",      href: "/admin/beta-feedback",       icon: MessageCirclePlus, superadminOnly: false },
   { label: "Simulator",          href: "/admin/simulator",           icon: FlaskConical,      superadminOnly: false },
   { label: "Conditions & Protocols", href: "/admin/conditions",      icon: Stethoscope,       superadminOnly: false },
+  { label: "Deleted Records",        href: "/admin/deleted",          icon: Trash2,            superadminOnly: true  },
 ] as const;
 
 const BOTTOM_ITEMS = [

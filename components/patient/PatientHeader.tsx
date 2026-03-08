@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { ArrowLeft, Phone, Mail, Eye, EyeOff, Shield, Calendar, Sparkles, Trophy } from "lucide-react";
+import { ArrowLeft, Phone, Mail, Eye, EyeOff, Shield, Calendar, Sparkles, Trophy, Ban, AlertOctagon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -28,12 +28,14 @@ export default function PatientHeader({
   patient, activeTab, tabs, onTabChange, privacyMode, onTogglePrivacy,
 }: PatientHeaderProps) {
   const router = useRouter();
-  const { activeClinicId } = useClinic();
+  const { activeClinicId, profile } = useClinic();
   const fitz = FITZPATRICK[patient.fitzpatrick_type ?? 0];
   const tier = TIER_CONFIG[patient.patient_tier ?? "standard"] ?? TIER_CONFIG.standard;
   const age  = calcAge(patient.date_of_birth);
 
   const [loyaltyData, setLoyaltyData] = useState<{ balance: number; tier: string; color: string } | null>(null);
+  const [blacklisting, setBlacklisting] = useState(false);
+  const isAdmin = profile?.role && ["superadmin","chain_admin","clinic_admin"].includes(profile.role);
 
   useEffect(() => {
     if (!activeClinicId || !patient.id) return;
@@ -42,8 +44,53 @@ export default function PatientHeader({
       .then(({ data }) => { if (data) setLoyaltyData(data as { balance: number; tier: string; color: string }); });
   }, [patient.id, activeClinicId]);
 
+  async function toggleBlacklist() {
+    const nowBlacklisted = !patient.is_blacklisted;
+    if (nowBlacklisted) {
+      const reason = prompt("Reason for blacklisting this patient (required):");
+      if (!reason?.trim()) return;
+      setBlacklisting(true);
+      await supabase.from("patients").update({
+        is_blacklisted: true,
+        blacklist_reason: reason.trim(),
+        blacklisted_at: new Date().toISOString(),
+        blacklisted_by: profile?.id ?? null,
+      }).eq("id", patient.id);
+    } else {
+      if (!confirm(`Remove blacklist status from ${patient.full_name}?`)) return;
+      setBlacklisting(true);
+      await supabase.from("patients").update({
+        is_blacklisted: false,
+        blacklist_reason: null,
+        blacklisted_at: null,
+        blacklisted_by: null,
+      }).eq("id", patient.id);
+    }
+    setBlacklisting(false);
+    // Force page reload to reflect updated patient data
+    window.location.reload();
+  }
+
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 30, background: "#FFFFFF", borderBottom: "1px solid rgba(197,160,89,0.2)", boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}>
+      {/* Blacklist banner */}
+      {patient.is_blacklisted && (
+        <div style={{ background: "rgba(220,38,38,0.08)", borderBottom: "1px solid rgba(220,38,38,0.3)", padding: "6px 24px", display: "flex", alignItems: "center", gap: 8 }}>
+          <Ban size={13} color="#DC2626" />
+          <span style={{ fontSize: 12, color: "#991B1B", fontWeight: 700 }}>
+            BLACKLISTED
+          </span>
+          {patient.blacklist_reason && (
+            <span style={{ fontSize: 11, color: "#B91C1C" }}>— {patient.blacklist_reason}</span>
+          )}
+          {patient.blacklisted_at && (
+            <span style={{ fontSize: 10, color: "#B91C1C", opacity: 0.7, marginLeft: 4 }}>
+              since {new Date(patient.blacklisted_at).toLocaleDateString("en-IN")}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Privacy mode banner */}
       {privacyMode && (
         <div style={{ background: "rgba(245,158,11,0.1)", borderBottom: "1px solid rgba(245,158,11,0.3)", padding: "6px 24px", display: "flex", alignItems: "center", gap: 8 }}>
@@ -137,6 +184,26 @@ export default function PatientHeader({
             {patient.clinic_id && <PatientTags patientId={patient.id} clinicId={patient.clinic_id} />}
           </div>
         </div>
+
+        {/* Blacklist toggle (admin only) */}
+        {isAdmin && (
+          <button
+            onClick={toggleBlacklist}
+            disabled={blacklisting}
+            title={patient.is_blacklisted ? "Remove blacklist" : "Blacklist patient"}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "7px 14px", borderRadius: 10, cursor: "pointer", flexShrink: 0,
+              border: patient.is_blacklisted ? "1px solid rgba(220,38,38,0.5)" : "1px solid rgba(156,148,164,0.3)",
+              background: patient.is_blacklisted ? "rgba(220,38,38,0.08)" : "transparent",
+              color: patient.is_blacklisted ? "#DC2626" : "#9C9584",
+              fontWeight: 600, fontSize: 12, opacity: blacklisting ? 0.6 : 1,
+            }}
+          >
+            <Ban size={13} />
+            {patient.is_blacklisted ? "Blacklisted" : "Blacklist"}
+          </button>
+        )}
 
         {/* Privacy mode toggle */}
         <button

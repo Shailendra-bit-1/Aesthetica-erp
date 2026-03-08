@@ -8,7 +8,7 @@ import {
   Users, BarChart3, MessageSquare, Smartphone, RefreshCw,
   Shield, X, Sparkles, FlaskConical, Star, Heart, Briefcase,
   DollarSign, Activity, ToggleLeft, ToggleRight, Plus, Trash2,
-  Copy, ExternalLink,
+  Copy, ExternalLink, Flag, HeartPulse, CheckCircle2, AlertTriangle, Database,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -87,7 +87,7 @@ export default function GodModePage() {
   const { profile }                           = useClinic();
   const { startImpersonation, isImpersonating, impersonated } = useImpersonation();
 
-  const [activeTab,   setActiveTab]   = useState<"clinics" | "plans" | "devpanel" | "demo">("clinics");
+  const [activeTab,   setActiveTab]   = useState<"clinics" | "plans" | "devpanel" | "demo" | "flags" | "health">("clinics");
 
   // ── Tab 1: Clinics ──────────────────────────────────────────────────────────
   const [clinics,     setClinics]     = useState<ClinicRow[]>([]);
@@ -366,10 +366,12 @@ export default function GodModePage() {
 
   // ── Tab styles ───────────────────────────────────────────────────────────────
   const tabs = [
-    { key: "clinics"  as const, label: "Clinics",     icon: Building2    },
-    { key: "plans"    as const, label: "Plans",        icon: Star         },
-    { key: "devpanel" as const, label: "Dev Panel",    icon: Activity     },
-    { key: "demo"     as const, label: "Demo Manager", icon: FlaskConical },
+    { key: "clinics"  as const, label: "Clinics",      icon: Building2    },
+    { key: "plans"    as const, label: "Plans",         icon: Star         },
+    { key: "devpanel" as const, label: "Dev Panel",     icon: Activity     },
+    { key: "demo"     as const, label: "Demo Manager",  icon: FlaskConical },
+    { key: "flags"    as const, label: "Feature Flags", icon: Flag         },
+    { key: "health"   as const, label: "System Health", icon: HeartPulse   },
   ];
 
   return (
@@ -734,7 +736,301 @@ export default function GodModePage() {
           </div>
         )}
 
+        {/* ════════════════════════════ TAB 5: Feature Flags ════════════════════ */}
+        {activeTab === "flags" && <FeatureFlagsTab clinics={clinics} />}
+
+        {/* ════════════════════════════ TAB 6: System Health ════════════════════ */}
+        {activeTab === "health" && <SystemHealthTab />}
+
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// E3 — Granular Feature Flags Tab
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface FeatureFlag {
+  id: string;
+  clinic_id: string;
+  flag_key: string;
+  is_enabled: boolean;
+  config: Record<string, unknown> | null;
+  set_by: string | null;
+  set_at: string | null;
+}
+
+function FeatureFlagsTab({ clinics }: { clinics: ClinicRow[] }) {
+  const [selectedClinic, setSelectedClinic] = useState<string>(clinics[0]?.id ?? "");
+  const [flags,   setFlags]   = useState<FeatureFlag[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [flagKey, setFlagKey] = useState("");
+  const [saving,  setSaving]  = useState<string | null>(null);
+  const [adding,  setAdding]  = useState(false);
+
+  const load = useCallback(async (cid: string) => {
+    if (!cid) return;
+    setLoading(true);
+    const { data } = await supabase
+      .from("clinic_feature_flags")
+      .select("*")
+      .eq("clinic_id", cid)
+      .order("flag_key");
+    setFlags((data ?? []) as FeatureFlag[]);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { if (selectedClinic) load(selectedClinic); }, [selectedClinic, load]);
+
+  async function toggle(flag: FeatureFlag) {
+    setSaving(flag.id);
+    await supabase.from("clinic_feature_flags")
+      .update({ is_enabled: !flag.is_enabled, set_at: new Date().toISOString() })
+      .eq("id", flag.id);
+    setFlags(prev => prev.map(f => f.id === flag.id ? { ...f, is_enabled: !f.is_enabled } : f));
+    setSaving(null);
+  }
+
+  async function addFlag() {
+    if (!flagKey.trim() || !selectedClinic) return;
+    setAdding(true);
+    const { data, error } = await supabase.from("clinic_feature_flags")
+      .insert({ clinic_id: selectedClinic, flag_key: flagKey.trim(), is_enabled: true })
+      .select().single();
+    if (error) { toast.error(error.message); }
+    else { setFlags(prev => [...prev, data as FeatureFlag]); setFlagKey(""); }
+    setAdding(false);
+  }
+
+  async function deleteFlag(id: string) {
+    if (!confirm("Delete this flag?")) return;
+    await supabase.from("clinic_feature_flags").delete().eq("id", id);
+    setFlags(prev => prev.filter(f => f.id !== id));
+  }
+
+  const clinic = clinics.find(c => c.id === selectedClinic);
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 20 }}>
+      {/* Clinic picker */}
+      <div style={{ background: "white", borderRadius: 14, border: "1px solid rgba(197,160,89,0.15)", padding: 14, maxHeight: 600, overflowY: "auto" }}>
+        <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "#9C9584", marginBottom: 10 }}>Select Clinic</p>
+        {clinics.map(c => (
+          <button key={c.id} onClick={() => setSelectedClinic(c.id)}
+            style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 9, border: "none", cursor: "pointer", fontSize: 13, fontWeight: selectedClinic === c.id ? 700 : 500, background: selectedClinic === c.id ? "rgba(197,160,89,0.12)" : "transparent", color: selectedClinic === c.id ? "#8B6914" : "#3C3830", marginBottom: 2 }}>
+            {c.name}
+          </button>
+        ))}
+      </div>
+
+      {/* Flags panel */}
+      <div style={{ background: "white", borderRadius: 14, border: "1px solid rgba(197,160,89,0.15)", padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div>
+            <p style={{ fontSize: 15, fontWeight: 700, color: "#1C1917", fontFamily: "Georgia, serif", margin: 0 }}>
+              {clinic?.name ?? "—"} — Feature Flags
+            </p>
+            <p style={{ fontSize: 11, color: "#9C9584", margin: 0 }}>{flags.length} flag{flags.length !== 1 ? "s" : ""} configured</p>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={flagKey} onChange={e => setFlagKey(e.target.value)}
+              placeholder="new_flag_key"
+              onKeyDown={e => e.key === "Enter" && addFlag()}
+              style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 12, outline: "none", width: 160, fontFamily: "monospace" }} />
+            <button onClick={addFlag} disabled={!flagKey.trim() || adding}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", borderRadius: 8, border: "none", background: "rgba(197,160,89,0.15)", color: "#8B6914", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: !flagKey.trim() ? 0.5 : 1 }}>
+              {adding ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Add
+            </button>
+          </div>
+        </div>
+
+        {loading ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {[1,2,3].map(i => <div key={i} style={{ height: 44, borderRadius: 9, background: "rgba(197,160,89,0.06)", animation: "pulse 1.4s infinite" }} />)}
+          </div>
+        ) : flags.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "40px 20px", background: "rgba(197,160,89,0.03)", borderRadius: 10, border: "1px dashed rgba(197,160,89,0.2)" }}>
+            <Flag size={24} style={{ color: "rgba(197,160,89,0.3)", margin: "0 auto 8px" }} />
+            <p style={{ fontSize: 13, color: "#9C9584", fontFamily: "Georgia, serif", margin: 0 }}>No feature flags set</p>
+            <p style={{ fontSize: 11, color: "#BDB6A8", margin: "4px 0 0" }}>Add a flag key above to override behaviour for this clinic</p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {flags.map(f => (
+              <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(249,247,242,0.5)", border: "1px solid rgba(197,160,89,0.1)" }}>
+                <code style={{ flex: 1, fontSize: 12, color: "#1C1917", fontFamily: "monospace" }}>{f.flag_key}</code>
+                {f.set_at && <span style={{ fontSize: 10, color: "#BDB6A8" }}>{new Date(f.set_at).toLocaleDateString("en-IN")}</span>}
+                <button onClick={() => toggle(f)} disabled={saving === f.id}
+                  style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 5, fontSize: 12, fontWeight: 600, color: f.is_enabled ? "#059669" : "#9C9584" }}>
+                  {saving === f.id ? <Loader2 size={14} className="animate-spin" /> : f.is_enabled ? <ToggleRight size={20} style={{ color: "#059669" }} /> : <ToggleLeft size={20} />}
+                  {f.is_enabled ? "Enabled" : "Disabled"}
+                </button>
+                <button onClick={() => deleteFlag(f.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#DC2626", padding: 2 }}>
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// E2 — System Health Monitor Tab
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface HealthMetric {
+  label: string;
+  value: string | number;
+  status: "ok" | "warn" | "error";
+  detail?: string;
+}
+
+function SystemHealthTab() {
+  const [metrics,   setMetrics]   = useState<HealthMetric[]>([]);
+  const [loading,   setLoading]   = useState(true);
+  const [lastCheck, setLastCheck] = useState<Date | null>(null);
+
+  const runChecks = useCallback(async () => {
+    setLoading(true);
+    const results: HealthMetric[] = [];
+
+    // 1. Total clinics
+    const { count: clinicCount } = await supabase.from("clinics").select("*", { count: "exact", head: true });
+    results.push({ label: "Total Clinics", value: clinicCount ?? 0, status: "ok" });
+
+    // 2. Active clinics
+    const { count: activeCount } = await supabase.from("clinics")
+      .select("*", { count: "exact", head: true })
+      .eq("subscription_status", "active");
+    results.push({ label: "Active Subscriptions", value: activeCount ?? 0, status: "ok" });
+
+    // 3. Total patients
+    const { count: patientCount } = await supabase.from("patients")
+      .select("*", { count: "exact", head: true });
+    results.push({ label: "Total Patients", value: patientCount ?? 0, status: "ok" });
+
+    // 4. Appointments today
+    const today = new Date().toISOString().slice(0, 10);
+    const { count: apptCount } = await supabase.from("appointments")
+      .select("*", { count: "exact", head: true })
+      .gte("start_time", `${today}T00:00:00`)
+      .lt("start_time", `${today}T23:59:59`);
+    results.push({ label: "Appointments Today", value: apptCount ?? 0, status: "ok" });
+
+    // 5. Pending invoices (unpaid)
+    const { count: pendingInv } = await supabase.from("pending_invoices")
+      .select("*", { count: "exact", head: true })
+      .is("paid_at", null)
+      .neq("status", "void");
+    const invStatus = (pendingInv ?? 0) > 500 ? "warn" : "ok";
+    results.push({ label: "Unpaid Invoices", value: pendingInv ?? 0, status: invStatus, detail: invStatus === "warn" ? "High volume — review if expected" : undefined });
+
+    // 6. Webhook failures (last 24h)
+    const since = new Date(Date.now() - 86400000).toISOString();
+    const { count: wbFails } = await supabase.from("webhook_deliveries")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "failed")
+      .gte("created_at", since);
+    const wbStatus = (wbFails ?? 0) > 0 ? "warn" : "ok";
+    results.push({ label: "Webhook Failures (24h)", value: wbFails ?? 0, status: wbStatus, detail: wbStatus === "warn" ? "Check /admin/webhooks for details" : undefined });
+
+    // 7. Workflow DLQ (pending)
+    const { count: dlqCount } = await supabase.from("workflow_dlq")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "pending");
+    const dlqStatus = (dlqCount ?? 0) > 0 ? "warn" : "ok";
+    results.push({ label: "Workflow DLQ (pending)", value: dlqCount ?? 0, status: dlqStatus, detail: dlqStatus === "warn" ? "Unresolved failed actions — check Dev Panel" : undefined });
+
+    // 8. Kill switches active
+    const { data: killed } = await supabase.from("module_registry")
+      .select("display_name")
+      .eq("is_globally_killed", true);
+    const killCount = killed?.length ?? 0;
+    results.push({ label: "Kill Switches Active", value: killCount, status: killCount > 0 ? "error" : "ok", detail: killCount > 0 ? killed!.map(k => k.display_name).join(", ") : undefined });
+
+    // 9. Background jobs pending
+    const { count: bgCount } = await supabase.from("background_jobs")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "pending");
+    results.push({ label: "Background Jobs Pending", value: bgCount ?? 0, status: (bgCount ?? 0) > 50 ? "warn" : "ok" });
+
+    // 10. Audit log last 24h
+    const { count: auditCount } = await supabase.from("audit_logs")
+      .select("*", { count: "exact", head: true })
+      .gte("created_at", since);
+    results.push({ label: "Audit Events (24h)", value: auditCount ?? 0, status: "ok" });
+
+    setMetrics(results);
+    setLastCheck(new Date());
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { runChecks(); }, [runChecks]);
+
+  const STATUS_CFG = {
+    ok:    { color: "#059669", bg: "rgba(5,150,105,0.08)",   border: "rgba(5,150,105,0.2)",   icon: <CheckCircle2 size={14} /> },
+    warn:  { color: "#D97706", bg: "rgba(217,119,6,0.08)",   border: "rgba(217,119,6,0.2)",   icon: <AlertTriangle size={14} /> },
+    error: { color: "#DC2626", bg: "rgba(220,38,38,0.08)",   border: "rgba(220,38,38,0.2)",   icon: <AlertTriangle size={14} /> },
+  };
+
+  const errorCount = metrics.filter(m => m.status === "error").length;
+  const warnCount  = metrics.filter(m => m.status === "warn").length;
+  const overallStatus = errorCount > 0 ? "error" : warnCount > 0 ? "warn" : "ok";
+  const overallCfg = STATUS_CFG[overallStatus];
+
+  return (
+    <div>
+      {/* Overall status banner */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderRadius: 12, background: overallCfg.bg, border: `1px solid ${overallCfg.border}`, marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ color: overallCfg.color }}>{overallCfg.icon}</span>
+          <div>
+            <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: overallCfg.color, fontFamily: "Georgia, serif" }}>
+              {overallStatus === "ok" ? "All systems operational" : overallStatus === "warn" ? `${warnCount} warning${warnCount !== 1 ? "s" : ""} detected` : `${errorCount} critical issue${errorCount !== 1 ? "s" : ""}`}
+            </p>
+            {lastCheck && <p style={{ margin: 0, fontSize: 11, color: overallCfg.color, opacity: 0.7 }}>Last checked {lastCheck.toLocaleTimeString("en-IN")}</p>}
+          </div>
+        </div>
+        <button onClick={runChecks} disabled={loading}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", borderRadius: 8, border: `1px solid ${overallCfg.border}`, background: "white", cursor: "pointer", fontSize: 12, fontWeight: 600, color: overallCfg.color }}>
+          {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+          {loading ? "Checking…" : "Re-check"}
+        </button>
+      </div>
+
+      {/* Metrics grid */}
+      {loading && metrics.length === 0 ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+          {Array.from({ length: 10 }).map((_, i) => (
+            <div key={i} style={{ height: 72, borderRadius: 12, background: "rgba(197,160,89,0.06)", animation: "pulse 1.4s infinite" }} />
+          ))}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+          {metrics.map(m => {
+            const cfg = STATUS_CFG[m.status];
+            return (
+              <div key={m.label} style={{ padding: "14px 16px", borderRadius: 12, background: "white", border: `1px solid ${m.status !== "ok" ? cfg.border : "rgba(197,160,89,0.12)"}` }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: m.detail ? 6 : 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Database size={13} style={{ color: "#9C9584" }} />
+                    <span style={{ fontSize: 12, color: "#6B7280" }}>{m.label}</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 18, fontWeight: 800, color: m.status !== "ok" ? cfg.color : "#1C1917", fontFamily: "Georgia, serif" }}>{m.value}</span>
+                    <span style={{ color: cfg.color }}>{cfg.icon}</span>
+                  </div>
+                </div>
+                {m.detail && <p style={{ margin: 0, fontSize: 11, color: cfg.color, paddingLeft: 21 }}>{m.detail}</p>}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

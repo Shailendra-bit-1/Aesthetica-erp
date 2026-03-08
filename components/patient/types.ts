@@ -16,6 +16,9 @@ export interface Patient {
   allergies: string[] | null;
   patient_tier: string | null;
   wallet_balance: number | null;
+  is_blacklisted: boolean | null;
+  blacklist_reason: string | null;
+  blacklisted_at: string | null;
 }
 
 export interface MedicalHistory {

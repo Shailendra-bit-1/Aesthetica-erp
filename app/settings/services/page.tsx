@@ -86,7 +86,7 @@ function ServicesPageInner() {
   const isSuperAdmin = profile?.role === "superadmin";
   const isAdmin = isSuperAdmin || profile?.role === "chain_admin" || profile?.role === "clinic_admin";
 
-  const [tab, setTab] = useState<"services" | "packages" | "templates" | "discounts">("services");
+  const [tab, setTab] = useState<"services" | "packages" | "templates" | "discounts" | "consumables">("services");
 
   // Services state
   const [services, setServices] = useState<Service[]>([]);
@@ -276,7 +276,8 @@ function ServicesPageInner() {
             { key: "services",  label: "Services",       icon: <Sparkles size={14} />,    count: services.length, show: true         },
             { key: "packages",  label: "Packages",       icon: <Package  size={14} />,    count: packages.length, show: true         },
             { key: "templates", label: "Templates",      icon: <Crown    size={14} />,    count: templateServices.length + templatePackages.length, show: isSuperAdmin },
-            { key: "discounts", label: "Discount Rules", icon: <ShieldCheck size={14} />, count: discountMatrix.length, show: isAdmin },
+            { key: "discounts",   label: "Discount Rules", icon: <ShieldCheck size={14} />, count: discountMatrix.length, show: isAdmin },
+            { key: "consumables", label: "Consumables",    icon: <Package    size={14} />, count: 0,                     show: isAdmin },
           ] as const)
             .filter(t => t.show)
             .map(t => (
@@ -349,6 +350,11 @@ function ServicesPageInner() {
             activeClinicId={activeClinicId}
             onRefresh={fetchDiscountMatrix}
           />
+        )}
+
+        {/* ── Consumables Tab ── */}
+        {tab === "consumables" && isAdmin && (
+          <ServiceConsumablesTab services={services} clinicId={activeClinicId} />
         )}
 
         {/* ── Global Templates Tab (superadmin only) ── */}
@@ -1669,7 +1675,7 @@ function PackageBuilderDrawer({ services, clinicId, isSuperAdmin, isAdmin, editD
 
 // ── GAP-22: Consumables Section ───────────────────────────────────────────────
 
-interface Consumable {
+interface ServiceConsumableRow {
   id: string;
   inventory_product_id: string;
   quantity_per_session: number;
@@ -1678,7 +1684,7 @@ interface Consumable {
 }
 
 function ConsumablesSection({ serviceId, clinicId }: { serviceId: string; clinicId: string }) {
-  const [consumables, setConsumables] = useState<Consumable[]>([]);
+  const [consumables, setConsumables] = useState<ServiceConsumableRow[]>([]);
   const [products, setProducts]       = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading]         = useState(true);
   const [addProdId, setAddProdId]     = useState("");
@@ -1699,7 +1705,7 @@ function ConsumablesSection({ serviceId, clinicId }: { serviceId: string; clinic
         .eq("is_active", true)
         .order("name"),
     ]).then(([{ data: c }, { data: p }]) => {
-      setConsumables((c ?? []) as Consumable[]);
+      setConsumables((c ?? []) as ServiceConsumableRow[]);
       setProducts(p ?? []);
       setLoading(false);
     });
@@ -1716,7 +1722,7 @@ function ConsumablesSection({ serviceId, clinicId }: { serviceId: string; clinic
     }).select("*, inventory_products(name)").single();
     setSaving(false);
     if (error) { toast.error(error.message); return; }
-    setConsumables(c => [...c, data as Consumable]);
+    setConsumables(c => [...c, data as ServiceConsumableRow]);
     setAddProdId(""); setAddQty("1");
     toast.success("Consumable linked");
   }
@@ -2448,3 +2454,149 @@ const drawerInput: React.CSSProperties = {
   boxSizing: "border-box",
   transition: "border-color 0.2s",
 };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// E1 — Service Consumables Tab
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface SvcConsumable {
+  id: string;
+  service_id: string;
+  inventory_product_id: string;
+  quantity_used: number;
+  unit: string | null;
+  notes: string | null;
+  product_name?: string;
+}
+
+interface InventoryProduct { id: string; name: string; unit_of_measure: string | null; }
+
+function ServiceConsumablesTab({ services, clinicId }: { services: Service[]; clinicId: string | null }) {
+  const [selectedSvc, setSelectedSvc] = useState<string>(services[0]?.id ?? "");
+  const [consumables, setConsumables] = useState<SvcConsumable[]>([]);
+  const [products,    setProducts]    = useState<InventoryProduct[]>([]);
+  const [loading,     setLoading]     = useState(false);
+  const [saving,      setSaving]      = useState(false);
+  const [newProdId,   setNewProdId]   = useState("");
+  const [newQty,      setNewQty]      = useState("1");
+
+  useEffect(() => {
+    if (!clinicId) return;
+    supabase.from("inventory_products").select("id, name, unit_of_measure")
+      .eq("clinic_id", clinicId).order("name")
+      .then(({ data }) => setProducts((data ?? []) as InventoryProduct[]));
+  }, [clinicId]);
+
+  useEffect(() => {
+    if (!selectedSvc) return;
+    setLoading(true);
+    supabase.from("service_consumables")
+      .select("id, service_id, inventory_product_id, quantity_used, unit, notes")
+      .eq("service_id", selectedSvc)
+      .then(async ({ data }) => {
+        const rows = (data ?? []) as SvcConsumable[];
+        // Enrich with product names
+        const enriched = rows.map(r => ({
+          ...r,
+          product_name: products.find(p => p.id === r.inventory_product_id)?.name ?? "—",
+        }));
+        setConsumables(enriched);
+        setLoading(false);
+      });
+  }, [selectedSvc, products]);
+
+  async function addConsumable() {
+    if (!newProdId || !selectedSvc || !clinicId) return;
+    setSaving(true);
+    const prod = products.find(p => p.id === newProdId);
+    const { data, error } = await supabase.from("service_consumables").insert({
+      service_id: selectedSvc,
+      inventory_product_id: newProdId,
+      quantity_used: parseFloat(newQty) || 1,
+      unit: prod?.unit_of_measure ?? null,
+      clinic_id: clinicId,
+    }).select().single();
+    if (error) { toast.error(error.message); }
+    else {
+      setConsumables(prev => [...prev, { ...(data as SvcConsumable), product_name: prod?.name }]);
+      setNewProdId(""); setNewQty("1");
+    }
+    setSaving(false);
+  }
+
+  async function removeConsumable(id: string) {
+    await supabase.from("service_consumables").delete().eq("id", id);
+    setConsumables(prev => prev.filter(c => c.id !== id));
+  }
+
+  const selectedService = services.find(s => s.id === selectedSvc);
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 20 }}>
+      {/* Service picker */}
+      <div style={{ background: "var(--surface)", borderRadius: 14, border: "1px solid var(--border)", padding: 14, maxHeight: 520, overflowY: "auto" }}>
+        <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase" as const, color: "var(--text-muted)", marginBottom: 10 }}>Select Service</p>
+        {services.filter(s => s.is_active !== false).map(s => (
+          <button key={s.id} onClick={() => setSelectedSvc(s.id)}
+            style={{ width: "100%", textAlign: "left" as const, padding: "8px 10px", borderRadius: 9, border: "none", cursor: "pointer", fontSize: 13, fontWeight: selectedSvc === s.id ? 700 : 500, background: selectedSvc === s.id ? "rgba(197,160,89,0.12)" : "transparent", color: selectedSvc === s.id ? "#8B6914" : "var(--foreground)", marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+            {s.name}
+          </button>
+        ))}
+      </div>
+
+      {/* Consumables panel */}
+      <div style={{ background: "var(--surface)", borderRadius: 14, border: "1px solid var(--border)", padding: 20 }}>
+        <div style={{ marginBottom: 16 }}>
+          <p style={{ fontSize: 15, fontWeight: 700, color: "var(--foreground)", fontFamily: "Georgia, serif", margin: "0 0 2px" }}>
+            {selectedService?.name ?? "—"} — Consumables
+          </p>
+          <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>
+            Products consumed per session. Used for automatic inventory deduction.
+          </p>
+        </div>
+
+        {/* Add row */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center", padding: "12px 14px", background: "rgba(197,160,89,0.04)", borderRadius: 10, border: "1px solid rgba(197,160,89,0.15)" }}>
+          <select value={newProdId} onChange={e => setNewProdId(e.target.value)}
+            style={{ flex: 1, padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", fontSize: 12, outline: "none", background: "var(--surface)" }}>
+            <option value="">Select product…</option>
+            {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <input type="number" min="0.01" step="0.01" value={newQty} onChange={e => setNewQty(e.target.value)}
+            placeholder="Qty"
+            style={{ width: 80, padding: "7px 10px", borderRadius: 8, border: "1px solid var(--border)", fontSize: 12, outline: "none", background: "var(--surface)", textAlign: "center" as const }} />
+          <button onClick={addConsumable} disabled={!newProdId || saving}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", borderRadius: 8, border: "none", background: "#C5A059", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: !newProdId ? 0.5 : 1, flexShrink: 0 }}>
+            {saving ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Add
+          </button>
+        </div>
+
+        {loading ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {[1,2,3].map(i => <div key={i} style={{ height: 42, borderRadius: 9, background: "rgba(197,160,89,0.06)", animation: "pulse 1.4s infinite" }} />)}
+          </div>
+        ) : consumables.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "36px 20px", background: "rgba(197,160,89,0.03)", borderRadius: 10, border: "1px dashed rgba(197,160,89,0.2)" }}>
+            <Package size={24} style={{ color: "rgba(197,160,89,0.3)", margin: "0 auto 8px" }} />
+            <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted)" }}>No consumables mapped yet</p>
+            <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--text-muted)", opacity: 0.7 }}>Add products above to auto-deduct inventory on session completion</p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {consumables.map(c => (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(249,247,242,0.5)", border: "1px solid var(--border)" }}>
+                <Package size={13} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+                <span style={{ flex: 1, fontSize: 13, color: "var(--foreground)", fontWeight: 500 }}>{c.product_name}</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "var(--gold)" }}>{c.quantity_used}</span>
+                {c.unit && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{c.unit}</span>}
+                <button onClick={() => removeConsumable(c.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#DC2626", padding: 2 }}>
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

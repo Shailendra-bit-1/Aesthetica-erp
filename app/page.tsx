@@ -70,6 +70,15 @@ interface Appointment {
   patient: { full_name: string | null; patient_tier: string | null } | null;
 }
 
+interface TopPatient {
+  patient_id: string;
+  full_name: string;
+  total_spent: number;
+  total_visits: number;
+  last_visit_at: string | null;
+  wallet_balance: number;
+}
+
 interface ClinicRevenue {
   id: string;
   name: string;
@@ -148,6 +157,7 @@ export default function OverviewPage() {
   const [branchRevs,    setBranchRevs]    = useState<ClinicRevenue[]>([]);
   const [invAlerts,     setInvAlerts]     = useState<InventoryAlert[]>([]);
   const [recentPats,    setRecentPats]    = useState<RecentPatient[]>([]);
+  const [topPatients,   setTopPatients]   = useState<TopPatient[]>([]);
   const [loading,       setLoading]       = useState(true);
   const [showNewPat,    setShowNewPat]    = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
@@ -298,6 +308,17 @@ export default function OverviewPage() {
     setAppts(apptList);
     setInvAlerts((invRes.data ?? []) as InventoryAlert[]);
     setRecentPats((recentPatsRes.data ?? []) as RecentPatient[]);
+
+    // E8: Top patients from patient_metrics view
+    if (activeClinicId && !isGlobal) {
+      const { data: topData } = await supabase
+        .from("patient_metrics")
+        .select("patient_id, full_name, total_spent, total_visits, last_visit_at, wallet_balance")
+        .eq("clinic_id", activeClinicId)
+        .order("total_spent", { ascending: false })
+        .limit(5);
+      setTopPatients((topData ?? []) as TopPatient[]);
+    }
 
     // Branch revenue (chain/superadmin)
     if (isChainAdmin && branchRes.data && branchRes.data.length > 0) {
@@ -1161,6 +1182,34 @@ export default function OverviewPage() {
         </section>
         )}
 
+
+        {/* ── E8: Top Patients ── */}
+        {topPatients.length > 0 && (
+        <section className="card overflow-hidden" style={{ background: "var(--surface)" }}>
+          <div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div className="flex items-center gap-3">
+              <IndianRupee size={16} style={{ color: "var(--gold)" }} />
+              <h3 className="text-base font-semibold" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>Top Patients by Revenue</h3>
+            </div>
+            <CalendarCheck size={14} style={{ color: "var(--text-muted)" }} />
+          </div>
+          <div className="divide-y" style={{ borderColor: "var(--border)" }}>
+            {topPatients.map((p, i) => (
+              <div key={p.patient_id} className="px-6 py-3 flex items-center gap-4">
+                <span className="text-xs font-bold w-5 text-center flex-shrink-0" style={{ color: i === 0 ? "#C5A059" : "var(--text-muted)" }}>#{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold truncate" style={{ color: "var(--foreground)" }}>{p.full_name}</p>
+                  <p className="text-xs" style={{ color: "var(--text-muted)" }}>{p.total_visits} visit{p.total_visits !== 1 ? "s" : ""}{p.last_visit_at ? ` · Last: ${new Date(p.last_visit_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}` : ""}</p>
+                </div>
+                <div className="text-right flex-shrink-0">
+                  <p className="text-sm font-bold" style={{ color: "var(--gold)" }}>₹{p.total_spent.toLocaleString("en-IN")}</p>
+                  {p.wallet_balance > 0 && <p className="text-xs" style={{ color: "var(--text-muted)" }}>₹{p.wallet_balance.toLocaleString("en-IN")} wallet</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+        )}
 
         {/* ── D8: Doctor Queue ── */}
         {activeClinicId && !isGlobal && (

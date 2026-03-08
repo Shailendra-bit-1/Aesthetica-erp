@@ -24,7 +24,7 @@ type AppointmentStatus =
   | "planned" | "confirmed" | "arrived"
   | "in_session" | "completed" | "cancelled" | "no_show";
 type PatientTier = "vip" | "hni" | "standard";
-type CalendarView = "day" | "week" | "month";
+type CalendarView = "day" | "week" | "month" | "list";
 
 interface Appointment {
   id: string;
@@ -420,7 +420,7 @@ function SchedulerPageInner() {
 
         {/* View switcher */}
         <div style={{ display: "flex", borderRadius: 10, border: "1px solid var(--border)", overflow: "hidden" }}>
-          {(["day","week","month"] as const).map(v => (
+          {(["day","week","month","list"] as const).map(v => (
             <button key={v} onClick={() => setView(v)} style={{
               padding: "6px 14px", border: "none",
               background: view === v ? "#C5A059" : "var(--surface)",
@@ -629,6 +629,13 @@ ${today.sort((a,b) => a.start_time.localeCompare(b.start_time)).map(a => `<tr>
               onActionAppt={handleQuickAction}
               colorBy={colorBy}
               providerColorMap={providerColorMap}
+            />
+          ) : view === "list" ? (
+            <AppointmentListView
+              appointments={filteredAppointments}
+              privacyMode={privacyMode}
+              onSelectAppt={setSelectedAppt}
+              onNewAppt={() => setShowNewAppt(true)}
             />
           ) : (
             <MonthView
@@ -3862,6 +3869,141 @@ function CheckoutModal({ appointment: a, credit, activeClinicId, onClose, onComp
             </>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// E5 — Appointment List View (Reception Call List)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const STATUS_LIST_CFG: Record<string, { label: string; color: string; bg: string }> = {
+  planned:     { label: "Planned",     color: "#6B7280", bg: "#F9FAFB"  },
+  confirmed:   { label: "Confirmed",   color: "#2563EB", bg: "#EFF6FF"  },
+  arrived:     { label: "Arrived",     color: "#7C3AED", bg: "#F5F3FF"  },
+  in_session:  { label: "In Session",  color: "#7C3AED", bg: "#F5F3FF"  },
+  completed:   { label: "Done",        color: "#16A34A", bg: "#F0FDF4"  },
+  cancelled:   { label: "Cancelled",   color: "#6B7280", bg: "#F9FAFB"  },
+  no_show:     { label: "No Show",     color: "#DC2626", bg: "#FEF2F2"  },
+};
+
+function AppointmentListView({
+  appointments, privacyMode, onSelectAppt, onNewAppt,
+}: {
+  appointments: Appointment[];
+  privacyMode: boolean;
+  onSelectAppt: (a: Appointment) => void;
+  onNewAppt: () => void;
+}) {
+  const [sortKey,  setSortKey]  = useState<"time" | "patient" | "provider" | "status">("time");
+  const [sortAsc,  setSortAsc]  = useState(true);
+  const [filterSt, setFilterSt] = useState<string>("all");
+  const [search,   setSearch]   = useState("");
+
+  const statusOptions = Array.from(new Set(appointments.map(a => a.status)));
+
+  const filtered = appointments
+    .filter(a => filterSt === "all" || a.status === filterSt)
+    .filter(a => {
+      if (!search) return true;
+      const q = search.toLowerCase();
+      return a.patient_name.toLowerCase().includes(q) || a.service_name.toLowerCase().includes(q) || a.provider_name.toLowerCase().includes(q);
+    })
+    .sort((a, b) => {
+      let av = "", bv = "";
+      if (sortKey === "time")     { av = a.start_time;     bv = b.start_time;     }
+      if (sortKey === "patient")  { av = a.patient_name;   bv = b.patient_name;   }
+      if (sortKey === "provider") { av = a.provider_name;  bv = b.provider_name;  }
+      if (sortKey === "status")   { av = a.status;         bv = b.status;         }
+      return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+
+  function toggleSort(key: typeof sortKey) {
+    if (sortKey === key) setSortAsc(x => !x);
+    else { setSortKey(key); setSortAsc(true); }
+  }
+
+  const ColHeader = ({ k, label }: { k: typeof sortKey; label: string }) => (
+    <th onClick={() => toggleSort(k)} style={{ padding: "10px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "#9C9584", cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}>
+      {label} {sortKey === k ? (sortAsc ? "↑" : "↓") : ""}
+    </th>
+  );
+
+  return (
+    <div style={{ padding: 20 }}>
+      {/* Toolbar */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
+        <div style={{ position: "relative", flex: 1, maxWidth: 300 }}>
+          <Search size={13} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#9C9584", pointerEvents: "none" }} />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search patient, service…"
+            style={{ width: "100%", padding: "7px 10px 7px 30px", borderRadius: 9, border: "1px solid var(--border)", fontSize: 12, outline: "none", background: "var(--surface)", boxSizing: "border-box" }} />
+        </div>
+        <select value={filterSt} onChange={e => setFilterSt(e.target.value)}
+          style={{ padding: "7px 10px", borderRadius: 9, border: "1px solid var(--border)", fontSize: 12, outline: "none", background: "var(--surface)", cursor: "pointer" }}>
+          <option value="all">All Statuses</option>
+          {statusOptions.map(s => (
+            <option key={s} value={s}>{STATUS_LIST_CFG[s]?.label ?? s}</option>
+          ))}
+        </select>
+        <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: "auto" }}>{filtered.length} appointment{filtered.length !== 1 ? "s" : ""}</span>
+        <button onClick={onNewAppt} style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", borderRadius: 9, border: "none", background: "#C5A059", color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+          <Plus size={13} /> New
+        </button>
+      </div>
+
+      {/* Table */}
+      <div style={{ background: "var(--surface)", borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead style={{ borderBottom: "1px solid var(--border)", background: "var(--surface-muted)" }}>
+            <tr>
+              <ColHeader k="time"     label="Time"     />
+              <ColHeader k="patient"  label="Patient"  />
+              <th style={{ padding: "10px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "#9C9584" }}>Service</th>
+              <ColHeader k="provider" label="Provider" />
+              <ColHeader k="status"   label="Status"   />
+              <th style={{ padding: "10px 14px", textAlign: "left", fontSize: 11, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", color: "#9C9584" }}>Room</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr><td colSpan={6} style={{ padding: "40px 20px", textAlign: "center", fontSize: 13, color: "var(--text-muted)" }}>No appointments match the filter</td></tr>
+            ) : filtered.map((a, i) => {
+              const cfg = STATUS_LIST_CFG[a.status] ?? STATUS_LIST_CFG.planned;
+              const time = new Date(a.start_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+              const date = new Date(a.start_time).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+              return (
+                <tr key={a.id} onClick={() => onSelectAppt(a)}
+                  style={{ borderBottom: i < filtered.length - 1 ? "1px solid var(--border)" : "none", cursor: "pointer", transition: "background 0.1s" }}
+                  onMouseEnter={e => ((e.currentTarget as HTMLElement).style.background = "var(--surface-muted)")}
+                  onMouseLeave={e => ((e.currentTarget as HTMLElement).style.background = "transparent")}
+                >
+                  <td style={{ padding: "11px 14px", whiteSpace: "nowrap" }}>
+                    <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "var(--foreground)" }}>{time}</p>
+                    <p style={{ margin: 0, fontSize: 10, color: "var(--text-muted)" }}>{date}</p>
+                  </td>
+                  <td style={{ padding: "11px 14px" }}>
+                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>
+                      {privacyMode ? "●●●●●" : a.patient_name}
+                    </p>
+                  </td>
+                  <td style={{ padding: "11px 14px" }}>
+                    <p style={{ margin: 0, fontSize: 12, color: "var(--text-secondary)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.service_name}</p>
+                  </td>
+                  <td style={{ padding: "11px 14px" }}>
+                    <p style={{ margin: 0, fontSize: 12, color: "var(--text-secondary)" }}>{a.provider_name}</p>
+                  </td>
+                  <td style={{ padding: "11px 14px" }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 20, background: cfg.bg, color: cfg.color }}>{cfg.label}</span>
+                  </td>
+                  <td style={{ padding: "11px 14px" }}>
+                    <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)" }}>{a.room ?? "—"}</p>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
