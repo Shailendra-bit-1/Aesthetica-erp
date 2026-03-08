@@ -1,11 +1,25 @@
 # AESTHETICA CLINIC ERP — FINAL PLAN
-## Single Source of Truth | Version 2.2 | 2026-03-08
+## Single Source of Truth | Version 2.3 | 2026-03-08
 
 ---
 
 > This document supersedes MASTER_PLAN.md, GAP_ANALYSIS.md, and PRE_IMPLEMENTATION_AUDIT.md.
 > **Everything Claude builds must follow this document exactly.**
 > No feature, table, route, API, or UI decision should contradict what is written here.
+>
+> **v2.3 additions (SSOT audit — 2026-03-08):**
+> - 13 documentation/cross-reference fixes applied (F-1 through F-10 + C-1 through C-3)
+> - Header phase count corrected (A16–A24 → A1–A27)
+> - 13 missing inventory_transfers, before_after_photos, patient_packages, workflow_scheduled_actions
+>   table definitions added to Part 8
+> - staff_commissions definition updated with commission_type column
+> - inventory_movements naming standardised (was inventory_transactions in consume_session SQL)
+> - Appointment status constraint SQL added to Part 8 Column Alterations (canonical migration location)
+> - Orphaned navigation line removed from Section 9.15
+> - Part 7 Module Status updated with all 13 NG MISSING items
+> - POST /api/billing/invoice added to Part 12 API Routes
+> - Demo clinic trigger suppression mechanism specified in Part 16.5
+> - is_reverse_charge marked [FUTURE] in Section 9.5
 >
 > **v2.2 additions (Gap List 2 + clinical audit — 2026-03-08):**
 > - 13 new gaps added (NG-1 → NG-13): patient merge, consent snapshotting, timing timestamps,
@@ -14,7 +28,7 @@
 >   service credit expiry worker, clinical audit log
 > - 5 new tables: patient_merge_log, patient_events, search_index, background_jobs, clinical_audit_log
 > - 9 new column alterations across 5 tables
-> - Execution order: Phase A expanded (A16–A24), Phase B + E + F expanded
+> - Execution order: Phase A expanded (A1–A27), Phase B + E + F expanded
 >
 > **v2.1 additions (audit-validated 2026-03-08):**
 > - Security: 3 critical security fixes folded in (OTP leak, RLS gaps, PHI masking)
@@ -385,6 +399,19 @@ A global command palette triggered by `Cmd+K` (Mac) / `Ctrl+K` (Windows).
 | Purchase Orders | MISSING | PO workflow for inventory |
 | Patient Tags | MISSING | VIP, Influencer, Sensitive Skin |
 | Duplicate Patient Detection | MISSING | Phone/name check on create |
+| Patient Merge (NG-1) | MISSING | Merge modal + POST /api/patients/merge |
+| Consent Snapshotting (NG-2) | MISSING | form_snapshot_json on portal/intake submit |
+| Appointment Timing Timestamps (NG-3) | MISSING | checked_in_at + consultation/treatment time columns |
+| Protocol Follow-up Automation (NG-4) | MISSING | Auto-suggest follow-up after treatment completion |
+| Inventory Transit Lock (NG-5) | MISSING | 2-step dispatch/receive on inter-clinic transfers |
+| Marketing Attribution / UTM (NG-6) | MISSING | UTM capture on intake + lead webhooks + reports |
+| Patient Activity Timeline (NG-7) | MISSING | patient_events table + Timeline tab in patient profile |
+| Patient Metrics View (NG-8) | MISSING | patient_metrics DB view — LTV, avg ticket, visit count |
+| Soft Delete (NG-9) | MISSING | deleted_at on patients/services/profiles |
+| Command Bar Search Index (NG-10) | MISSING | search_index table + GIN index + population triggers |
+| Background Job Queue (NG-11) | MISSING | background_jobs table + Edge Function processor |
+| Service Credit Expiry Worker (NG-12) | MISSING | pg_cron daily + patient notification |
+| Clinical Audit Log (NG-13) | MISSING | field-level change tracking on 5 clinical tables |
 
 ---
 
@@ -428,6 +455,12 @@ patient_treatments    id, patient_id, clinic_id, treatment_name,
                       status, price, counselled_by, notes, created_at
 prescriptions         id, encounter_id, patient_id, medication_name,
                       dosage, frequency, duration, created_at
+patient_packages      id, patient_id, package_name, total_sessions,
+                      used_sessions, price_per_session, created_at
+                      (clinic_id added via migration A14)
+before_after_photos   id, patient_id, clinic_id, photo_url, photo_type
+                      (before|after), service_id, pair_id UUID nullable,
+                      taken_at, uploaded_by, notes
 patient_sticky_notes  id, patient_id, clinic_id, content, created_by, created_at
 patient_face_charts   id, patient_id, clinic_id, annotations (JSONB), created_at
 patient_communications  id, patient_id, clinic_id, channel, direction,
@@ -483,7 +516,10 @@ service_refunds       id, credit_id, patient_id, clinic_id,
                       refund_reason, status
 staff_commissions     id, consumption_id, provider_id, clinic_id,
                       patient_id, service_name, sale_amount,
-                      commission_pct, commission_amount, status, paid_at
+                      commission_pct, commission_amount,
+                      commission_type (sale|delivery),
+                      status, paid_at
+                      (commission_type added via migration A13)
 package_members       id, credit_id, primary_patient_id,
                       member_patient_id, allowed_sessions, is_active
 provider_commission_rates  id, provider_id, clinic_id, service_id,
@@ -538,6 +574,19 @@ inventory_batches     id, product_id, clinic_id, batch_number,
 inventory_movements   id, clinic_id, product_id, batch_id,
                       type (purchase|sale|consumption|transfer|adjustment),
                       quantity, reference_id, notes, created_by, created_at
+inventory_transfers   id, from_clinic_id UUID→clinics, to_clinic_id UUID→clinics,
+                      product_id UUID→inventory_products,
+                      batch_id UUID→inventory_batches,
+                      quantity INT NOT NULL,
+                      transfer_status TEXT DEFAULT 'requested'
+                        CHECK (transfer_status IN
+                          ('requested','in_transit','received','cancelled')),
+                      requested_by UUID→profiles,
+                      received_by UUID→profiles,
+                      requested_at TIMESTAMPTZ DEFAULT NOW(),
+                      received_at TIMESTAMPTZ, notes TEXT
+                      (transfer_status/received_by/received_at added via migration A20
+                       for 2-step transit lock — NG-5)
 ```
 
 ### Entitlement (LIVE)
@@ -601,6 +650,18 @@ workflow_dlq          id, clinic_id, rule_id, action_type,
                       error_message, status, retry_count
 workflow_action_log   id, rule_id, clinic_id, action_type,
                       result, duration_ms
+workflow_scheduled_actions  id, clinic_id, rule_id UUID→rule_definitions,
+                      trigger_event TEXT NOT NULL,
+                      context JSONB NOT NULL DEFAULT '{}',
+                      scheduled_for TIMESTAMPTZ NOT NULL,
+                      status TEXT DEFAULT 'pending'
+                        CHECK (status IN ('pending','processed','cancelled')),
+                      processed_at TIMESTAMPTZ
+                      (supports delay_minutes action type — Phase 0 item 0-3
+                       requires RLS to be enabled on this table)
+workflow_clinic_overrides  rule_id UUID, clinic_id UUID (composite PK),
+                           is_enabled BOOLEAN
+                           (superadmin-only — per-branch rule overrides)
 ```
 
 ### Tables To Be Created (MISSING)
@@ -720,6 +781,16 @@ ALTER TABLE services
 -- ─── HSN/SAC on invoice line items ───────────────────────────────────────────
 ALTER TABLE invoice_line_items
   ADD COLUMN hsn_sac_code VARCHAR(8) DEFAULT NULL;
+
+-- ─── Appointment status constraint — add consultation_done, treatment_done (A1) ─
+-- This migration DROPS and re-creates the constraint. Run before any feature code.
+ALTER TABLE appointments DROP CONSTRAINT IF EXISTS appointments_status_check;
+ALTER TABLE appointments ADD CONSTRAINT appointments_status_check
+  CHECK (status IN (
+    'planned', 'confirmed', 'arrived',
+    'consultation_done', 'treatment_done',
+    'in_session', 'completed', 'cancelled', 'no_show'
+  ));
 
 -- ─── Room assignment on appointments ─────────────────────────────────────────
 ALTER TABLE appointments
@@ -1165,7 +1236,7 @@ ALTER TABLE invoice_line_items
 **GST rules:**
 - GST % configurable per service (pulled from `services.gst_category`)
 - Total GST shown as separate line on invoice (CGST + SGST split for intrastate, IGST for interstate)
-- Reverse charge: supported via `is_reverse_charge` boolean on invoice (future)
+- Reverse charge: `is_reverse_charge` boolean on invoice — **[FUTURE — not in Phase A–F, no migration planned]**
 
 #### Discount Approval Flow (LIVE)
 1. Staff requests discount → OTP sent to clinic admin via SMS/email
@@ -1236,8 +1307,8 @@ When a service session is consumed (`consume_session()` RPC is called), three th
 **Fix — update `consume_session()` RPC to include:**
 ```sql
 -- After existing credit + commission logic, add:
-INSERT INTO inventory_transactions (
-  product_id, clinic_id, type, quantity_change, reference_id, reference_type, notes
+INSERT INTO inventory_movements (
+  product_id, clinic_id, type, quantity, reference_id, notes, created_by
 )
 SELECT
   sc.inventory_product_id,
@@ -1569,7 +1640,6 @@ Aesthetic clinics spend heavily on Meta Ads, Google Ads, and WhatsApp campaigns.
 - `utm_source`: `instagram | google | facebook | whatsapp | referral | organic`
 - `utm_medium`: `cpc | social | email | sms | qr_code`
 - `utm_campaign`: free text (e.g., `diwali_2026`, `laser_offer_march`)
-- Navigation manager (reorder sidebar items)
 
 ---
 
@@ -1770,6 +1840,7 @@ POST /api/portal/consent          E-signature capture
 
 ### Billing APIs
 ```
+POST /api/billing/invoice         Create invoice (validates HSN/SAC on all line items — returns 400 if missing)
 POST /api/discounts/request       Request OTP for discount approval
 POST /api/discounts/verify-otp    Verify OTP and approve discount
 ```
@@ -2203,13 +2274,15 @@ await logAction({
 | Patient journey events | `patient_events` | Business events for timeline | API hooks + RPC hooks |
 
 **Demo clinic suppression:** `logAction()` silently skips insert if `clinicId` is a demo clinic.
-`clinical_audit_log` and `patient_events` also skip inserts for demo clinics.
+`clinical_audit_log` triggers and `patient_events` inserts also skip demo clinics — implementation:
+DB triggers check `(SELECT is_demo FROM clinics WHERE id = NEW.clinic_id LIMIT 1)` and return early if true.
+This is a single indexed lookup per trigger fire and does not affect performance under normal (non-demo) load.
 
 ---
 
 *Last updated: 2026-03-08*
-*Version: 2.2 — Gap List 2 + Clinical Audit Log integrated*
-*Status: APPROVED — Ready for implementation. Start with Phase 0 security hotfixes.*
+*Version: 2.3 — SSOT audit-clean. All cross-reference and schema inconsistencies resolved.*
+*Status: APPROVED — Single Source of Truth. Start with Phase 0 security hotfixes.*
 
 ---
 
@@ -2245,6 +2318,26 @@ All findings from the 360-degree pre-implementation audit (2026-03-08, DA-26 →
 | DA-49: 109 tables undocumented | Schema is larger than documented — SSOT is the live DB |
 
 **The raw audit report is preserved in `PRE_IMPLEMENTATION_AUDIT.md` for reference.**
+
+---
+
+### v2.3 Fixes — SSOT Audit Clean-up (2026-03-08)
+
+| Fix | Change |
+|---|---|
+| F-1: Phase A count in header | Corrected "A16–A24" → "A1–A27" |
+| F-2: inventory_transfers missing from Part 8 | Full column definition added to Inventory LIVE tables |
+| F-3: inventory_transactions naming conflict | Standardised to `inventory_movements` in consume_session() SQL |
+| F-4: before_after_photos undocumented | Column definition added to Clinical Tables LIVE section |
+| F-5: patient_packages undocumented | Column definition added to Clinical Tables LIVE section |
+| F-6: staff_commissions stale definition | Added `commission_type (sale\|delivery)` column with migration note |
+| F-7: workflow_scheduled_actions undocumented | Table definition added to Workflow LIVE section; workflow_clinic_overrides also added |
+| F-8: Orphaned text in Section 9.15 | Removed stray "Navigation manager" line |
+| F-9: Part 7 Module Status missing NG items | All 13 NG-1 through NG-13 items added as MISSING |
+| F-10: Appointment status SQL not in Part 8 | Added canonical SQL to Part 8 Column Alterations (migration A1) |
+| C-1: POST /api/billing/invoice missing | Added to Part 12 Billing APIs |
+| C-2: Demo suppression mechanism unspecified | Added DB trigger implementation note to Part 16.5 |
+| C-3: is_reverse_charge ambiguous | Marked explicitly as [FUTURE — not in Phase A–F] |
 
 ---
 
