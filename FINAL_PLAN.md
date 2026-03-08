@@ -1,11 +1,20 @@
 # AESTHETICA CLINIC ERP — FINAL PLAN
-## Single Source of Truth | Version 2.1 | 2026-03-08
+## Single Source of Truth | Version 2.2 | 2026-03-08
 
 ---
 
 > This document supersedes MASTER_PLAN.md, GAP_ANALYSIS.md, and PRE_IMPLEMENTATION_AUDIT.md.
 > **Everything Claude builds must follow this document exactly.**
 > No feature, table, route, API, or UI decision should contradict what is written here.
+>
+> **v2.2 additions (Gap List 2 + clinical audit — 2026-03-08):**
+> - 13 new gaps added (NG-1 → NG-13): patient merge, consent snapshotting, timing timestamps,
+>   protocol automation, inventory transit lock, UTM tracking, patient events table,
+>   patient_metrics view, soft delete, search_index, background job queue,
+>   service credit expiry worker, clinical audit log
+> - 5 new tables: patient_merge_log, patient_events, search_index, background_jobs, clinical_audit_log
+> - 9 new column alterations across 5 tables
+> - Execution order: Phase A expanded (A16–A24), Phase B + E + F expanded
 >
 > **v2.1 additions (audit-validated 2026-03-08):**
 > - Security: 3 critical security fixes folded in (OTP leak, RLS gaps, PHI masking)
@@ -613,6 +622,69 @@ service_consumables   id, service_id, inventory_product_id,
 clinic_feature_flags  id, clinic_id, flag_key, is_enabled, config JSONB DEFAULT '{}'
                       UNIQUE(clinic_id, flag_key)
                       (granular per-clinic behavioral flags — see Part 16)
+
+patient_merge_log     id, clinic_id, source_patient_id UUID→patients,
+                      target_patient_id UUID→patients,
+                      merged_by UUID→profiles, merged_by_name TEXT,
+                      merged_at TIMESTAMPTZ DEFAULT NOW(),
+                      reason TEXT NOT NULL
+                      (NG-1 — tracks every merge; source patient set to is_active=false
+                       with merged_into_id pointer — never hard deleted)
+
+patient_events        id, clinic_id, patient_id UUID→patients,
+                      event_type TEXT NOT NULL,
+                      entity_type TEXT,     -- appointment, invoice, encounter, etc.
+                      entity_id UUID,
+                      summary TEXT NOT NULL,
+                      actor_name TEXT,
+                      created_at TIMESTAMPTZ DEFAULT NOW()
+                      event_type values: appointment_booked, consultation_done,
+                      treatment_done, invoice_paid, photo_uploaded,
+                      package_purchased, membership_activated,
+                      credit_expired, referral_made, note_added
+                      (NG-7 — powers Activity Timeline tab; separate from audit_logs
+                       which tracks admin/security events)
+
+search_index          id, clinic_id, entity_type TEXT, entity_id UUID,
+                      primary_text TEXT NOT NULL,   -- patient name, invoice number, etc.
+                      secondary_text TEXT,          -- phone (masked), date, amount
+                      url TEXT NOT NULL,            -- navigation target on click
+                      updated_at TIMESTAMPTZ DEFAULT NOW()
+                      UNIQUE(clinic_id, entity_type, entity_id)
+                      (NG-10 — powers Cmd+K instant search; single ILIKE query
+                       replaces 4+ separate queries; GIN index on primary_text)
+
+background_jobs       id, clinic_id, job_type TEXT NOT NULL,
+                      payload JSONB NOT NULL DEFAULT '{}',
+                      status TEXT DEFAULT 'pending'
+                        CHECK (status IN ('pending','processing','completed','failed')),
+                      scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                      started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ,
+                      error TEXT, attempt_count INT DEFAULT 0,
+                      max_attempts INT DEFAULT 3
+                      job_type values: whatsapp_reminder, campaign_send,
+                      follow_up_suggestion, credit_expiry_notify,
+                      post_visit_survey, protocol_followup
+                      (NG-11 — generic background job queue; failures route to
+                       workflow_dlq after max_attempts exceeded)
+
+clinical_audit_log    id, clinic_id, patient_id UUID→patients,
+                      record_type TEXT NOT NULL
+                        CHECK (record_type IN (
+                          'patient_treatment','patient_medical_history',
+                          'prescription','counselling_session','patient_notes'
+                        )),
+                      record_id UUID NOT NULL,
+                      changed_by UUID NOT NULL→profiles,
+                      changed_by_name TEXT NOT NULL,
+                      field_name TEXT NOT NULL,
+                      old_value TEXT, new_value TEXT,
+                      change_reason TEXT,    -- required for prescription changes
+                      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                      (NG-13 — field-level change tracking for editable clinical
+                       records; populated by DB trigger on UPDATE; no DELETE policy —
+                       immutable like audit_logs; separate from clinical_encounters
+                       which are immutable and never edited)
 ```
 
 ### Column Alterations Required (MISSING)
@@ -703,6 +775,69 @@ CREATE INDEX IF NOT EXISTS idx_service_transfers_clinic ON service_transfers(cli
 -- provider_id already exists as a column; ensure it is populated going forward.
 -- The API route must pass profile.id as provider_id on every SOAP save.
 
+-- ─── Appointment timing timestamps (NG-3) ────────────────────────────────────
+-- Set by scheduler action menu when each status transition occurs.
+-- Enables patient wait time, consultation duration, and treatment duration analytics.
+ALTER TABLE appointments
+  ADD COLUMN checked_in_at        TIMESTAMPTZ,
+  ADD COLUMN consultation_start_at TIMESTAMPTZ,
+  ADD COLUMN consultation_end_at   TIMESTAMPTZ,
+  ADD COLUMN treatment_start_at    TIMESTAMPTZ,
+  ADD COLUMN treatment_complete_at TIMESTAMPTZ;
+
+-- ─── Protocol follow-up automation (NG-4) ────────────────────────────────────
+ALTER TABLE protocols
+  ADD COLUMN followup_days     INT DEFAULT NULL,
+  ADD COLUMN aftercare_message TEXT DEFAULT NULL,
+  ADD COLUMN auto_remind       BOOLEAN NOT NULL DEFAULT true;
+
+-- ─── Inventory transit lock — 2-step transfer (NG-5) ─────────────────────────
+-- Stock leaves source on in_transit; arrives at destination on received.
+-- Prevents stock vanishing during inter-clinic transfers.
+ALTER TABLE inventory_transfers
+  ADD COLUMN transfer_status TEXT DEFAULT 'requested'
+    CHECK (transfer_status IN ('requested','in_transit','received','cancelled')),
+  ADD COLUMN received_by UUID REFERENCES profiles(id),
+  ADD COLUMN received_at TIMESTAMPTZ;
+
+-- ─── Marketing attribution / UTM (NG-6) ──────────────────────────────────────
+ALTER TABLE crm_leads
+  ADD COLUMN utm_source   TEXT,
+  ADD COLUMN utm_medium   TEXT,
+  ADD COLUMN utm_campaign TEXT,
+  ADD COLUMN utm_content  TEXT;
+
+ALTER TABLE patients
+  ADD COLUMN acquisition_source   TEXT,
+  ADD COLUMN acquisition_campaign TEXT;
+
+-- ─── patient_treatments missing clinical columns (Gap List 2 §2.2) ───────────
+ALTER TABLE patient_treatments
+  ADD COLUMN doctor_id             UUID REFERENCES profiles(id),
+  ADD COLUMN appointment_id        UUID REFERENCES appointments(id),
+  ADD COLUMN outcome               TEXT,
+  ADD COLUMN side_effects          TEXT,
+  ADD COLUMN next_recommended_date DATE;
+
+-- ─── Consent form snapshotting (NG-2) ────────────────────────────────────────
+-- Stores exact form text at time of signing — immutable legal record.
+ALTER TABLE form_responses
+  ADD COLUMN form_snapshot_json JSONB,
+  ADD COLUMN consent_version    TEXT;
+
+-- ─── Soft delete on core tables (NG-9) ───────────────────────────────────────
+-- Hard deletes replaced with soft deletes on these tables only.
+-- All SELECT queries must add .is('deleted_at', null) filter.
+-- Superadmin-only hard purge after 90 days.
+-- NOT applied to: clinical_encounters (immutable), audit_logs, financial tables.
+ALTER TABLE patients   ADD COLUMN deleted_at TIMESTAMPTZ DEFAULT NULL;
+ALTER TABLE services   ADD COLUMN deleted_at TIMESTAMPTZ DEFAULT NULL;
+ALTER TABLE profiles   ADD COLUMN deleted_at TIMESTAMPTZ DEFAULT NULL;
+
+-- ─── merged_into_id on patients (NG-1) ───────────────────────────────────────
+ALTER TABLE patients
+  ADD COLUMN merged_into_id UUID REFERENCES patients(id) DEFAULT NULL;
+
 -- ─── JSONB metadata on all core tables (see Part 16) ─────────────────────────
 ALTER TABLE patients              ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
 ALTER TABLE appointments          ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
@@ -771,6 +906,29 @@ ALTER TABLE profiles              ADD COLUMN IF NOT EXISTS metadata JSONB DEFAUL
 **Duplicate Detection:**
 When creating new patient, check `phone` uniqueness before save.
 If match found, show modal: "Possible duplicate — Open existing | Create anyway (admin only)"
+
+#### Patient Merge Operation (NG-1)
+When two patient records represent the same person, staff can merge them.
+
+**Merge rules:**
+- Any admin or above can initiate. Requires a `reason` text entry.
+- `source_patient_id` = the duplicate (to be retired)
+- `target_patient_id` = the canonical record (to keep)
+
+**What gets reassigned from source → target:**
+`appointments`, `clinical_encounters`, `invoice_payments`, `pending_invoices`,
+`wallet_transactions`, `patient_service_credits`, `before_after_photos`,
+`patient_communications`, `counselling_sessions`, `crm_leads`, `patient_notes`,
+`patient_treatments`, `prescriptions`, `patient_memberships`, `form_responses`
+
+**After merge:**
+- Source patient: `is_active = false`, `merged_into_id = target_patient_id`, `deleted_at = NOW()`
+- Insert row into `patient_merge_log`
+- Log `logAction({ action: "patient.merge", ... })`
+- Source patient is never hard deleted — always recoverable by superadmin
+
+**API route:** `POST /api/patients/merge { source_id, target_id, reason }`
+Server-side only (service role) — runs all FK reassignments in a single DB transaction.
 
 ---
 
@@ -1124,6 +1282,30 @@ CREATE TABLE service_consumables (
 
 **UI:** In `/settings/services`, each service has a "Consumables" tab where clinic admin maps inventory products to the service with quantities.
 
+#### Inter-Clinic Transfer — Transit Lock (NG-5)
+Stock transfers between clinics follow a **2-step process** to prevent stock from vanishing in transit.
+
+**Transfer lifecycle:**
+```
+requested → in_transit → received
+                       ↘ cancelled
+```
+
+| Step | Who | Stock effect |
+|---|---|---|
+| `requested` | Sending clinic creates transfer | No stock change |
+| `in_transit` | Sending clinic confirms dispatch | Stock DEDUCTED from source |
+| `received` | Receiving clinic confirms receipt | Stock ADDED to destination |
+| `cancelled` | Either clinic (before received) | Stock RESTORED to source if in_transit |
+
+**API routes:**
+```
+POST  /api/inventory/transfers           Create transfer request
+PATCH /api/inventory/transfers/[id]/dispatch   → in_transit
+PATCH /api/inventory/transfers/[id]/receive    → received (sets received_by, received_at)
+PATCH /api/inventory/transfers/[id]/cancel     → cancelled (reverses stock if in_transit)
+```
+
 #### Purchase Orders (Missing — P3)
 Full PO workflow: create PO → approve → receive → auto-update stock.
 
@@ -1248,8 +1430,28 @@ SEARCH (live results as user types)
 **Implementation pattern:**
 - Global event listener for `keydown` (Cmd+K / Ctrl+K) in a `useEffect` in root layout
 - Portal renders the modal outside DOM hierarchy
-- Results fetched with debounce (200ms) via Supabase
+- Results fetched from `search_index` table with debounce (200ms) — single query, not multiple
 - Max 5 results per category
+
+**Search backend — `search_index` table (NG-10):**
+A single denormalized table for instant Cmd+K results. Replaces 4+ parallel Supabase queries.
+
+```ts
+// Single query replaces: patients + appointments + invoices + appointments searches
+const { data } = await supabase
+  .from("search_index")
+  .select("entity_type, entity_id, primary_text, secondary_text, url")
+  .eq("clinic_id", clinicId)
+  .ilike("primary_text", `%${query}%`)
+  .limit(20);
+```
+
+**Populated by DB triggers** on INSERT/UPDATE to:
+- `patients` → `primary_text = full_name`, `secondary_text = masked phone`
+- `pending_invoices` → `primary_text = invoice_number`, `secondary_text = patient_name + amount`
+- `appointments` → `primary_text = patient_name + service_name`, `secondary_text = formatted date`
+
+GIN index on `search_index(primary_text)` for sub-50ms full-text search.
 
 ---
 
@@ -1283,6 +1485,90 @@ God Mode at `/admin/god-mode` — 4 tabs (LIVE):
 - Create Organization / Chain from UI
 - Bulk-create staff accounts
 - Edit invoice format templates from UI
+
+---
+
+### 9.13 — CLINICAL AUDIT LOG (NG-13)
+
+Field-level change tracking for editable clinical records. Separate from:
+- `audit_logs` (tracks admin/security events — who did what)
+- `clinical_encounters` (immutable SOAP — cannot be edited at all)
+
+**Covers these editable records:**
+| Table | What gets tracked |
+|---|---|
+| `patient_treatments` | status, treatment_notes, outcome, side_effects, next_recommended_date |
+| `patient_medical_history` | any field change |
+| `prescriptions` | dosage, frequency, duration, medication_name |
+| `counselling_sessions` | notes, conversion_status, treatments_discussed |
+| `patient_notes` | content |
+
+**How it works:**
+- DB trigger fires on `UPDATE` to each covered table
+- Trigger iterates `OLD` vs `NEW` row column by column
+- Inserts one `clinical_audit_log` row per changed field
+- `change_reason` is mandatory for `prescriptions` changes (enforced at API level — 400 if missing)
+
+**RLS:** Clinic-scoped SELECT. **No DELETE policy** — this log is also immutable.
+
+**UI:**
+- History icon on each row in Treatments, Prescriptions, Counselling tabs
+- Click opens a right-side drawer: "Edit History" — chronological list of all field changes with who/when/old/new
+- Medical History form: footer shows "Last updated by [Name] on [Date]" per section
+
+**Audit actions logged separately via `logAction()`:**
+Add these to required audit actions in Part 16.5:
+- `treatment.update`, `prescription.update`, `medical_history.update`
+- `counselling.update`
+
+---
+
+### 9.14 — PATIENT EVENTS & ACTIVITY TIMELINE (NG-7)
+
+The **Activity Timeline tab** (Phase D, item D4) reads from the `patient_events` table — not from `audit_logs`.
+
+**`audit_logs`** = admin/security events (who toggled a module, who voided an invoice)
+**`patient_events`** = patient journey events (appointment booked, invoice paid, photo uploaded)
+
+**Insertion points** (each API route or DB trigger fires an insert):
+| Event | Fired by |
+|---|---|
+| `appointment_booked` | `POST /api/appointments` or scheduler create |
+| `consultation_done` | Scheduler status change → `consultation_done` |
+| `treatment_done` | Scheduler status change → `treatment_done` |
+| `invoice_paid` | `record_payment` RPC on final payment |
+| `photo_uploaded` | `POST /api/photos` |
+| `package_purchased` | `patient_service_credits` insert |
+| `membership_activated` | `patient_memberships` insert |
+| `credit_expired` | `expire_service_credits()` pg_cron function |
+| `referral_made` | `referral_events` insert |
+| `note_added` | `patient_notes` insert |
+
+**Timeline Tab UI:**
+- Chronological list (newest first), grouped by date
+- Each event: icon + summary + actor name + timestamp
+- Filter by event type (clinical / financial / communications)
+
+---
+
+### 9.15 — MARKETING ATTRIBUTION & UTM TRACKING (NG-6)
+
+Aesthetic clinics spend heavily on Meta Ads, Google Ads, and WhatsApp campaigns. Without UTM tracking, there is no way to answer: "Which campaign generated ₹2,00,000 revenue this month?"
+
+**Where UTM is captured:**
+1. **Intake URL**: `?utm_source=instagram&utm_campaign=diwali_sale` — captured on form submit, stored in `form_responses.metadata`
+2. **External lead webhook** (`/api/webhooks/inbound/meta`, `/api/webhooks/inbound/google`) — UTM fields extracted from payload and stored in `crm_leads`
+3. **Lead to Patient conversion** — `acquisition_source` and `acquisition_campaign` copied from `crm_leads` to `patients` on conversion
+
+**Reports enabled:**
+- "Revenue by Campaign" — join `patients.acquisition_campaign` → `pending_invoices`
+- "Leads by Source" — `crm_leads` grouped by `utm_source`
+- "Cost per Acquisition" — (requires ad spend input from clinic) — future feature
+
+**Standard UTM values:**
+- `utm_source`: `instagram | google | facebook | whatsapp | referral | organic`
+- `utm_medium`: `cpc | social | email | sms | qr_code`
+- `utm_campaign`: free text (e.g., `diwali_2026`, `laser_offer_march`)
 - Navigation manager (reorder sidebar items)
 
 ---
@@ -1420,37 +1706,47 @@ for (const p of walletPayments ?? []) {
 ### P1 — High Priority (Build After P0 Fixes)
 1. **Top Bar Navigation** — rebuild `components/TopBar.tsx` + Apps Menu + update `app/layout.tsx`
 2. **Navy/White theme migration** — update `globals.css` CSS variables, sweep all hardcoded hex colors
-3. **Command Bar (Cmd+K)** — `components/CommandBar.tsx`
+3. **Command Bar (Cmd+K)** — `components/CommandBar.tsx` + `search_index` table + triggers (NG-10)
 4. **HSN/SAC on services + line items** — DB migration + validation in billing UI
 5. Appointment Room View — `rooms` table + scheduler tab
 6. Walk-in Force-Overlap button in scheduler
 7. Patient Packages tab (dedicated)
-8. Patient Activity Timeline tab
+8. **Patient Activity Timeline tab** — reads from `patient_events` table (NG-7)
 9. Patient Documents tab
 10. Doctor Queue View
 11. Patient Tags (`patient_tags` table + UI)
-12. Duplicate Patient Detection on create
+12. Duplicate Patient Detection + **Patient Merge** — `POST /api/patients/merge` + UI (NG-1)
+13. **Protocol-Driven Follow-up Automation** — extend protocols + follow-up suggestion job (NG-4)
+14. **Appointment Timing Timestamps** — status change hooks populate checked_in_at etc. (NG-3)
+15. **Consent Form Snapshotting** — capture form_snapshot_json on every portal/intake submit (NG-2)
+16. **Marketing Attribution** — UTM capture on intake + lead webhooks + "Revenue by Campaign" report (NG-6)
+17. **Inventory Transit Lock** — 2-step transfer dispatch/receive flow (NG-5)
+18. **Clinical Audit Log** — DB triggers on 5 editable clinical tables + "Edit History" drawer (NG-13)
 
 ### P2 — Medium Priority
-13. Service Consumables auto-deduction (`service_consumables` table + `consume_session()` update)
-14. GSTR-1 HSN/SAC report (CSV export in GSTR-1 format)
-15. CRM campaign segment targeting UI (currently only template, no segment builder)
-16. List View in scheduler (for reception call list)
-17. Appointment drag-and-drop rescheduling
-18. Bulk rescheduling (doctor unavailable → move all appointments)
-19. Patient Blacklist feature
-20. System Health Monitor tab in God Mode (see Part 16)
-21. Granular Feature Flags UI in God Mode (see Part 16)
+19. Service Consumables auto-deduction (`service_consumables` table + `consume_session()` update)
+20. GSTR-1 HSN/SAC report (CSV export in GSTR-1 format)
+21. CRM campaign segment targeting UI (currently only template, no segment builder)
+22. List View in scheduler (for reception call list)
+23. Appointment drag-and-drop rescheduling
+24. Bulk rescheduling (doctor unavailable → move all appointments)
+25. Patient Blacklist feature
+26. System Health Monitor tab in God Mode (see Part 16)
+27. Granular Feature Flags UI in God Mode (see Part 16)
+28. **`patient_metrics` DB view** — total_spend, LTV, avg_ticket, visit_count (NG-8)
+29. **Service Credit Expiry Worker** — `pg_cron` daily + patient notification (NG-12)
+30. **Background Job Queue** — `background_jobs` table + Edge Function processor (NG-11)
+31. **Soft Delete** — `deleted_at` on patients/services/profiles + superadmin purge UI (NG-9)
 
 ### P3 — Polish / Nice-to-Have
-22. Purchase Orders workflow
-23. Mobile bottom navigation bar
-24. Smart room/doctor conflict warnings
-25. Superadmin: Create Organization/Chain from UI
-26. Appointment buffer time configuration per service
-27. Doctor availability schedule builder
-28. AI command suggestions in Command Bar
-29. Patient lifetime value tracking
+32. Purchase Orders workflow
+33. Mobile bottom navigation bar
+34. Smart room/doctor conflict warnings
+35. Superadmin: Create Organization/Chain from UI
+36. Appointment buffer time configuration per service
+37. Doctor availability schedule builder
+38. AI command suggestions in Command Bar
+39. Patient lifetime value dashboard widget (powered by `patient_metrics` view)
 
 ---
 
@@ -1460,6 +1756,9 @@ for (const p of walletPayments ?? []) {
 ```
 GET  /api/patients/[id]           Full EMR bundle
 POST /api/patients/[id]           Actions: save_encounter, add_note, add_treatment
+POST /api/patients/merge          Merge two patient records (NG-1)
+GET  /api/patients/[id]/events    Patient activity timeline events (NG-7)
+GET  /api/patients/[id]/metrics   Patient metrics (LTV, visits, avg ticket) (NG-8)
 ```
 
 ### Portal APIs
@@ -1513,8 +1812,14 @@ GET   /api/billing/gstr1            GSTR-1 export (HSN/SAC grouped, date range, 
 GET   /api/health                   System health check (for God Mode monitor)
 GET   /api/admin/feature-flags      List clinic_feature_flags for a clinic
 PUT   /api/admin/feature-flags      Upsert a clinic feature flag
-POST  /api/service-consumables      Link inventory product to service with quantity_per_session
-GET   /api/service-consumables      List consumables for a service
+POST  /api/service-consumables              Link inventory product to service with quantity_per_session
+GET   /api/service-consumables              List consumables for a service
+PATCH /api/inventory/transfers/[id]/dispatch → in_transit, deducts source stock (NG-5)
+PATCH /api/inventory/transfers/[id]/receive  → received, adds destination stock (NG-5)
+PATCH /api/inventory/transfers/[id]/cancel   → cancelled, restores source stock (NG-5)
+GET   /api/clinical-audit/[record_type]/[id] Field-level edit history for a clinical record (NG-13)
+GET   /api/search                            Cmd+K search via search_index table (NG-10)
+POST  /api/jobs                              Enqueue a background job (NG-11)
 ```
 
 ---
@@ -1540,6 +1845,10 @@ GET   /api/service-consumables      List consumables for a service
 | `logAction(...)` | Audit trail — skips silently for demo clinics | ✅ Live |
 | `validate_gift_card(gift_card_id, amount, clinic_id)` | Checks expiry, balance, clinic scope | ❌ Missing (Phase B) |
 | `evaluate_workflow_rules(clinic_id, trigger, context)` | Fires matching rules for a trigger event | ❌ Missing (Phase B) |
+| `merge_patients(source_id, target_id, merged_by, reason)` | Reassigns all FK refs, sets source inactive | ❌ Missing (Phase D) |
+| `expire_service_credits()` | Sets credits past expires_at to 'expired', fires notification | ❌ Missing (Phase E) |
+| `refresh_search_index(entity_type, entity_id)` | Upserts one row in search_index — called by triggers | ❌ Missing (Phase C) |
+| `process_background_jobs()` | Picks up due background_jobs rows, executes, marks status | ❌ Missing (Phase E) |
 
 **All SECURITY DEFINER functions MUST have `SET search_path = 'public'`.**
 
@@ -1612,6 +1921,18 @@ PHASE A — DB Migrations (run after Phase 0, unblocks all feature code)
   A13. Add commission_type column to staff_commissions
   A14. Add clinic_id to: patient_notes, patient_packages, prescriptions, package_items, package_members, service_transfers (backfill + index)
   A15. Add source_proforma_id FK on pending_invoices (self-referential)
+  A16. Add appointment timing timestamps: checked_in_at, consultation_start/end_at, treatment_start/complete_at (NG-3)
+  A17. Add merged_into_id + deleted_at to patients; deleted_at to services, profiles (NG-1, NG-9)
+  A18. Add UTM columns to crm_leads + acquisition columns to patients (NG-6)
+  A19. Add form_snapshot_json + consent_version to form_responses (NG-2)
+  A20. Add transfer_status + received_by + received_at to inventory_transfers (NG-5)
+  A21. Add doctor_id, appointment_id, outcome, side_effects, next_recommended_date to patient_treatments
+  A22. Add followup_days, aftercare_message, auto_remind to protocols (NG-4)
+  A23. Create patient_merge_log table (NG-1)
+  A24. Create patient_events table (NG-7)
+  A25. Create search_index table + GIN index + population triggers (NG-10)
+  A26. Create background_jobs table (NG-11)
+  A27. Create clinical_audit_log table + UPDATE triggers on 5 clinical tables (NG-13)
 
 PHASE B — Logic Fixes (P0 Broken Flows)
   B1. Fix Doctor → Counsellor handoff — POST /api/counselling/refer + notification (P0-1)
@@ -1625,24 +1946,34 @@ PHASE B — Logic Fixes (P0 Broken Flows)
   B9. Fix scheduler checkout to pass service_id (not null) in invoice line items
   B10. Wire sale commission at package purchase time (Section 9.7b)
   B11. Wire inventory deduction into consume_session() RPC (Section 9.7 three-way sync)
+  B12. Wire patient_events inserts at all trigger points (appointment, invoice, photo, etc.) (NG-7)
+  B13. Capture form_snapshot_json on portal/intake form submit (NG-2)
+  B14. Capture UTM params from intake URL + lead webhooks into crm_leads (NG-6)
+  B15. Copy acquisition_source/campaign to patients on lead conversion (NG-6)
+  B16. Build inventory transfer dispatch/receive API + UI (NG-5)
+  B17. Wire appointment timing timestamp writes on each status transition (NG-3)
 
 PHASE C — Visual Overhaul (P1 — Design)
   C1. Update globals.css with Navy/White CSS variables
   C2. Rebuild TopBar.tsx — Navy bg, top nav links, Apps Menu grid, Clinic Switcher
   C3. Update app/layout.tsx — TopBar in root, main pt-16, remove sidebar
   C4. Sweep all pages — replace hardcoded hex colors with CSS variables
-  C5. Build CommandBar.tsx (Cmd+K)
+  C5. Build CommandBar.tsx (Cmd+K) + wire to search_index (NG-10)
   C6. Mobile bottom nav bar
 
 PHASE D — High Impact Features (P1 — Features)
   D1. HSN/SAC mandatory validation in billing UI + GSTR-1 export
   D2. Room Management — CRUD + Room View tab in scheduler
   D3. Patient: Packages tab (dedicated, with redeem/freeze/transfer)
-  D4. Patient: Activity Timeline tab
+  D4. Patient: Activity Timeline tab — reads from patient_events (NG-7)
   D5. Patient: Documents tab
   D6. Patient Tags (patient_tags table + header chips + filter)
-  D7. Duplicate Patient Detection on create
+  D7. Duplicate Patient Detection + Merge (NG-1) — merge modal + POST /api/patients/merge
   D8. Doctor Queue View
+  D9. Protocol follow-up automation — extend protocols table + background job trigger (NG-4)
+  D10. Clinical Audit Log "Edit History" drawer on Treatments / Prescriptions tabs (NG-13)
+  D11. Consent snapshotting verification — confirm snapshot captured on test submission (NG-2)
+  D12. Marketing Attribution report — "Revenue by Campaign" in /admin/reports (NG-6)
 
 PHASE E — Medium Priority (P2)
   E1. Service Consumables UI — map products to services in /settings/services
@@ -1652,6 +1983,10 @@ PHASE E — Medium Priority (P2)
   E5. List View in scheduler (reception call list)
   E6. Appointment drag-and-drop rescheduling
   E7. Patient Blacklist
+  E8. patient_metrics DB view + Dashboard "Top Patients" widget (NG-8)
+  E9. Service Credit Expiry Worker — pg_cron daily + notification (NG-12)
+  E10. Background Job Queue processor — Edge Function + pg_cron (NG-11)
+  E11. Soft Delete UI — "Deleted Records" recovery page for superadmin (NG-9)
 
 PHASE F — Polish (P3)
   F1. Purchase Orders workflow
@@ -1659,6 +1994,7 @@ PHASE F — Polish (P3)
   F3. Doctor availability schedule builder
   F4. Superadmin org/chain creator
   F5. AI command suggestions in Command Bar
+  F6. Patient LTV dashboard widget (powered by patient_metrics view)
 ```
 
 ---
@@ -1847,22 +2183,32 @@ await logAction({
 ```
 
 **Required audit actions (must be logged, no exceptions):**
-- `patient.create`, `patient.update`, `patient.deactivate`
+- `patient.create`, `patient.update`, `patient.deactivate`, `patient.merge`
 - `appointment.create`, `appointment.cancel`, `appointment.no_show`
 - `invoice.create`, `invoice.void`, `invoice.refund`
 - `payment.record`, `wallet.debit`, `wallet.credit`
 - `discount.request`, `discount.approve`, `discount.reject`
-- `counselling.claim`, `counselling.unclaim`, `counselling.convert`
+- `counselling.claim`, `counselling.unclaim`, `counselling.convert`, `counselling.update`
 - `proforma.create`, `proforma.approve`, `proforma.convert`, `proforma.expire`
 - `staff.invite`, `staff.deactivate`, `role.change`
 - `module.enable`, `module.disable`, `kill_switch.toggle`
+- `treatment.update`, `prescription.update`, `medical_history.update`
+
+**Two-tier audit system (v2.2):**
+
+| System | Table | Purpose | Populated by |
+|---|---|---|---|
+| Admin/Security audit | `audit_logs` | Who did what (entity-level) | `logAction()` in API routes |
+| Clinical change audit | `clinical_audit_log` | What changed field-by-field | DB triggers on UPDATE |
+| Patient journey events | `patient_events` | Business events for timeline | API hooks + RPC hooks |
 
 **Demo clinic suppression:** `logAction()` silently skips insert if `clinicId` is a demo clinic.
+`clinical_audit_log` and `patient_events` also skip inserts for demo clinics.
 
 ---
 
 *Last updated: 2026-03-08*
-*Version: 2.1 — Master Overrides Applied + Pre-Implementation Audit Resolved*
+*Version: 2.2 — Gap List 2 + Clinical Audit Log integrated*
 *Status: APPROVED — Ready for implementation. Start with Phase 0 security hotfixes.*
 
 ---
@@ -1899,3 +2245,23 @@ All findings from the 360-degree pre-implementation audit (2026-03-08, DA-26 →
 | DA-49: 109 tables undocumented | Schema is larger than documented — SSOT is the live DB |
 
 **The raw audit report is preserved in `PRE_IMPLEMENTATION_AUDIT.md` for reference.**
+
+---
+
+### v2.2 Additions — Gap List 2 + Clinical Audit (2026-03-08)
+
+| # | Gap | Folded Into |
+|---|---|---|
+| NG-1 | Patient Merge Operation | Part 9.1, Part 12, Part 13, Part 15 Phase A23+D7 |
+| NG-2 | Consent Form Snapshotting | Part 8 Column Alterations A19, Part 15 Phase B13+D11 |
+| NG-3 | Appointment Timing Timestamps | Part 8 Column Alterations A16, Part 15 Phase B17 |
+| NG-4 | Protocol-Driven Follow-up Automation | Part 8 Column Alterations A22, Part 9.7, Part 15 Phase D9 |
+| NG-5 | Inventory Transit Lock (2-step) | Part 9.7 Inventory, Part 12, Part 15 Phase A20+B16 |
+| NG-6 | Marketing Attribution / UTM Tracking | Part 8 Column Alterations A18, Part 9.15, Part 15 Phase B14+D12 |
+| NG-7 | `patient_events` table + Activity Timeline | Part 8 Tables, Part 9.14, Part 15 Phase A24+B12+D4 |
+| NG-8 | `patient_metrics` DB view | Part 12, Part 13, Part 15 Phase E8 |
+| NG-9 | Soft Delete on patients/services/profiles | Part 8 Column Alterations A17, Part 15 Phase E11 |
+| NG-10 | `search_index` table for Cmd+K | Part 8 Tables, Part 9.10, Part 13, Part 15 Phase A25+C5 |
+| NG-11 | Generic Background Job Queue | Part 8 Tables, Part 12, Part 13, Part 15 Phase E10 |
+| NG-12 | Service Credit Expiry Worker | Part 13, Part 15 Phase E9 |
+| NG-13 | `clinical_audit_log` — field-level clinical change tracking | Part 8 Tables, Part 9.13, Part 15 Phase A27+D10, Part 16.5 |
