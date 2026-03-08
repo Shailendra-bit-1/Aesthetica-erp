@@ -19,11 +19,15 @@ interface FormResponse {
   } | null;
 }
 
-interface DocumentNote {
+interface PatientDocument {
   id: string;
-  content: string;
+  filename: string;
+  file_url: string;
+  file_type: string | null;
+  document_type: string | null;
+  notes: string | null;
+  uploaded_by_name: string | null;
   created_at: string;
-  parsed: { url: string; filename: string; type: string } | null;
 }
 
 interface Props {
@@ -72,7 +76,7 @@ function fileTypeBadgeStyle(mimeType: string): React.CSSProperties {
 
 export default function DocumentsTab({ patient, clinicId }: Props) {
   const [forms, setForms]         = useState<FormResponse[]>([]);
-  const [docs, setDocs]           = useState<DocumentNote[]>([]);
+  const [docs, setDocs]           = useState<PatientDocument[]>([]);
   const [loadingForms, setLoadingForms] = useState(true);
   const [loadingDocs, setLoadingDocs]   = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -100,18 +104,13 @@ export default function DocumentsTab({ patient, clinicId }: Props) {
   async function loadDocs() {
     setLoadingDocs(true);
     const { data, error } = await supabase
-      .from("patient_notes")
-      .select("id, content, created_at")
+      .from("patient_documents")
+      .select("id, filename, file_url, file_type, document_type, notes, uploaded_by_name, created_at")
       .eq("patient_id", patient.id)
-      .eq("note_type", "document")
+      .eq("clinic_id", clinicId)
       .order("created_at", { ascending: false });
     if (error) console.error(error);
-    const rows: DocumentNote[] = (data ?? []).map((r: { id: string; content: string; created_at: string }) => {
-      let parsed: DocumentNote["parsed"] = null;
-      try { parsed = JSON.parse(r.content); } catch { /* malformed */ }
-      return { ...r, parsed };
-    });
-    setDocs(rows);
+    setDocs((data ?? []) as PatientDocument[]);
     setLoadingDocs(false);
   }
 
@@ -137,11 +136,14 @@ export default function DocumentsTab({ patient, clinicId }: Props) {
         .getPublicUrl(path);
 
       const { error: dbErr } = await supabase
-        .from("patient_notes")
+        .from("patient_documents")
         .insert({
-          patient_id: patient.id,
-          note_type:  "document",
-          content:    JSON.stringify({ url: urlData.publicUrl, filename: file.name, type: file.type }),
+          patient_id:       patient.id,
+          clinic_id:        clinicId,
+          filename:         file.name,
+          file_url:         urlData.publicUrl,
+          file_type:        file.type,
+          document_type:    "upload",
         });
       if (dbErr) throw dbErr;
 
@@ -297,10 +299,9 @@ function FormCard({ fr }: { fr: FormResponse }) {
 
 // ─────────────────────────────────────── Doc Card ────────────────────────────
 
-function DocCard({ doc }: { doc: DocumentNote }) {
-  if (!doc.parsed) return null;
-  const { url, filename, type: mimeType } = doc.parsed;
-  const shortName = filename.length > 40 ? filename.slice(0, 37) + "…" : filename;
+function DocCard({ doc }: { doc: PatientDocument }) {
+  const mimeType = doc.file_type ?? "";
+  const shortName = doc.filename.length > 40 ? doc.filename.slice(0, 37) + "…" : doc.filename;
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: "white", borderRadius: 10, border: "1px solid rgba(197,160,89,0.15)" }}>
@@ -312,12 +313,14 @@ function DocCard({ doc }: { doc: DocumentNote }) {
           {shortName}
         </p>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 3 }}>
-          <span style={fileTypeBadgeStyle(mimeType)}>{mimeType?.split("/")[1]?.toUpperCase() ?? "FILE"}</span>
+          <span style={fileTypeBadgeStyle(mimeType)}>{mimeType?.split("/")[1]?.toUpperCase() ?? doc.document_type?.toUpperCase() ?? "FILE"}</span>
           <span style={{ fontSize: 10, color: "#BDB6A8" }}>{fmtDate(doc.created_at)}</span>
+          {doc.uploaded_by_name && <span style={{ fontSize: 10, color: "#BDB6A8" }}>by {doc.uploaded_by_name}</span>}
         </div>
+        {doc.notes && <p style={{ margin: "4px 0 0", fontSize: 11, color: "#9C9584" }}>{doc.notes}</p>}
       </div>
       <a
-        href={url}
+        href={doc.file_url}
         target="_blank"
         rel="noopener noreferrer"
         style={{ display: "flex", alignItems: "center", gap: 4, padding: "6px 10px", borderRadius: 7, border: "1px solid rgba(197,160,89,0.3)", background: "rgba(197,160,89,0.06)", color: GOLD, fontSize: 11, fontWeight: 600, textDecoration: "none", flexShrink: 0 }}

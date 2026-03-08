@@ -7,9 +7,10 @@ import { useClinic } from "@/contexts/ClinicContext";
 import { logAction } from "@/lib/audit";
 import {
   Users, Search, ChevronRight, Sparkles, Phone, Mail, Calendar, Eye, EyeOff,
-  AlertTriangle, Stethoscope, Building2, UserPlus, SlidersHorizontal, X,
+  AlertTriangle, Stethoscope, Building2, UserPlus, SlidersHorizontal, X, Merge,
 } from "lucide-react";
 import NewPatientModal from "@/components/NewPatientModal";
+import MergePatientModal from "@/components/MergePatientModal";
 import { TableRowSkeleton } from "@/components/ui";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 
@@ -73,6 +74,7 @@ export default function PatientsPage() {
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
   const [filterTab,   setFilterTab]   = useState<"all" | "allergy">("all");
   const [modalOpen,   setModalOpen]   = useState(false);
+  const [mergeOpen,   setMergeOpen]   = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [filterConcern,  setFilterConcern]  = useState("");
   const [filterRegistered, setFilterRegistered] = useState<"" | "30d" | "90d" | "180d">("");
@@ -209,15 +211,24 @@ export default function PatientsPage() {
               />
             </div>
 
-            {/* New Patient */}
+            {/* Merge / New Patient */}
             {isAdmin && (
-              <button
-                onClick={() => setModalOpen(true)}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold"
-                style={{ background: "var(--gold)", color: "#fff" }}
-              >
-                <UserPlus size={15} /> New Patient
-              </button>
+              <>
+                <button
+                  onClick={() => setMergeOpen(true)}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold"
+                  style={{ background: "var(--surface)", color: "var(--primary)", border: "1px solid var(--primary)" }}
+                >
+                  <Merge size={14} /> Merge
+                </button>
+                <button
+                  onClick={() => setModalOpen(true)}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold"
+                  style={{ background: "var(--primary)", color: "#fff" }}
+                >
+                  <UserPlus size={15} /> New Patient
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -504,6 +515,15 @@ export default function PatientsPage() {
 
       {/* New Patient Modal */}
       {modalOpen && <NewPatientModal isOpen={modalOpen} onClose={() => { setModalOpen(false); }} />}
+
+      {/* D7: Merge Patients Modal */}
+      {mergeOpen && activeClinicId && (
+        <MergePatientModal
+          clinicId={activeClinicId}
+          onClose={() => setMergeOpen(false)}
+          onSuccess={() => { setMergeOpen(false); /* reload */ }}
+        />
+      )}
     </div>
   );
 }

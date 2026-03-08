@@ -433,6 +433,93 @@ function buildLibraryReports(): LibraryReport[] {
         });
       },
     },
+    // D12: Marketing Attribution — Revenue by Campaign
+    {
+      id: "revenue_by_campaign",
+      title: "Revenue by Campaign",
+      category: "Marketing",
+      description: "Revenue attributed to acquisition campaigns. Tracks UTM campaign and source channels.",
+      icon: TrendingUp,
+      chartType: "bar",
+      chartX: "campaign",
+      chartY: "revenue",
+      columns: [
+        { key: "campaign", label: "Campaign / Source" },
+        { key: "patients", label: "Patients", numeric: true },
+        { key: "revenue",  label: "Revenue (₹)", numeric: true },
+        { key: "avg_ltv",  label: "Avg LTV (₹)", numeric: true },
+      ],
+      queryFn: async (clinicId, from, to) => {
+        // Join patients → invoices by acquisition_campaign / acquisition_source
+        const { data: patients } = await supabase
+          .from("patients")
+          .select("id, acquisition_campaign, acquisition_source")
+          .eq("clinic_id", clinicId)
+          .not("acquisition_campaign", "is", null);
+
+        if (!patients?.length) return [];
+
+        const { data: invoices } = await supabase
+          .from("pending_invoices")
+          .select("patient_id, total_amount")  // patient_id now on pending_invoices
+          .eq("clinic_id", clinicId)
+          .in("status", ["paid", "partial"])
+          .gte("created_at", from)
+          .lte("created_at", to);
+
+        const revByPatient: Record<string, number> = {};
+        (invoices ?? []).forEach((inv: { patient_id: string | null; total_amount: number }) => {
+          if (inv.patient_id) {
+            revByPatient[inv.patient_id] = (revByPatient[inv.patient_id] || 0) + (inv.total_amount || 0);
+          }
+        });
+
+        const map: Record<string, { campaign: string; patients: number; revenue: number }> = {};
+        patients.forEach(p => {
+          const key = p.acquisition_campaign ?? p.acquisition_source ?? "Unknown";
+          if (!map[key]) map[key] = { campaign: key, patients: 0, revenue: 0 };
+          map[key].patients++;
+          map[key].revenue += revByPatient[p.id] ?? 0;
+        });
+
+        return Object.values(map)
+          .map(r => ({ ...r, revenue: Math.round(r.revenue), avg_ltv: r.patients > 0 ? Math.round(r.revenue / r.patients) : 0 }))
+          .sort((a, b) => b.revenue - a.revenue);
+      },
+    },
+    // D12: Acquisition Source breakdown
+    {
+      id: "acquisition_source",
+      title: "Patients by Acquisition Source",
+      category: "Marketing",
+      description: "Count of new patients per acquisition source (UTM source / referral / walk-in).",
+      icon: TrendingUp,
+      chartType: "bar",
+      chartX: "source",
+      chartY: "patients",
+      columns: [
+        { key: "source",   label: "Source" },
+        { key: "patients", label: "Patients", numeric: true },
+        { key: "pct",      label: "Share (%)", numeric: true },
+      ],
+      queryFn: async (clinicId, from, to) => {
+        const { data } = await supabase
+          .from("patients")
+          .select("acquisition_source")
+          .eq("clinic_id", clinicId)
+          .gte("created_at", from)
+          .lte("created_at", to);
+        const map: Record<string, number> = {};
+        (data ?? []).forEach((r: { acquisition_source: string | null }) => {
+          const k = r.acquisition_source ?? "Direct / Unknown";
+          map[k] = (map[k] || 0) + 1;
+        });
+        const total = Object.values(map).reduce((a, b) => a + b, 0) || 1;
+        return Object.entries(map)
+          .map(([source, patients]) => ({ source, patients, pct: Math.round((patients / total) * 100) }))
+          .sort((a, b) => b.patients - a.patients);
+      },
+    },
   ];
 }
 

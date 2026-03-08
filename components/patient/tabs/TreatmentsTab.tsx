@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Stethoscope, ChevronDown, ChevronUp, CheckCircle2, Clock, XCircle, Activity, User, DollarSign, Layers } from "lucide-react";
+import { Stethoscope, ChevronDown, ChevronUp, CheckCircle2, Clock, XCircle, Activity, User, DollarSign, Layers, History } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 import { Patient, Treatment, fmtDate } from "../types";
+import AuditHistoryDrawer from "../AuditHistoryDrawer";
 
 // ─────────────────────────────────────── Types ───────────────────────────────
 
@@ -114,6 +115,8 @@ export default function TreatmentsTab({ patient, clinicId, treatments: initialTr
               items={grouped[status]}
               onStatusChange={updateStatus}
               sessionCounts={sessionCounts}
+              patientId={patient.id}
+              clinicId={clinicId}
             />
           ))}
         </div>
@@ -124,11 +127,13 @@ export default function TreatmentsTab({ patient, clinicId, treatments: initialTr
 
 // ─────────────────────────────────────── Status Group ────────────────────────
 
-function StatusGroup({ status, items, onStatusChange, sessionCounts }: {
+function StatusGroup({ status, items, onStatusChange, sessionCounts, patientId, clinicId }: {
   status: TreatmentStatus;
   items: Treatment[];
   onStatusChange: (id: string, s: TreatmentStatus) => void;
   sessionCounts: Record<string, number>;
+  patientId: string;
+  clinicId: string;
 }) {
   const cfg = STATUS_CONFIG[status];
   return (
@@ -148,6 +153,8 @@ function StatusGroup({ status, items, onStatusChange, sessionCounts }: {
             treatment={t}
             onStatusChange={onStatusChange}
             sessionsConsumed={sessionCounts[t.id] ?? 0}
+            patientId={patientId}
+            clinicId={clinicId}
           />
         ))}
       </div>
@@ -157,13 +164,16 @@ function StatusGroup({ status, items, onStatusChange, sessionCounts }: {
 
 // ─────────────────────────────────────── Treatment Card ──────────────────────
 
-function TreatmentCard({ treatment: t, onStatusChange, sessionsConsumed }: {
+function TreatmentCard({ treatment: t, onStatusChange, sessionsConsumed, patientId, clinicId }: {
   treatment: Treatment;
   onStatusChange: (id: string, s: TreatmentStatus) => void;
   sessionsConsumed: number;
+  patientId: string;
+  clinicId: string;
 }) {
   const [showDropdown, setShowDropdown] = useState(false);
   const [expanded, setExpanded]         = useState(false);
+  const [showAudit, setShowAudit]       = useState(false);
   const dropRef = useRef<HTMLDivElement>(null);
   const status = (t.status ?? "proposed") as TreatmentStatus;
   const cfg    = STATUS_CONFIG[status] ?? STATUS_CONFIG.proposed;
@@ -270,6 +280,15 @@ function TreatmentCard({ treatment: t, onStatusChange, sessionsConsumed }: {
           )}
         </div>
 
+        {/* Audit history button */}
+        <button
+          onClick={() => setShowAudit(true)}
+          title="View change history"
+          style={{ background: "none", border: "none", cursor: "pointer", color: "#9C9584", padding: "2px", flexShrink: 0 }}
+        >
+          <History size={13} />
+        </button>
+
         {/* Expand toggle (only if there are details) */}
         {hasDetails && (
           <button
@@ -311,6 +330,18 @@ function TreatmentCard({ treatment: t, onStatusChange, sessionsConsumed }: {
             )}
           </div>
         </div>
+      )}
+
+      {/* D10: Audit history drawer */}
+      {showAudit && (
+        <AuditHistoryDrawer
+          patientId={patientId}
+          clinicId={clinicId}
+          recordType="treatment"
+          recordId={t.id}
+          recordLabel={t.treatment_name}
+          onClose={() => setShowAudit(false)}
+        />
       )}
     </div>
   );

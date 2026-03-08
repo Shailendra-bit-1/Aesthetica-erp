@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import {
   LayoutDashboard, Stethoscope, Layers, Image, FileText,
   Clipboard, CreditCard, Wallet, Pill, Calendar, MessageCircle, TrendingUp,
+  Clock, Package,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { logAction } from "@/lib/audit";
@@ -21,6 +22,9 @@ import PrescriptionsTab from "@/components/patient/tabs/PrescriptionsTab";
 import AppointmentsTab from "@/components/patient/tabs/AppointmentsTab";
 import CommunicationsTab from "@/components/patient/tabs/CommunicationsTab";
 import MarketingTab from "@/components/patient/tabs/MarketingTab";
+import TimelineTab from "@/components/patient/tabs/TimelineTab";
+import PackagesTab from "@/components/patient/tabs/PackagesTab";
+import PatientTags from "@/components/patient/PatientTags";
 import { Patient, MedicalHistory, Encounter, PatientNote, Treatment } from "@/components/patient/types";
 
 // ─────────────────────── Tab config ──────────────────────────────────────────
@@ -36,6 +40,8 @@ const TABS = [
   { key: "wallet",          label: "Wallet",          icon: Wallet           },
   { key: "prescriptions",   label: "Prescriptions",   icon: Pill             },
   { key: "appointments",    label: "Appointments",    icon: Calendar         },
+  { key: "packages",        label: "Packages",        icon: Package          },
+  { key: "timeline",        label: "Timeline",        icon: Clock            },
   { key: "communications",  label: "Communications",  icon: MessageCircle    },
   { key: "marketing",       label: "Marketing",       icon: TrendingUp       },
 ] as const;
@@ -196,6 +202,20 @@ export default function PatientProfilePage() {
 
             {activeTab === "appointments" && (
               <AppointmentsTab
+                patient={patient}
+                clinicId={clinicId}
+              />
+            )}
+
+            {activeTab === "packages" && (
+              <PackagesTab
+                patient={patient}
+                clinicId={clinicId}
+              />
+            )}
+
+            {activeTab === "timeline" && (
+              <TimelineTab
                 patient={patient}
                 clinicId={clinicId}
               />

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import { Patient, FITZPATRICK, TIER_CONFIG, calcAge, maskPhone, maskEmail } from "./types";
+import PatientTags from "./PatientTags";
 
 const LOYALTY_TIER_STYLE: Record<string, { bg: string; text: string; border: string }> = {
   Bronze:   { bg: "rgba(205,127,50,0.12)",  text: "#8B5A2B", border: "rgba(205,127,50,0.4)" },
@@ -127,11 +128,13 @@ export default function PatientHeader({
               </span>
             )}
             {patient.primary_concern && patient.primary_concern[0] && (
-              <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#C5A059" }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--primary-light)" }}>
                 <Sparkles size={11} />
                 {patient.primary_concern[0]}
               </span>
             )}
+            {/* D6: Patient Tags */}
+            {patient.clinic_id && <PatientTags patientId={patient.id} clinicId={patient.clinic_id} />}
           </div>
         </div>
 

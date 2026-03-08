@@ -68,6 +68,7 @@ interface InvoiceItem {
   discount_pct:         number;
   gst_pct:              number;
   line_total:           number;
+  hsn_sac_code?:        string; // D1: HSN/SAC code for GSTR-1
 }
 
 interface ProductOption {
@@ -2332,6 +2333,16 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess, isProforma = false }: 
       toast.error("Add at least one line item with a description and price");
       return;
     }
+    // D1: HSN/SAC validation — warn if any service line item (with GST > 0) is missing HSN/SAC
+    const gstItems = items.filter(it => it.description.trim() && it.gst_pct > 0);
+    const missingHsn = gstItems.filter(it => !(it.hsn_sac_code ?? "").trim());
+    if (missingHsn.length > 0) {
+      const proceed = confirm(
+        `${missingHsn.length} line item(s) are missing HSN/SAC codes required for GSTR-1.\n\nSave anyway?`
+      );
+      if (!proceed) { setSaving(false); return; }
+    }
+
     // GAP-27: require approval if any line item exceeds discount threshold
     const maxDisc = Math.max(...items.map(it => it.discount_pct ?? 0));
     if (!isProforma && maxDisc > DISCOUNT_THRESHOLD && !discApproved) {
@@ -2365,6 +2376,7 @@ function NewInvoiceDrawer({ clinicId, onClose, onSuccess, isProforma = false }: 
           unit_price:           it.unit_price,
           discount_pct:         it.discount_pct,
           gst_pct:              it.gst_pct,
+          hsn_sac_code:         it.hsn_sac_code ?? null,
         }))),
       });
       if (ie) throw ie;
@@ -2683,6 +2695,15 @@ function LineItemRow({ item, services, products = [], onChange, onRemove, canRem
         value={item.description}
         onChange={e => onChange("description", e.target.value)}
         placeholder="Description (required)"
+        className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+        style={{ background: "var(--card-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }}
+      />
+
+      {/* D1: HSN/SAC Code */}
+      <input
+        value={item.hsn_sac_code ?? ""}
+        onChange={e => onChange("hsn_sac_code", e.target.value)}
+        placeholder="HSN/SAC code (for GSTR-1)"
         className="w-full px-3 py-2 rounded-lg text-sm outline-none"
         style={{ background: "var(--card-bg)", border: "1px solid var(--border)", color: "var(--foreground)" }}
       />

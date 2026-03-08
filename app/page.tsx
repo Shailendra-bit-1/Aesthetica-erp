@@ -15,6 +15,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import NewPatientModal from "@/components/NewPatientModal";
+import DoctorQueueView from "@/components/DoctorQueueView";
 import { logAction } from "@/lib/audit";
 import { KpiSkeleton, Skeleton } from "@/components/ui";
 import { Drawer } from "@/components/ui";
@@ -1160,6 +1161,11 @@ export default function OverviewPage() {
         </section>
         )}
 
+
+        {/* ── D8: Doctor Queue ── */}
+        {activeClinicId && !isGlobal && (
+          <DoctorQueueView clinicId={activeClinicId} />
+        )}
 
       </div>
 
