@@ -1,11 +1,19 @@
 # AESTHETICA CLINIC ERP — FINAL PLAN
-## Single Source of Truth | Version 2.3 | 2026-03-08
+## Single Source of Truth | Version 2.4 | 2026-03-08
 
 ---
 
 > This document supersedes MASTER_PLAN.md, GAP_ANALYSIS.md, and PRE_IMPLEMENTATION_AUDIT.md.
 > **Everything Claude builds must follow this document exactly.**
 > No feature, table, route, API, or UI decision should contradict what is written here.
+>
+> **v2.4 additions (NG-14 Branding & White-Label — 2026-03-08):**
+> - NG-14: Branding & White-Label Configuration
+> - New table: `system_settings` (platform-level identity — app name, logo, favicon, colors)
+> - New columns on `clinics`: brand_name, brand_logo_url, brand_color (per-clinic patient-facing)
+> - New Security Rule 17: No product names/logos/colors hard-coded in source
+> - New Part 16.6: Branding & White-Label spec
+> - Phase A28 migration added; Phase C expanded with branding wiring steps
 >
 > **v2.3 additions (SSOT audit — 2026-03-08):**
 > - 13 documentation/cross-reference fixes applied (F-1 through F-10 + C-1 through C-3)
@@ -412,6 +420,7 @@ A global command palette triggered by `Cmd+K` (Mac) / `Ctrl+K` (Windows).
 | Background Job Queue (NG-11) | MISSING | background_jobs table + Edge Function processor |
 | Service Credit Expiry Worker (NG-12) | MISSING | pg_cron daily + patient notification |
 | Clinical Audit Log (NG-13) | MISSING | field-level change tracking on 5 clinical tables |
+| Branding & White-Label (NG-14) | MISSING | system_settings table + clinics brand columns |
 
 ---
 
@@ -748,6 +757,23 @@ clinical_audit_log    id, clinic_id, patient_id UUID→patients,
                        which are immutable and never edited)
 ```
 
+### Branding Tables (MISSING)
+```
+system_settings       key TEXT PRIMARY KEY,
+                      value TEXT NOT NULL,
+                      updated_by UUID REFERENCES profiles(id),
+                      updated_at TIMESTAMPTZ DEFAULT NOW()
+                      Seeded rows (superadmin manages via God Mode → Settings tab):
+                        app_name       — e.g. "Aesthetica ERP"
+                        logo_url       — full URL to platform logo
+                        favicon_url    — full URL to favicon
+                        support_email  — shown in error pages + email footers
+                        primary_color  — hex, platform-level (default #0B2A4A)
+                        secondary_color — hex (default #F7F9FC)
+                      (NG-14 — read by frontend via /api/branding; no hard-coded
+                       product identity anywhere in source)
+```
+
 ### Column Alterations Required (MISSING)
 
 > All of these run in Phase A migrations before any feature code is written.
@@ -908,6 +934,17 @@ ALTER TABLE profiles   ADD COLUMN deleted_at TIMESTAMPTZ DEFAULT NULL;
 -- ─── merged_into_id on patients (NG-1) ───────────────────────────────────────
 ALTER TABLE patients
   ADD COLUMN merged_into_id UUID REFERENCES patients(id) DEFAULT NULL;
+
+-- ─── Per-clinic patient-facing branding (NG-14) ──────────────────────────────
+-- Used on: patient portal, intake form header, invoice PDF, email templates.
+-- Null = fall back to system_settings values.
+ALTER TABLE clinics
+  ADD COLUMN brand_name      TEXT DEFAULT NULL,
+  ADD COLUMN brand_logo_url  TEXT DEFAULT NULL,
+  ADD COLUMN brand_color     TEXT DEFAULT NULL;
+  -- brand_name:     clinic's own name for patient comms (defaults to clinics.name)
+  -- brand_logo_url: clinic logo shown on portal/intake/invoices
+  -- brand_color:    hex accent colour for patient-facing pages only
 
 -- ─── JSONB metadata on all core tables (see Part 16) ─────────────────────────
 ALTER TABLE patients              ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
@@ -1792,6 +1829,7 @@ for (const p of walletPayments ?? []) {
 16. **Marketing Attribution** — UTM capture on intake + lead webhooks + "Revenue by Campaign" report (NG-6)
 17. **Inventory Transit Lock** — 2-step transfer dispatch/receive flow (NG-5)
 18. **Clinical Audit Log** — DB triggers on 5 editable clinical tables + "Edit History" drawer (NG-13)
+19. **Branding & White-Label** — `system_settings` table seed + `clinics` brand columns + `GET /api/branding` + frontend wiring (NG-14)
 
 ### P2 — Medium Priority
 19. Service Consumables auto-deduction (`service_consumables` table + `consume_session()` update)
@@ -1866,6 +1904,16 @@ POST /api/simulate/payment        Simulator: inject test payment
 ### Workflow APIs
 ```
 POST /api/workflows/dry-run       Test a rule without executing
+```
+
+### Branding APIs
+```
+GET  /api/branding                Returns merged branding: system_settings + clinic overrides
+                                  Response: { app_name, logo_url, favicon_url, primary_color,
+                                             secondary_color, support_email }
+                                  Public (no auth) — used by login screen + patient portal
+PATCH /api/admin/branding         Update system_settings rows (superadmin only)
+PATCH /api/clinics/[id]/branding  Update clinics.brand_* columns (clinic_admin + superadmin)
 ```
 
 ### APIs To Be Created
@@ -1957,7 +2005,9 @@ POST  /api/jobs                              Enqueue a background job (NG-11)
 
 15. **Clinical encounters are immutable** — no UPDATE or DELETE RLS policies on `clinical_encounters`. Not even for superadmin. Amendments are new `patient_notes` rows. This is a HIPAA clinical documentation requirement.
 
-16. **Scheduler checkout must pass `service_id`** — all invoice line items created from session checkout must carry the actual `service_id` UUID (not null) so HSN/SAC codes can be resolved for GSTR-1 filing.
+16. **Scheduler checkout must pass `service_id`**
+
+17. **No hard-coded product identity** — app name, logo URL, favicon URL, and theme colors must NEVER be hard-coded in source files. All read from `system_settings` (platform) or `clinics.brand_*` (per-clinic patient-facing). The string "Aesthetica" must not appear in any component, email template, or PDF layout — only via a config variable. This protects white-label and rebranding capability permanently. — all invoice line items created from session checkout must carry the actual `service_id` UUID (not null) so HSN/SAC codes can be resolved for GSTR-1 filing.
 
 ---
 
@@ -2004,6 +2054,7 @@ PHASE A — DB Migrations (run after Phase 0, unblocks all feature code)
   A25. Create search_index table + GIN index + population triggers (NG-10)
   A26. Create background_jobs table (NG-11)
   A27. Create clinical_audit_log table + UPDATE triggers on 5 clinical tables (NG-13)
+  A28. Create system_settings table + seed default rows; add brand_name/brand_logo_url/brand_color to clinics (NG-14)
 
 PHASE B — Logic Fixes (P0 Broken Flows)
   B1. Fix Doctor → Counsellor handoff — POST /api/counselling/refer + notification (P0-1)
@@ -2031,6 +2082,9 @@ PHASE C — Visual Overhaul (P1 — Design)
   C4. Sweep all pages — replace hardcoded hex colors with CSS variables
   C5. Build CommandBar.tsx (Cmd+K) + wire to search_index (NG-10)
   C6. Mobile bottom nav bar
+  C7. Wire GET /api/branding into layout — logo, app_name, favicon from system_settings (NG-14)
+  C8. Wire clinics.brand_* into patient portal, intake form, invoice PDF, email templates (NG-14)
+  C9. Branding settings UI in God Mode (superadmin) + Settings → Clinic Branding tab (clinic_admin)
 
 PHASE D — High Impact Features (P1 — Features)
   D1. HSN/SAC mandatory validation in billing UI + GSTR-1 export
@@ -2214,7 +2268,71 @@ const { data } = await supabase.from("appointments")
 
 ---
 
-### 16.4 — Performance Targets (Non-Negotiable)
+### 16.4 — Branding & White-Label Configuration (NG-14)
+
+All product identity is configurable. No hard-coded product names, logos, or colors anywhere in source.
+
+**Two-tier branding model:**
+
+| Tier | Table | Scope | Managed by |
+|---|---|---|---|
+| Platform | `system_settings` | All clinics (fallback) | Superadmin via God Mode |
+| Per-clinic | `clinics.brand_*` | Patient-facing surfaces only | Clinic admin via Settings |
+
+**Platform branding (`system_settings`):**
+```
+app_name        — e.g. "Aesthetica ERP" or "ClearSkin Pro"
+logo_url        — shown in TopBar, login screen, email footers
+favicon_url     — browser tab icon
+support_email   — shown on error pages and email footers
+primary_color   — CSS --color-primary (default #0B2A4A)
+secondary_color — CSS --color-secondary (default #F7F9FC)
+```
+
+**Per-clinic branding (`clinics.brand_*`):**
+```
+brand_name      — shown on patient portal header, intake form, invoice PDF
+brand_logo_url  — clinic's own logo (overrides platform logo on patient-facing surfaces)
+brand_color     — hex accent on patient portal only (does not affect admin UI)
+```
+
+**Merge priority (frontend):**
+```
+patient-facing surface: clinics.brand_* → fallback to system_settings
+admin UI:               system_settings only
+```
+
+**Surfaces that must read from config (never hard-coded):**
+- Login screen (`app_name`, `logo_url`)
+- TopBar logo and browser `<title>`
+- Patient portal header (`brand_name`, `brand_logo_url`)
+- Intake form header
+- Invoice PDF (`brand_name`, `brand_logo_url`)
+- Email templates (subject prefix, footer logo)
+- Patient-facing reports
+
+**API:**
+```ts
+// GET /api/branding?clinic_id=xxx
+// Public route — no auth required
+// Returns merged config: platform defaults + clinic overrides
+{
+  app_name: "Aesthetica ERP",
+  logo_url: "https://...",
+  favicon_url: "https://...",
+  brand_name: "SkinLab by Dr Mehra",   // from clinics.brand_name if set
+  brand_logo_url: "https://...",       // from clinics.brand_logo_url if set
+  primary_color: "#0B2A4A",
+  support_email: "support@aesthetica.in"
+}
+```
+
+**Future: Full white-label**
+When a SaaS operator wants to resell this ERP under a different name (e.g. "DermOS"), they update `system_settings` rows only — no code changes needed. Per-clinic `brand_*` columns allow each chain/franchise to present their own identity to patients.
+
+---
+
+### 16.5 — Performance Targets (Non-Negotiable)
 
 | Operation | Target p95 | Current (stress test) |
 |---|---|---|
@@ -2237,7 +2355,7 @@ const { data } = await supabase.from("appointments")
 
 ---
 
-### 16.5 — Audit & Compliance
+### 16.6 — Audit & Compliance
 
 All state-changing actions must be logged via `logAction()`:
 
@@ -2281,8 +2399,8 @@ This is a single indexed lookup per trigger fire and does not affect performance
 ---
 
 *Last updated: 2026-03-08*
-*Version: 2.3 — SSOT audit-clean. All cross-reference and schema inconsistencies resolved.*
-*Status: APPROVED — Single Source of Truth. Start with Phase 0 security hotfixes.*
+*Version: 2.4 — NG-14 Branding & White-Label added. All gaps resolved.*
+*Status: APPROVED FINAL — Single Source of Truth. Start with Phase 0 security hotfixes.*
 
 ---
 
@@ -2357,4 +2475,5 @@ All findings from the 360-degree pre-implementation audit (2026-03-08, DA-26 →
 | NG-10 | `search_index` table for Cmd+K | Part 8 Tables, Part 9.10, Part 13, Part 15 Phase A25+C5 |
 | NG-11 | Generic Background Job Queue | Part 8 Tables, Part 12, Part 13, Part 15 Phase E10 |
 | NG-12 | Service Credit Expiry Worker | Part 13, Part 15 Phase E9 |
-| NG-13 | `clinical_audit_log` — field-level clinical change tracking | Part 8 Tables, Part 9.13, Part 15 Phase A27+D10, Part 16.5 |
+| NG-13 | `clinical_audit_log` — field-level clinical change tracking | Part 8 Tables, Part 9.13, Part 15 Phase A27+D10, Part 16.6 |
+| NG-14 | Branding & White-Label — `system_settings` + `clinics.brand_*` | Part 7, Part 8 Tables+Alterations, Part 11, Part 12, Part 14 Rule 17, Part 15 Phase A28+C7-9, Part 16.4 |
