@@ -36,9 +36,9 @@ export async function POST(req: NextRequest) {
 
     if (error) throw error;
 
-    // In production, OTP would be sent to the clinic admin via SMS/WhatsApp.
-    // For demo: return OTP in response (remove in production).
-    return NextResponse.json({ approval_id: data.id, otp_demo: otp });
+    // OTP is stored in discount_approvals.otp_code and delivered to clinic admin
+    // via SMS/WhatsApp. It must NEVER appear in the API response.
+    return NextResponse.json({ approval_id: data.id });
   } catch (e) {
     console.error("discount request error:", e);
     return NextResponse.json({ error: "An error occurred" }, { status: 500 });
