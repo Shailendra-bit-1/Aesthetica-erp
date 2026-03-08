@@ -31,6 +31,12 @@ function maybeCleanup() {
 }
 
 export async function proxy(request: NextRequest) {
+  // Guard: if Supabase env vars are not configured (e.g. preview deployments
+  // without secrets set), pass through rather than crash.
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    return NextResponse.next({ request });
+  }
+
   maybeCleanup();
 
   const { pathname } = request.nextUrl;
