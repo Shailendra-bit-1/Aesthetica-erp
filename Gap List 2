@@ -1,0 +1,663 @@
+
+
+⸻
+
+ERP Architecture Audit Note
+
+(For FINAL_PLAN-3)
+
+Overall architecture quality: 8.7 / 10
+
+
+Critical Risks (This is the brutal part)
+
+These are not obvious but very important.
+
+⸻
+
+⚠️ Risk 1 — Supabase scaling limits
+
+Right now you rely heavily on:
+
+Supabase
+Realtime
+Edge functions
+RLS
+
+For 50 clinics → fine
+
+For 500 clinics → risky
+
+Main problems:
+
+1️⃣ RLS can slow complex joins
+2️⃣ Realtime channels can explode
+3️⃣ Large audit tables grow fast
+
+You should already plan:
+
+Future split:
+
+Operational DB
+Analytics DB
+Logs DB
+
+
+⸻
+
+⚠️ Risk 2 — Scheduler complexity explosion
+
+Your scheduler supports:
+	•	rooms
+	•	doctors
+	•	walk-ins
+	•	double bookings
+	•	drag drop
+	•	queues
+
+This is the hardest module in clinic software.
+
+
+
+appointment conflicts
+room assignment
+doctor availability
+walk-ins
+
+You must centralize logic in one DB function.
+
+Example:
+
+create_appointment_safe()
+
+You already have this — good.  
+
+But every scheduler action must call it.
+
+⸻
+3️⃣ Architecture Improvements I Strongly Recommend
+
+These will make your ERP elite tier.
+
+⸻
+
+Improvement 1 — Event log system
+
+Add a table:
+
+event_log
+
+Example:
+
+event_log
+id
+clinic_id
+event_type
+entity_type
+entity_id
+payload JSONB
+created_at
+
+Example events:
+
+PATIENT_CREATED
+APPOINTMENT_BOOKED
+CONSULTATION_DONE
+PROFORMA_CREATED
+INVOICE_PAID
+PACKAGE_REDEEMED
+
+This enables:
+	•	analytics
+	•	AI
+	•	debugging
+	•	integrations
+
+Huge future value.
+
+⸻
+
+Improvement 2 — Soft delete everywhere
+
+Add:
+
+deleted_at TIMESTAMP
+
+Instead of hard delete.
+
+Critical for:
+	•	patient safety
+	•	invoice corrections
+	•	audit trails
+
+⸻
+
+Improvement 3 — background job queue
+
+Soon you will run:
+	•	WhatsApp reminders
+	•	membership expiry
+	•	reports
+	•	campaigns
+	•	workflow engine
+
+You should introduce:
+
+job_queue
+
+or
+
+pg_cron + queue table
+
+
+⸻
+
+Improvement 4 — global search index
+
+Your CMD+K search will need:
+
+patients
+appointments
+services
+invoices
+
+Instead of multiple queries build:
+
+search_index
+
+table.
+
+This makes search instant.
+
+⸻
+
+Improvement 5 — file storage architecture
+
+You will store:
+	•	before/after photos
+	•	consent forms
+	•	documents
+
+Ensure:
+
+supabase storage
++ clinic_id folder structure
+
+Example:
+
+/clinic_123/patient_456/photos
+
+
+
+The system is already strong and covers:
+	•	CRM
+	•	Patient EMR
+	•	Scheduling
+	•	Counselling
+	•	Billing
+	•	Inventory
+	•	Multi-clinic support
+
+However, several structural and operational gaps still exist that should be addressed to ensure production readiness, legal safety, and scalability.
+
+⸻
+
+1. Critical Structural Gaps (Must Fix)
+
+These are high-priority system design improvements.
+
+⸻
+
+1.1 Patient Duplicate & Merge Logic
+
+Real clinics frequently create duplicate patients due to:
+	•	spelling variations
+	•	multiple phone numbers
+	•	walk-in registration
+
+Current system allows patient creation but merge logic is not fully defined.
+
+Required implementation:
+
+Table:
+
+patient_merge_log
+
+Fields:
+
+source_patient_id
+target_patient_id
+merged_by
+merged_at
+reason
+
+Merge operation must reassign all related records:
+
+appointments
+clinical_encounters
+invoices
+payments
+wallet_transactions
+service_credits
+photos
+communications
+
+This prevents data fragmentation in the patient record.
+
+⸻
+
+1.2 Consent Document Versioning
+
+The system supports consent forms, but does not preserve the exact version signed by the patient.
+
+Risk:
+
+If consent text changes later, the clinic cannot prove which version the patient agreed to.
+
+Required fields:
+
+consent_version
+form_snapshot_json
+signed_at
+
+Store a JSON snapshot of the form at signing time.
+
+⸻
+
+1.3 Resource Scheduling (Rooms, Machines)
+
+Scheduler currently focuses on:
+	•	doctor
+	•	service
+	•	time
+
+However aesthetic clinics require resource management.
+
+Examples:
+	•	Laser machine
+	•	Treatment room
+	•	Facial bed
+	•	Assistant staff
+
+Required tables:
+
+resources
+appointment_resources
+
+Example resource types:
+
+room
+machine
+equipment
+assistant
+
+Scheduler must check:
+
+doctor availability
+AND
+resource availability
+
+
+⸻
+
+1.4 Waitlist System
+
+When appointments are full, clinics typically maintain a waitlist.
+
+Required table:
+
+appointment_waitlist
+
+Fields:
+
+patient_id
+service_id
+preferred_time_range
+priority
+status
+
+When an appointment is cancelled:
+
+system automatically suggests waitlisted patients
+
+This improves schedule utilization.
+
+⸻
+
+1.5 Global Patient Identity (Multi-Branch)
+
+Current architecture uses:
+
+patients
+clinic_id
+
+This causes the same patient to exist multiple times across branches.
+
+Recommended structure:
+
+global_patients
+clinic_patients
+
+Example:
+
+global_patient_id
+clinic_id
+local_patient_id
+
+This enables:
+	•	shared patient history
+	•	cross-clinic visits
+	•	centralized analytics
+
+⸻
+
+2. Patient Journey Improvements
+
+Your system captures most of the lifecycle, but some enhancements are recommended.
+
+⸻
+
+2.1 Visit Tracking Layer
+
+Appointments represent planned visits, but the system should also track actual clinic visits.
+
+Add:
+
+patient_visits
+
+Fields:
+
+patient_id
+appointment_id
+check_in_time
+check_out_time
+visit_status
+doctor_id
+
+Benefits:
+	•	waiting time analytics
+	•	operational insights
+	•	patient flow tracking
+
+⸻
+
+2.2 Treatment History Master Table
+
+Treatment sessions should have a central record independent of appointments.
+
+Add:
+
+patient_treatments
+
+Fields:
+
+patient_id
+service_id
+doctor_id
+appointment_id
+treatment_notes
+outcome
+side_effects
+next_recommended_date
+
+This becomes the long-term clinical treatment history.
+
+⸻
+
+2.3 Clinical Protocol Automation
+
+Currently the system supports reminders but not protocol-driven follow-ups.
+
+Example:
+
+PRP Hair
+Follow-up after 30 days
+
+Add:
+
+treatment_protocols
+
+Fields:
+
+service_id
+followup_days
+aftercare_message
+auto_reminder
+
+System should automatically trigger:
+
+follow-up appointment suggestion
+patient reminders
+aftercare instructions
+
+
+⸻
+
+3. Financial System Enhancements
+
+The billing architecture is already strong, but several improvements increase reliability.
+
+⸻
+
+3.1 Payment Ledger Architecture
+
+Payments should follow a ledger model.
+
+Recommended table:
+
+payment_transactions
+
+Transaction types:
+
+payment
+refund
+adjustment
+void
+wallet_credit
+wallet_debit
+
+Benefits:
+	•	GST compliance
+	•	financial auditing
+	•	accurate reconciliation
+
+⸻
+
+3.2 Package Expiry & Session Tracking
+
+Package logic already exists but ensure:
+
+Fields include:
+
+expires_at
+sessions_total
+sessions_remaining
+expired_sessions
+
+Background worker:
+
+daily_package_expiry_worker
+
+This prevents unused sessions remaining indefinitely.
+
+⸻
+
+4. CRM & Marketing Improvements
+
+⸻
+
+4.1 Marketing Attribution Tracking
+
+CRM should track source attribution.
+
+Recommended fields:
+
+lead_source
+campaign_name
+utm_source
+utm_medium
+utm_campaign
+
+This enables reporting such as:
+
+Revenue by campaign
+Customer acquisition cost
+Marketing ROI
+
+
+⸻
+
+4.2 Referral Tracking
+
+Aesthetic clinics rely heavily on referrals.
+
+Add:
+
+patient_referrals
+
+Fields:
+
+referrer_patient_id
+referred_patient_id
+reward_amount
+reward_status
+
+Supports referral programs.
+
+⸻
+
+5. Analytics & Metrics Layer
+
+To support advanced reporting, create derived analytics views.
+
+Example:
+
+patient_metrics_view
+
+Fields:
+
+total_spend
+visit_count
+last_visit_date
+lifetime_value
+average_ticket_size
+
+These metrics support:
+	•	VIP patient identification
+	•	retention campaigns
+	•	loyalty programs
+
+⸻
+
+6. Observability & System Health
+
+Your plan already introduces God Mode, which is excellent.
+
+Ensure it includes:
+
+Webhook monitor
+Failed job retry system
+Audit logs
+System performance metrics
+
+Recommended addition:
+
+background_job_logs
+
+This tracks automation failures.
+
+⸻
+
+7. Future Scalability Recommendations
+
+To ensure the ERP scales to hundreds of clinics, consider these improvements.
+
+⸻
+
+7.1 Event Timeline Architecture
+
+Introduce a patient_events table.
+
+Example events:
+
+APPOINTMENT_BOOKED
+CONSULTATION_COMPLETED
+TREATMENT_PERFORMED
+INVOICE_PAID
+PHOTO_UPLOADED
+
+This creates a unified activity timeline.
+
+⸻
+
+7.2 Metadata Flex Schema
+
+Your plan already includes a metadata JSONB strategy, which is excellent.
+
+Use this for:
+
+patients
+appointments
+inventory
+invoices
+
+Benefits:
+	•	custom clinic fields
+	•	no schema migration needed
+	•	future extensibility
+
+⸻
+
+7.3 Background Job System
+
+As automation grows, introduce a queue system:
+
+job_queue
+dead_letter_queue
+job_retry
+
+Used for:
+	•	reminders
+	•	marketing automation
+	•	webhooks
+	•	analytics tasks
+
+⸻
+
+1. Patient Journey Gaps (Lifecycle & Continuity) 
+A true 360-degree view must cover the journey from "awareness" to "lifelong loyalty." 
+* The "Handoff" Void: A major gap exists between the Consultation (Doctor) and the Conversion (Counsellor). If the system doesn't alert the counsellor the moment a doctor finishes a SOAP note, the patient often leaves without a treatment plan being discussed.
+* Missing Visit Attribution: Many systems track "Appointments" but fail to track the actual Visit Lifecycle (Check-in time, Waiting time, Room occupancy). Without this, you cannot analyze operational bottlenecks.
+* Lack of Protocol Automation: In aesthetics, treatments like PRP or Laser are series-based. A common gap is the absence of Protocol-Driven Follow-ups—where the system automatically suggests a 30-day follow-up session based on the treatment performed.
+* Non-Clinical Touchpoints: Systems often miss the "pre-visit" interactions (inquiries on WhatsApp/Instagram) or "post-visit" satisfaction surveys, leaving a blind spot in the patient's engagement history. 
+
+
+2. Patient Records Management Gaps (Data & Legal) 
+* Fragmented Identity (Multi-Branch): In multi-clinic setups, a patient may exist as three different records if they visit three branches. Without a Global Patient ID or Master Patient Index (MPI), you cannot see a unified history of treatments or wallet balances across locations.
+* Consent Versioning Failures: Most systems store a "Signed" flag but fail to snapshot the exact text of the consent at the time of signing. If the legal text changes later, you have no proof of what the patient originally agreed to.
+* Unstructured Photo Management: Photos are often saved in device galleries or random folders. A gap exists when these are not version-controlled or tagged by condition/procedure within the patient record for side-by-side comparison.
+* Static vs. Longitudinal EMR: Many EMRs are "transactional" (record only the current visit). A 360-degree record requires a Long-Term Treatment Plan view that tracks progress against overall aesthetic goals over years. 
+
+
+3. Financial & Operational Gaps 
+* Wallet & Credit Fragmentation: If a patient has a "package credit" but the billing system doesn't automatically prompt the receptionist to use it during checkout, it leads to manual errors and patient frustration.
+* Supply Chain Invisibility: A critical gap is the disconnect between the Treatment Record and Inventory. When a doctor records "Botox 20 units," the system should automatically deduct those 20 units from the batch-tracked stock.
+* Lack of Custom Metadata: Every clinic has unique needs (e.g., tracking "Skin Tone" or "Referral Doctor"). Systems that don't allow Custom JSONB Fields force staff to use "Notes" fields, making the data non-reportable. 
+* ￼
+
+* DA-60: Global Patient ID (GPID): Implement a global_patients table to link a single human to multiple clinic_patients records. This allows a patient in chain clinics to use their wallet in Clinic A even if they were registered in Clinic B. (p. 4)
+* DA-61: Conflict-Aware Merge Logic: Add a patient_merge_log and a service to merge two profiles. It must reassign all invoices, appointments, and photos from the source to the target ID without losing data. (pp. 1-2)
+* DA-62: Consent Snapshotting: In the patient_consents table, add a form_snapshot_json column. Store the exact text the patient signed at that moment, not just a link to a template.
+* DA-63: Resource Capacity Pooling: Instead of tagging "Room 101," allow clinics to define "Resource Pools" (e.g., "5 Laser Beds"). The scheduler should only warn if the 6th concurrent laser session is booked. (p. 3)
+* DA-64: Machine-Service Mapping: Link specific services to resource_types (e.g., "Full Body Laser" requires "Laser Machine"). Show a yellow warning if a machine is likely overbooked. (p. 3)
+* DA-65: Status-Triggered Flow: Add checked_in_at, consultation_start_at, and treatment_complete_at to the appointment table to calculate "Patient Wait Time" analytics
+DA-70: Protocol-Driven Follow-ups: Create a treatment_protocols table. When a "PRP Session" is marked complete, the system must auto-suggest a follow-up appointment in exactly 30 days. (pp. 5-6)
+* DA-72: Inventory Transit Lock: Implement a 2-step transfer: In-Transit (Stock leaves Clinic A) and Received (Stock enters Clinic B). Prevent stock from "vanishing" during inter-branch transfers. 
+
+* DA-73: Marketing Attribution: Add utm_source, utm_medium, and lead_source to the patients table to track which Instagram or Google ad actually generated the revenue. (pp. 7-8)
+* DA-74: Referral Reward Ledger: Add a patient_referrals table. If Patient A refers Patient B, auto-credit Patient A’s wallet only after Patient B pays their first invoice. (p. 8) 
+
+6. System Health & Scaling (P1) 
+* DA-75: Webhook Reliability: Add a webhook_logs table with a retry_count. If the WhatsApp or Razorpay notification fails, the system must retry 3 times before alerting the "God Mode" dashboard. (pp. 9-10)
+* DA-76: JSONB Metadata Flex-Fields: Add a metadata JSONB column to patients, appointments, and inventory_products to allow clinics to add custom fields (like "Skin Type") without database migrations. (p. 10) 
+
