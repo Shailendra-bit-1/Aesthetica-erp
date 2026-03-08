@@ -37,6 +37,7 @@ import {
   FlaskConical,
   Stethoscope,
   Trash2,
+  Building2,
 } from "lucide-react";
 import clsx from "clsx";
 import { useClinic } from "@/contexts/ClinicContext";
@@ -79,6 +80,7 @@ const ADMIN_ITEMS = [
   { label: "Simulator",          href: "/admin/simulator",           icon: FlaskConical,      superadminOnly: false },
   { label: "Conditions & Protocols", href: "/admin/conditions",      icon: Stethoscope,       superadminOnly: false },
   { label: "Deleted Records",        href: "/admin/deleted",          icon: Trash2,            superadminOnly: true  },
+  { label: "Chains & Clinics",       href: "/admin/chains",           icon: Building2,         superadminOnly: true  },
 ] as const;
 
 const BOTTOM_ITEMS = [

@@ -2176,6 +2176,7 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
   const [selectedCreditId, setSelectedCreditId] = useState("");
   const [saving,         setSaving]         = useState(false);
   const [conflict,       setConflict]       = useState<string | null>(null);
+  const [roomConflict,   setRoomConflict]   = useState<string | null>(null);
   const [extraRows,      setExtraRows]      = useState<ExtraServiceRow[]>([]);
   const [isRecurring,    setIsRecurring]    = useState(false);
   const [recurringFreq,  setRecurringFreq]  = useState<"weekly" | "biweekly" | "monthly">("weekly");
@@ -2237,27 +2238,44 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
       });
   }, [selectedPatient?.id, serviceId]);
 
-  // Double booking check
+  // Double booking + room conflict check (F2)
   useEffect(() => {
-    if (!providerId || !date || !startTime) { setConflict(null); return; }
+    if (!providerId || !date || !startTime) { setConflict(null); setRoomConflict(null); return; }
     const start = new Date(`${date}T${startTime}`);
     const end   = new Date(start.getTime() + durationMins * 60000);
     const buffer = (settings?.buffer_time_minutes ?? 15) * 60000;
 
-    const overlap = existingAppointments.find(a =>
+    const active = existingAppointments.filter(a => !["cancelled","no_show","completed"].includes(a.status));
+
+    // Provider conflict
+    const overlap = active.find(a =>
       a.provider_id === providerId &&
-      !["cancelled","no_show","completed"].includes(a.status) &&
       new Date(a.start_time).getTime() < end.getTime()   + buffer &&
       new Date(a.end_time).getTime()   > start.getTime() - buffer
     );
-
     if (overlap) {
       const bufferMsg = settings?.buffer_time_minutes ? ` (including ${settings.buffer_time_minutes}min buffer)` : "";
       setConflict(`Overlaps with "${overlap.service_name}" for ${overlap.patient_name}${bufferMsg}`);
     } else {
       setConflict(null);
     }
-  }, [providerId, date, startTime, durationMins, existingAppointments, settings]);
+
+    // F2: Room conflict
+    if (room.trim()) {
+      const roomOverlap = active.find(a =>
+        a.room === room.trim() &&
+        new Date(a.start_time).getTime() < end.getTime() &&
+        new Date(a.end_time).getTime()   > start.getTime()
+      );
+      if (roomOverlap) {
+        setRoomConflict(`Room "${room}" is booked for "${roomOverlap.service_name}" (${roomOverlap.patient_name}) at this time`);
+      } else {
+        setRoomConflict(null);
+      }
+    } else {
+      setRoomConflict(null);
+    }
+  }, [providerId, room, date, startTime, durationMins, existingAppointments, settings]);
 
   async function handleSave() {
     if (!selectedPatient) { toast.error("Select a patient"); return; }
@@ -2778,6 +2796,17 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
                       </button>
                     </>
                   )}
+                </div>
+              </div>
+            )}
+
+            {/* F2: Room conflict warning */}
+            {roomConflict && (
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 14px", borderRadius: 10, background: "rgba(234,88,12,0.07)", border: "1px solid rgba(234,88,12,0.3)" }}>
+                <AlertTriangle size={14} style={{ color: "#ea580c", flexShrink: 0, marginTop: 1 }} />
+                <div>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: "#ea580c", margin: 0 }}>Room Conflict</p>
+                  <p style={{ fontSize: 11, color: "#ea580c", margin: 0, opacity: 0.85 }}>{roomConflict}</p>
                 </div>
               </div>
             )}

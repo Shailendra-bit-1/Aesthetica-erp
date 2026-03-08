@@ -441,7 +441,7 @@ export default function TopBar() {
       </header>
 
       {/* ── CommandBar ────────────────────────────────────────────────────── */}
-      {cmdOpen && <CommandBarInline onClose={() => setCmdOpen(false)} />}
+      {cmdOpen && <CommandBarInline onClose={() => setCmdOpen(false)} pathname={pathname} />}
     </>
   );
 }
@@ -458,7 +458,7 @@ interface CmdItem {
   icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>;
 }
 
-function CommandBarInline({ onClose }: { onClose: () => void }) {
+function CommandBarInline({ onClose, pathname }: { onClose: () => void; pathname: string }) {
   const router  = useRouter();
   const { profile, activeClinicId } = useClinic();
   const [query,   setQuery]   = useState("");
@@ -480,6 +480,7 @@ function CommandBarInline({ onClose }: { onClose: () => void }) {
     ...(profile?.role === "superadmin" ? [
       { id: "nav-godmode", label: "God Mode", href: "/admin/god-mode", category: "Admin", icon: Globe },
       { id: "nav-reports", label: "Reports",  href: "/admin/reports",  category: "Admin", icon: BarChart2 },
+      { id: "nav-chains",  label: "Chains & Clinics", href: "/admin/chains", category: "Admin", icon: Building2 },
     ] : []),
   ];
 
@@ -490,24 +491,74 @@ function CommandBarInline({ onClose }: { onClose: () => void }) {
     { id: "new-lead",        label: "New Lead",         subtitle: "Add a CRM lead",           category: "Create", icon: Target, href: "/crm?new=1"          },
   ];
 
-  // On mount: show nav + quick create
+  // F5: Contextual smart suggestions based on current page + role
+  const SMART_SUGGESTIONS: CmdItem[] = (() => {
+    const suggestions: CmdItem[] = [];
+    // Page-specific suggestions
+    if (pathname === "/" || pathname.startsWith("/dashboard")) {
+      suggestions.push(
+        { id: "s-today-appts", label: "View Today's Appointments", subtitle: "See your schedule for today", href: "/scheduler", category: "Suggested", icon: Calendar },
+        { id: "s-pending-inv", label: "Check Pending Invoices",    subtitle: "Review unpaid invoices",       href: "/billing",   category: "Suggested", icon: Receipt  },
+      );
+    }
+    if (pathname.startsWith("/patients")) {
+      suggestions.push(
+        { id: "s-new-appt-p",  label: "Book Appointment for Patient",  subtitle: "Schedule on the scheduler",   href: "/scheduler?new=1", category: "Suggested", icon: Calendar },
+        { id: "s-new-invoice", label: "Create Invoice for Patient",    subtitle: "Open billing page",           href: "/billing?new=1",   category: "Suggested", icon: Receipt  },
+      );
+    }
+    if (pathname.startsWith("/scheduler")) {
+      suggestions.push(
+        { id: "s-availability", label: "Manage Staff Availability", subtitle: "Set weekly schedules", href: "/staff", category: "Suggested", icon: UserCog },
+        { id: "s-new-patient",  label: "Add a New Patient",         subtitle: "Register before booking", href: "/patients?new=1", category: "Suggested", icon: Users },
+      );
+    }
+    if (pathname.startsWith("/billing")) {
+      suggestions.push(
+        { id: "s-inv-report",  label: "Revenue Report",        subtitle: "Open reports page",    href: "/admin/reports", category: "Suggested", icon: BarChart2 },
+        { id: "s-memberships", label: "Manage Memberships",    subtitle: "Wallet & plans",        href: "/membership",    category: "Suggested", icon: CreditCard },
+      );
+    }
+    if (pathname.startsWith("/crm")) {
+      suggestions.push(
+        { id: "s-campaigns",  label: "View Campaigns",         subtitle: "Check CRM campaigns",  href: "/crm",            category: "Suggested", icon: Target },
+        { id: "s-counselling",label: "Counselling Pipeline",   subtitle: "Conversion pipeline",  href: "/counselling",    category: "Suggested", icon: MessageSquare },
+      );
+    }
+    if (pathname.startsWith("/inventory")) {
+      suggestions.push(
+        { id: "s-po", label: "Create Purchase Order", subtitle: "Order low-stock items", href: "/inventory", category: "Suggested", icon: Package },
+      );
+    }
+    // Role-specific suggestions
+    if (profile?.role === "superadmin") {
+      suggestions.push({ id: "s-godmode", label: "Open God Mode", subtitle: "Platform admin controls", href: "/admin/god-mode", category: "Suggested", icon: Globe });
+    }
+    if (["clinic_admin","chain_admin","superadmin"].includes(profile?.role ?? "")) {
+      suggestions.push({ id: "s-invite", label: "Invite Staff Member", subtitle: "Staff HR → Directory", href: "/staff", category: "Suggested", icon: UserCog });
+    }
+    return suggestions.slice(0, 4);
+  })();
+
+  // On mount: show suggestions + quick create
   useEffect(() => {
-    setResults([...NAV_COMMANDS.slice(0, 5), ...QUICK_CREATE]);
+    setResults([...SMART_SUGGESTIONS, ...QUICK_CREATE]);
     inputRef.current?.focus();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const search = useCallback(async (q: string) => {
     if (!q.trim()) {
-      setResults([...NAV_COMMANDS.slice(0, 5), ...QUICK_CREATE]);
+      setResults([...SMART_SUGGESTIONS, ...QUICK_CREATE]);
       setIdx(0);
       return;
     }
     const lower = q.toLowerCase();
 
-    // Filter nav commands
-    const navHits = NAV_COMMANDS.filter(c => c.label.toLowerCase().includes(lower)).slice(0, 3);
+    // Filter nav + suggestions
+    const navHits    = NAV_COMMANDS.filter(c => c.label.toLowerCase().includes(lower)).slice(0, 3);
     const createHits = QUICK_CREATE.filter(c => c.label.toLowerCase().includes(lower)).slice(0, 2);
+    const smartHits  = SMART_SUGGESTIONS.filter(c => c.label.toLowerCase().includes(lower) || (c.subtitle ?? "").toLowerCase().includes(lower)).slice(0, 2);
 
     // Live search patients
     const { data: patients } = await supabase
@@ -526,7 +577,7 @@ function CommandBarInline({ onClose }: { onClose: () => void }) {
       icon: Users,
     }));
 
-    setResults([...navHits, ...createHits, ...patientHits]);
+    setResults([...smartHits, ...navHits, ...createHits, ...patientHits]);
     setIdx(0);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeClinicId]);

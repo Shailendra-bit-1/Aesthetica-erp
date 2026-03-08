@@ -158,6 +158,7 @@ export default function OverviewPage() {
   const [invAlerts,     setInvAlerts]     = useState<InventoryAlert[]>([]);
   const [recentPats,    setRecentPats]    = useState<RecentPatient[]>([]);
   const [topPatients,   setTopPatients]   = useState<TopPatient[]>([]);
+  const [ltvStats,      setLtvStats]      = useState<{ avgLtv: number; avgVisits: number; atRisk: number; totalPatients: number } | null>(null);
   const [loading,       setLoading]       = useState(true);
   const [showNewPat,    setShowNewPat]    = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
@@ -309,15 +310,35 @@ export default function OverviewPage() {
     setInvAlerts((invRes.data ?? []) as InventoryAlert[]);
     setRecentPats((recentPatsRes.data ?? []) as RecentPatient[]);
 
-    // E8: Top patients from patient_metrics view
+    // E8 + F6: Top patients + LTV stats from patient_metrics view
     if (activeClinicId && !isGlobal) {
-      const { data: topData } = await supabase
-        .from("patient_metrics")
-        .select("patient_id, full_name, total_spent, total_visits, last_visit_at, wallet_balance")
-        .eq("clinic_id", activeClinicId)
-        .order("total_spent", { ascending: false })
-        .limit(5);
+      const [{ data: topData }, { data: allMetrics }] = await Promise.all([
+        supabase
+          .from("patient_metrics")
+          .select("patient_id, full_name, total_spent, total_visits, last_visit_at, wallet_balance")
+          .eq("clinic_id", activeClinicId)
+          .order("total_spent", { ascending: false })
+          .limit(5),
+        supabase
+          .from("patient_metrics")
+          .select("total_spent, total_visits, last_visit_at")
+          .eq("clinic_id", activeClinicId),
+      ]);
       setTopPatients((topData ?? []) as TopPatient[]);
+      // F6: compute aggregate LTV stats
+      if (allMetrics && allMetrics.length > 0) {
+        const metrics = allMetrics as { total_spent: number; total_visits: number; last_visit_at: string | null }[];
+        const ninetyDaysAgo = new Date(); ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+        const totalSpent = metrics.reduce((s, m) => s + (m.total_spent ?? 0), 0);
+        const totalVisits = metrics.reduce((s, m) => s + (m.total_visits ?? 0), 0);
+        const atRisk = metrics.filter(m => !m.last_visit_at || new Date(m.last_visit_at) < ninetyDaysAgo).length;
+        setLtvStats({
+          avgLtv: Math.round(totalSpent / metrics.length),
+          avgVisits: Math.round((totalVisits / metrics.length) * 10) / 10,
+          atRisk,
+          totalPatients: metrics.length,
+        });
+      }
     }
 
     // Branch revenue (chain/superadmin)
@@ -1209,6 +1230,38 @@ export default function OverviewPage() {
             ))}
           </div>
         </section>
+        )}
+
+        {/* ── F6: Patient LTV Summary ── */}
+        {ltvStats && (
+          <section className="card overflow-hidden" style={{ background: "var(--surface)" }}>
+            <div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: "1px solid var(--border)" }}>
+              <div className="flex items-center gap-3">
+                <TrendingUp size={16} style={{ color: "#7c3aed" }} />
+                <h3 className="text-base font-semibold" style={{ color: "var(--foreground)", fontFamily: "Georgia, serif" }}>Patient Lifetime Value</h3>
+              </div>
+              <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: "rgba(124,58,237,0.1)", color: "#7c3aed" }}>
+                {ltvStats.totalPatients} patients
+              </span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 0 }}>
+              <div style={{ padding: "18px 24px", borderRight: "1px solid var(--border)" }}>
+                <p className="text-xs font-semibold uppercase tracking-wide mb-1" style={{ color: "var(--text-muted)" }}>Avg Lifetime Value</p>
+                <p style={{ fontSize: 22, fontWeight: 700, color: "#7c3aed", fontFamily: "Georgia, serif" }}>₹{ltvStats.avgLtv.toLocaleString("en-IN")}</p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>per patient (all time)</p>
+              </div>
+              <div style={{ padding: "18px 24px", borderRight: "1px solid var(--border)" }}>
+                <p className="text-xs font-semibold uppercase tracking-wide mb-1" style={{ color: "var(--text-muted)" }}>Avg Visit Frequency</p>
+                <p style={{ fontSize: 22, fontWeight: 700, color: "var(--gold)", fontFamily: "Georgia, serif" }}>{ltvStats.avgVisits}</p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>visits per patient</p>
+              </div>
+              <div style={{ padding: "18px 24px" }}>
+                <p className="text-xs font-semibold uppercase tracking-wide mb-1" style={{ color: "var(--text-muted)" }}>At-Risk Patients</p>
+                <p style={{ fontSize: 22, fontWeight: 700, color: ltvStats.atRisk > 0 ? "#dc2626" : "#16a34a", fontFamily: "Georgia, serif" }}>{ltvStats.atRisk}</p>
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>no visit in 90+ days</p>
+              </div>
+            </div>
+          </section>
         )}
 
         {/* ── D8: Doctor Queue ── */}

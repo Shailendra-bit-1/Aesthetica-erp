@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import {
   UserCheck2, ChevronLeft, ChevronRight, Download,
-  Plus, X, Check, Clock, AlertCircle, BarChart3, TrendingUp, IndianRupee, UserPlus, Loader2,
+  Plus, X, Check, Clock, AlertCircle, BarChart3, TrendingUp, IndianRupee, UserPlus, Loader2, CalendarDays,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -76,7 +76,7 @@ function getInitials(name: string) {
 export default function StaffHRPage() {
   const { profile, activeClinicId } = useClinic();
 
-  const [tab, setTab] = useState<"directory" | "attendance" | "leaves" | "scorecards">("directory");
+  const [tab, setTab] = useState<"directory" | "attendance" | "leaves" | "scorecards" | "availability">("directory");
   const [staffList, setStaffList] = useState<StaffProfile[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [leaves, setLeaves] = useState<LeaveRecord[]>([]);
@@ -300,11 +300,11 @@ export default function StaffHRPage() {
       <div className="flex-1 overflow-auto p-6">
         {/* Tabs */}
         <div className="flex gap-1 mb-6 p-1 rounded-xl w-fit" style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.15)" }}>
-          {(["directory", "attendance", "leaves", "scorecards"] as const).map(t => (
+          {(["directory", "attendance", "leaves", "scorecards", "availability"] as const).map(t => (
             <button key={t} onClick={() => { setTab(t); if (t === "scorecards") fetchScorecards(); }}
               className="px-5 py-2 rounded-lg text-sm font-medium transition-all capitalize"
               style={tab === t ? { background: "var(--gold)", color: "#fff", fontFamily: "Georgia, serif" } : { color: "rgba(197,160,89,0.7)" }}>
-              {t === "directory" ? "Directory" : t === "attendance" ? "Attendance" : t === "leaves" ? "Leaves" : "Scorecards"}
+              {t === "directory" ? "Directory" : t === "attendance" ? "Attendance" : t === "leaves" ? "Leaves" : t === "scorecards" ? "Scorecards" : "Availability"}
             </button>
           ))}
         </div>
@@ -667,6 +667,11 @@ export default function StaffHRPage() {
             )}
           </div>
         )}
+
+        {/* AVAILABILITY TAB */}
+        {tab === "availability" && clinicId && (
+          <AvailabilityTab clinicId={clinicId} staffList={staffList} isAdmin={isAdmin} />
+        )}
       </div>
 
       {/* CLOCK IN/OUT MODAL */}
@@ -815,6 +820,201 @@ export default function StaffHRPage() {
         </div>
       )}
       <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+}
+
+// ─── F3: Doctor Availability Schedule Builder ───────────────────────────────
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAY_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+interface AvailabilitySlot {
+  id: string;
+  provider_id: string;
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  is_available: boolean;
+}
+
+function AvailabilityTab({
+  clinicId,
+  staffList,
+  isAdmin,
+}: {
+  clinicId: string;
+  staffList: StaffProfile[];
+  isAdmin: boolean;
+}) {
+  const [selectedProvider, setSelectedProvider] = useState<string>(staffList[0]?.id ?? "");
+  const [slots, setSlots] = useState<AvailabilitySlot[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  // draft: day_of_week → { start_time, end_time, is_available }
+  const [draft, setDraft] = useState<Record<number, { start: string; end: string; enabled: boolean }>>({});
+
+  const load = useCallback(async (providerId: string) => {
+    if (!providerId) return;
+    setLoading(true);
+    const { data } = await supabase
+      .from("provider_availability")
+      .select("*")
+      .eq("clinic_id", clinicId)
+      .eq("provider_id", providerId)
+      .order("day_of_week");
+    setSlots((data ?? []) as AvailabilitySlot[]);
+    // Build draft from existing data
+    const d: Record<number, { start: string; end: string; enabled: boolean }> = {};
+    for (let i = 0; i < 7; i++) {
+      const existing = ((data ?? []) as AvailabilitySlot[]).find(s => s.day_of_week === i);
+      d[i] = {
+        start:   existing?.start_time?.slice(0, 5) ?? "09:00",
+        end:     existing?.end_time?.slice(0, 5)   ?? "18:00",
+        enabled: existing?.is_available ?? false,
+      };
+    }
+    setDraft(d);
+    setLoading(false);
+  }, [clinicId]);
+
+  useEffect(() => {
+    if (selectedProvider) load(selectedProvider);
+  }, [selectedProvider, load]);
+
+  async function save() {
+    if (!selectedProvider) return;
+    setSaving(true);
+    // Upsert all 7 days
+    const upserts = Object.entries(draft).map(([dayStr, val]) => ({
+      clinic_id:   clinicId,
+      provider_id: selectedProvider,
+      day_of_week: parseInt(dayStr),
+      start_time:  val.start + ":00",
+      end_time:    val.end   + ":00",
+      is_available: val.enabled,
+    }));
+    // Delete existing rows for this provider first, then insert
+    await supabase.from("provider_availability").delete()
+      .eq("clinic_id", clinicId).eq("provider_id", selectedProvider);
+    const { error } = await supabase.from("provider_availability").insert(upserts);
+    if (error) toast.error("Save failed: " + error.message);
+    else { toast.success("Availability saved"); load(selectedProvider); }
+    setSaving(false);
+  }
+
+  const provider = staffList.find(s => s.id === selectedProvider);
+  const rc = ROLE_COLORS[provider?.role ?? ""] ?? { bg: "rgba(197,160,89,0.1)", color: "var(--gold)" };
+
+  return (
+    <div style={{ display: "flex", gap: 24 }}>
+      {/* Provider picker */}
+      <div style={{ width: 220, flexShrink: 0 }}>
+        <p className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: "#9ca3af" }}>Select Provider</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {staffList.map(s => {
+            const rc2 = ROLE_COLORS[s.role] ?? { bg: "rgba(197,160,89,0.1)", color: "var(--gold)" };
+            const active = selectedProvider === s.id;
+            return (
+              <button key={s.id} onClick={() => setSelectedProvider(s.id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
+                  borderRadius: 10, border: active ? "1px solid rgba(197,160,89,0.5)" : "1px solid rgba(197,160,89,0.15)",
+                  background: active ? "rgba(197,160,89,0.08)" : "#fff",
+                  cursor: "pointer", textAlign: "left",
+                }}>
+                <div style={{ width: 30, height: 30, borderRadius: "50%", background: rc2.bg, color: rc2.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
+                  {getInitials(s.full_name)}
+                </div>
+                <div>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: "#1a1714", margin: 0 }}>{s.full_name}</p>
+                  <p style={{ fontSize: 10, color: "#9ca3af", margin: 0 }}>{s.role.replace("_", " ")}</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Schedule grid */}
+      <div style={{ flex: 1 }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <CalendarDays size={16} style={{ color: "var(--gold)" }} />
+            <div>
+              <h2 style={{ fontSize: 16, fontWeight: 700, fontFamily: "Georgia, serif", color: "#1a1714", margin: 0 }}>
+                {provider?.full_name ?? "—"} — Weekly Schedule
+              </h2>
+              {provider && (
+                <span style={{ fontSize: 11, padding: "1px 8px", borderRadius: 999, background: rc.bg, color: rc.color }}>{provider.role.replace("_", " ")}</span>
+              )}
+            </div>
+          </div>
+          {isAdmin && (
+            <button onClick={save} disabled={saving || !selectedProvider}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 20px", borderRadius: 9, background: "var(--gold)", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, opacity: saving ? 0.7 : 1 }}>
+              {saving ? <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} /> : <Check size={13} />}
+              {saving ? "Saving…" : "Save Schedule"}
+            </button>
+          )}
+        </div>
+
+        {loading ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 60, gap: 10, color: "#9ca3af" }}>
+            <Loader2 size={18} style={{ animation: "spin 1s linear infinite" }} /> Loading…
+          </div>
+        ) : (
+          <div style={{ background: "#fff", borderRadius: 14, border: "1px solid rgba(197,160,89,0.15)", overflow: "hidden" }}>
+            {/* Column headers */}
+            <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr 80px", padding: "10px 20px", background: "rgba(197,160,89,0.06)", borderBottom: "1px solid rgba(197,160,89,0.15)" }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em" }}>Day</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em" }}>Start Time</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em" }}>End Time</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em" }}>Active</span>
+            </div>
+            {[0,1,2,3,4,5,6].map((day, idx) => {
+              const d = draft[day] ?? { start: "09:00", end: "18:00", enabled: false };
+              const isWeekend = day === 0 || day === 6;
+              return (
+                <div key={day} style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr 80px", alignItems: "center", padding: "12px 20px", borderBottom: idx < 6 ? "1px solid rgba(197,160,89,0.1)" : "none", background: d.enabled ? "rgba(197,160,89,0.03)" : isWeekend ? "rgba(239,68,68,0.02)" : "#fff" }}>
+                  {/* Day label */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: d.enabled ? "#1a1714" : "#9ca3af", fontFamily: "Georgia, serif" }}>{DAY_FULL[day]}</span>
+                    {isWeekend && <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 4, background: "rgba(239,68,68,0.1)", color: "#dc2626", fontWeight: 600 }}>WE</span>}
+                  </div>
+                  {/* Start time */}
+                  <input type="time" value={d.start} disabled={!d.enabled || !isAdmin}
+                    onChange={e => setDraft(prev => ({ ...prev, [day]: { ...prev[day], start: e.target.value } }))}
+                    style={{ width: 110, padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, background: d.enabled ? "#fff" : "#fafafa", color: d.enabled ? "#1a1714" : "#9ca3af", outline: "none" }} />
+                  {/* End time */}
+                  <input type="time" value={d.end} disabled={!d.enabled || !isAdmin}
+                    onChange={e => setDraft(prev => ({ ...prev, [day]: { ...prev[day], end: e.target.value } }))}
+                    style={{ width: 110, padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(197,160,89,0.25)", fontSize: 13, background: d.enabled ? "#fff" : "#fafafa", color: d.enabled ? "#1a1714" : "#9ca3af", outline: "none" }} />
+                  {/* Toggle */}
+                  <div style={{ display: "flex", alignItems: "center" }}>
+                    {isAdmin ? (
+                      <button onClick={() => setDraft(prev => ({ ...prev, [day]: { ...prev[day], enabled: !prev[day].enabled } }))}
+                        style={{ width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer", position: "relative", background: d.enabled ? "var(--gold)" : "#e5e7eb", transition: "background 0.2s" }}>
+                        <span style={{ position: "absolute", top: 3, left: d.enabled ? 21 : 3, width: 16, height: 16, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,0.2)", transition: "left 0.2s" }} />
+                      </button>
+                    ) : (
+                      <span style={{ fontSize: 12, fontWeight: 600, color: d.enabled ? "#16a34a" : "#9ca3af" }}>{d.enabled ? "On" : "Off"}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Summary */}
+        {!loading && selectedProvider && (
+          <p style={{ marginTop: 10, fontSize: 11, color: "#9ca3af", textAlign: "right" }}>
+            {Object.values(draft).filter(d => d.enabled).length} working days/week
+          </p>
+        )}
+      </div>
     </div>
   );
 }
