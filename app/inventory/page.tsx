@@ -1037,11 +1037,35 @@ function TransfersTab({ clinicId, products, profile, isAdmin }: {
     else { toast.success(`Transfer ${status}`); fetchData(); }
   }
 
+  // B16: dispatch sets transfer_status=in_transit + deducts source inventory
+  async function dispatchTransfer(id: string) {
+    const { error } = await supabase.rpc("dispatch_transfer", {
+      p_transfer_id: id,
+      p_actor_id:    profile?.id,
+    });
+    if (error) toast.error(error.message ?? "Dispatch failed");
+    else { toast.success("Transfer dispatched — stock deducted from source"); fetchData(); }
+  }
+
+  // B16: receive sets transfer_status=received + adds stock to destination
+  async function receiveTransfer(id: string) {
+    const { error } = await supabase.rpc("receive_transfer", {
+      p_transfer_id: id,
+      p_actor_id:    profile?.id,
+    });
+    if (error) toast.error(error.message ?? "Receive failed");
+    else { toast.success("Transfer received — stock added to destination"); fetchData(); }
+  }
+
   const STATUS_COLORS: Record<string, { color: string; bg: string }> = {
-    pending:   { color: "#D97706", bg: "rgba(217,119,6,0.1)" },
-    approved:  { color: "#2563eb", bg: "rgba(37,99,235,0.1)" },
-    completed: { color: "#16a34a", bg: "rgba(22,163,74,0.1)" },
-    rejected:  { color: "#dc2626", bg: "rgba(220,38,38,0.1)" },
+    pending:    { color: "#D97706", bg: "rgba(217,119,6,0.1)" },
+    approved:   { color: "#2563eb", bg: "rgba(37,99,235,0.1)" },
+    completed:  { color: "#16a34a", bg: "rgba(22,163,74,0.1)" },
+    rejected:   { color: "#dc2626", bg: "rgba(220,38,38,0.1)" },
+    requested:  { color: "#D97706", bg: "rgba(217,119,6,0.1)" },
+    in_transit: { color: "#7c3aed", bg: "rgba(124,58,237,0.1)" },
+    received:   { color: "#16a34a", bg: "rgba(22,163,74,0.1)" },
+    cancelled:  { color: "#dc2626", bg: "rgba(220,38,38,0.1)" },
   };
 
   return (
@@ -1134,6 +1158,7 @@ function TransfersTab({ clinicId, products, profile, isAdmin }: {
                   style={{ color: sc.color, background: sc.bg }}>
                   {tr.status}
                 </span>
+                {/* Legacy status buttons */}
                 {isAdmin && tr.status === "pending" && (
                   <div className="flex gap-1 flex-shrink-0">
                     <button onClick={() => updateStatus(tr.id, "approved")}
@@ -1148,6 +1173,21 @@ function TransfersTab({ clinicId, products, profile, isAdmin }: {
                   <button onClick={() => updateStatus(tr.id, "completed")}
                     className="text-xs px-2 py-1 rounded-lg font-semibold flex-shrink-0"
                     style={{ background: "rgba(37,99,235,0.1)", color: "#2563eb", border: "1px solid rgba(37,99,235,0.2)" }}>Mark Received</button>
+                )}
+                {/* B16: 2-step transit buttons using dispatch_transfer / receive_transfer RPCs */}
+                {isAdmin && (tr as unknown as Record<string,unknown>).transfer_status === "requested" && (
+                  <button onClick={() => dispatchTransfer(tr.id)}
+                    className="text-xs px-2 py-1 rounded-lg font-semibold flex-shrink-0"
+                    style={{ background: "rgba(124,58,237,0.1)", color: "#7c3aed", border: "1px solid rgba(124,58,237,0.2)" }}>
+                    Dispatch
+                  </button>
+                )}
+                {isAdmin && (tr as unknown as Record<string,unknown>).transfer_status === "in_transit" && tr.from_clinic_id !== clinicId && (
+                  <button onClick={() => receiveTransfer(tr.id)}
+                    className="text-xs px-2 py-1 rounded-lg font-semibold flex-shrink-0"
+                    style={{ background: "rgba(22,163,74,0.1)", color: "#16a34a", border: "1px solid rgba(22,163,74,0.2)" }}>
+                    Receive
+                  </button>
                 )}
               </div>
             );

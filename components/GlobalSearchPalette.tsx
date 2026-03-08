@@ -93,7 +93,7 @@ export default function GlobalSearchPalette({ open, onClose }: Props) {
     (ptsRes.data ?? []).forEach(p => out.push({
       id: p.id, type: "patient",
       title: p.full_name,
-      subtitle: p.phone ? `Patient · ${p.phone}` : "Patient",
+      subtitle: p.phone ? `Patient · ···${p.phone.slice(-4)}` : "Patient",
       href: `/patients/${p.id}`,
     }));
     (apptsRes.data ?? []).forEach(a => out.push({

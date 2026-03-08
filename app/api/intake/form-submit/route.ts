@@ -6,10 +6,14 @@ import { createClient } from "@supabase/supabase-js";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { formId, clinicId, responses } = body as {
-      formId: string;
-      clinicId: string;
-      responses: Record<string, unknown>;
+    const { formId, clinicId, responses, utm_source, utm_medium, utm_campaign, utm_content } = body as {
+      formId:       string;
+      clinicId:     string;
+      responses:    Record<string, unknown>;
+      utm_source?:  string;
+      utm_medium?:  string;
+      utm_campaign?: string;
+      utm_content?: string;
     };
 
     if (!formId || !clinicId || !responses) {
@@ -22,10 +26,10 @@ export async function POST(req: NextRequest) {
       { auth: { autoRefreshToken: false, persistSession: false } }
     );
 
-    // Fetch form definition to determine routing
+    // Fetch full form definition (B13: store snapshot)
     const { data: form, error: formErr } = await supabase
       .from("form_definitions")
-      .select("form_type")
+      .select("*")
       .eq("id", formId)
       .single();
 
@@ -50,13 +54,15 @@ export async function POST(req: NextRequest) {
       const { data: patient, error: patErr } = await supabase
         .from("patients")
         .insert({
-          clinic_id:       clinicId,
-          full_name:       fullName,
+          clinic_id:            clinicId,
+          full_name:            fullName,
           phone,
           email,
-          primary_concern: concerns.length ? concerns : null,
+          primary_concern:      concerns.length ? concerns : null,
           notes,
-          send_intake:     false,
+          send_intake:          false,
+          acquisition_source:   utm_source   ?? null,
+          acquisition_campaign: utm_campaign ?? utm_medium ?? null,
         })
         .select("id")
         .single();
@@ -80,12 +86,20 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Always write to form_responses
+    // Always write to form_responses (B13: store snapshot, B14: UTM in responses)
+    const enrichedResponses = {
+      ...responses,
+      ...(utm_source   ? { _utm_source:   utm_source   } : {}),
+      ...(utm_medium   ? { _utm_medium:   utm_medium   } : {}),
+      ...(utm_campaign ? { _utm_campaign: utm_campaign } : {}),
+      ...(utm_content  ? { _utm_content:  utm_content  } : {}),
+    };
     const { error: respErr } = await supabase.from("form_responses").insert({
-      clinic_id:    clinicId,
-      form_id:      formId,
-      patient_id:   patientId,
-      responses,
+      clinic_id:          clinicId,
+      form_id:            formId,
+      patient_id:         patientId,
+      responses:          enrichedResponses,
+      form_snapshot_json: form,
     });
 
     if (respErr) {

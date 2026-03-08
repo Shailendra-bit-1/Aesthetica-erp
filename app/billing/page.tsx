@@ -250,11 +250,14 @@ export default function BillingPage() {
 
   // ── Void ──
 
+  // B8: void_invoice_safe reverses wallet payments before voiding
   const voidInvoice = async (inv: Invoice, reason: string) => {
-    const { error } = await supabase.from("pending_invoices").update({
-      status: "void", void_reason: reason, updated_at: new Date().toISOString(),
-    }).eq("id", inv.id);
-    if (error) { toast.error("Failed to void"); return; }
+    const { error } = await supabase.rpc("void_invoice_safe", {
+      p_invoice_id: inv.id,
+      p_actor_id:   profile?.id ?? null,
+      p_reason:     reason || null,
+    });
+    if (error) { toast.error(error.message ?? "Failed to void"); return; }
     toast.success("Invoice voided");
     await logAction({ action: "void_invoice", targetId: inv.id, targetName: inv.invoice_number });
     fetchInvoices();
@@ -292,7 +295,8 @@ export default function BillingPage() {
     setPanelInv(null);
   };
 
-  const isAdmin = ["superadmin","chain_admin","clinic_admin"].includes(profile?.role ?? "");
+  const isAdmin      = ["superadmin","chain_admin","clinic_admin"].includes(profile?.role ?? "");
+  const isCounsellor = profile?.role === "counsellor"; // B3: counsellors cannot create/pay invoices
 
   // ── Export ──
 
@@ -385,27 +389,32 @@ export default function BillingPage() {
             >
               <Gift size={16} /> Gift Cards
             </button>
-            <button
-              onClick={() => setShowSellPkg(true)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
-              style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.3)" }}
-            >
-              <Package size={16} /> Sell Package
-            </button>
-            <button
-              onClick={() => setShowProforma(true)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
-              style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.3)" }}
-            >
-              <FileText size={16} /> New Proforma
-            </button>
-            <button
-              onClick={() => setShowNew(true)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
-              style={{ background: "var(--gold)", color: "#fff" }}
-            >
-              <Plus size={16} /> New Invoice
-            </button>
+            {/* B3: hide invoice creation buttons for counsellors */}
+            {!isCounsellor && (
+              <>
+                <button
+                  onClick={() => setShowSellPkg(true)}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
+                  style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.3)" }}
+                >
+                  <Package size={16} /> Sell Package
+                </button>
+                <button
+                  onClick={() => setShowProforma(true)}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
+                  style={{ background: "rgba(197,160,89,0.1)", color: "var(--gold)", border: "1px solid rgba(197,160,89,0.3)" }}
+                >
+                  <FileText size={16} /> New Proforma
+                </button>
+                <button
+                  onClick={() => setShowNew(true)}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90"
+                  style={{ background: "var(--gold)", color: "#fff" }}
+                >
+                  <Plus size={16} /> New Invoice
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -2110,6 +2119,31 @@ function SellPackageDrawer({ clinicId, onClose, onSuccess }: { clinicId: string;
           status:             "active",
         });
       }
+
+      // B10: Sale commission for the selling staff member
+      if (profile?.id && selectedPkg.total_price > 0) {
+        const { data: rateRow } = await supabase.rpc("get_commission_pct", {
+          p_clinic_id:   clinicId,
+          p_provider_id: profile.id,
+          p_service_id:  null,
+        });
+        const commPct = (rateRow as number | null) ?? 10;
+        const commAmt = Math.round(selectedPkg.total_price * commPct / 100 * 100) / 100;
+        if (commAmt > 0) {
+          await supabase.from("staff_commissions").insert({
+            provider_id:       profile.id,
+            clinic_id:         clinicId,
+            patient_id:        patientId,
+            service_name:      selectedPkg.name,
+            sale_amount:       selectedPkg.total_price,
+            commission_pct:    commPct,
+            commission_amount: commAmt,
+            commission_type:   "sale",
+            status:            "pending",
+          });
+        }
+      }
+
       onSuccess();
     } catch (e) {
       toast.error((e as Error)?.message ?? "Failed to sell package");

@@ -42,12 +42,16 @@ export async function POST(req: NextRequest) {
 
     // ── Parse body ─────────────────────────────────────────────────────────
     const body = await req.json() as {
-      full_name: string;
-      phone?: string;
-      email?: string;
-      interest?: string[];
-      notes?: string;
-      source?: string;
+      full_name:    string;
+      phone?:       string;
+      email?:       string;
+      interest?:    string[];
+      notes?:       string;
+      source?:      string;
+      utm_source?:  string;
+      utm_medium?:  string;
+      utm_campaign?: string;
+      utm_content?: string;
     };
 
     if (!body.full_name) {
@@ -58,14 +62,18 @@ export async function POST(req: NextRequest) {
     const { data: lead, error } = await supabase
       .from("crm_leads")
       .insert({
-        clinic_id: clinicId,
-        full_name: body.full_name,
-        phone:     body.phone    ?? null,
-        email:     body.email    ?? null,
-        interest:  body.interest ?? [],
-        notes:     body.notes    ?? null,
-        source:    body.source   ?? "api",
-        status:    "new",
+        clinic_id:    clinicId,
+        full_name:    body.full_name,
+        phone:        body.phone        ?? null,
+        email:        body.email        ?? null,
+        interest:     body.interest     ?? [],
+        notes:        body.notes        ?? null,
+        source:       body.source       ?? "api",
+        status:       "new",
+        utm_source:   body.utm_source   ?? null,
+        utm_medium:   body.utm_medium   ?? null,
+        utm_campaign: body.utm_campaign ?? null,
+        utm_content:  body.utm_content  ?? null,
       })
       .select("id")
       .single();

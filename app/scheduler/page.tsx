@@ -308,11 +308,49 @@ function SchedulerPageInner() {
       const appt = appointments.find(a => a.id === apptId);
       if (appt) { setSelectedAppt(appt); return; }
     }
+
+    // B17: write timing timestamps on status transitions
+    const now = new Date().toISOString();
+    const timingPatch: Record<string, string> = {};
+    if (status === "arrived")    timingPatch.checked_in_at         = now;
+    if (status === "in_session") timingPatch.consultation_start_at = now;
+
     const { error } = await supabase.from("appointments")
-      .update({ status, updated_at: new Date().toISOString() })
+      .update({ status, updated_at: now, ...timingPatch })
       .eq("id", apptId);
     if (error) toast.error("Update failed");
-    else { toast.success(`Marked as ${STATUS_CFG[status].label}`); fetchAll(); }
+    else {
+      toast.success(`Marked as ${STATUS_CFG[status].label}`);
+
+      // B12: insert patient_event for key transitions
+      const appt = appointments.find(a => a.id === apptId);
+      if (appt?.patient_id && activeClinicId) {
+        if (status === "cancelled") {
+          supabase.from("patient_events").insert({
+            clinic_id:   activeClinicId,
+            patient_id:  appt.patient_id,
+            event_type:  "appointment_cancelled",
+            entity_type: "appointment",
+            entity_id:   apptId,
+            summary:     `Appointment cancelled: ${appt.service_name ?? "Service"}`,
+            actor_name:  profile?.full_name ?? null,
+          }).then(() => {});
+        }
+        if (status === "no_show") {
+          supabase.from("patient_events").insert({
+            clinic_id:   activeClinicId,
+            patient_id:  appt.patient_id,
+            event_type:  "appointment_no_show",
+            entity_type: "appointment",
+            entity_id:   apptId,
+            summary:     `No-show: ${appt.service_name ?? "Service"}`,
+            actor_name:  profile?.full_name ?? null,
+          }).then(() => {});
+        }
+      }
+
+      fetchAll();
+    }
   }
 
   function navigate(dir: -1 | 1) {
@@ -1467,6 +1505,23 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
         });
         if (error) throw error;
 
+        // B17: write treatment timing + B12: patient_event
+        await supabase.from("appointments").update({
+          treatment_complete_at: new Date().toISOString(),
+        }).eq("id", a.id);
+
+        if (a.patient_id) {
+          supabase.from("patient_events").insert({
+            clinic_id:   activeClinicId,
+            patient_id:  a.patient_id,
+            event_type:  "treatment_done",
+            entity_type: "appointment",
+            entity_id:   a.id,
+            summary:     `Session consumed: ${credit.service_name ?? a.service_name ?? "Service"}`,
+            actor_name:  a.provider_name ?? null,
+          }).then(() => {});
+        }
+
         toast.success(`Session consumed — invoice created (${fmt(credit.per_session_value)})`);
       } else {
         // No credit — direct charge: create invoice then commission atomically
@@ -1488,7 +1543,16 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
         }
         const commissionPct = rawCommPct2 ?? 0;
 
-        // Invoice creation (GAP-10)
+        // B9: resolve service_id from name if null
+        let resolvedServiceId = a.service_id ?? null;
+        if (!resolvedServiceId && a.service_name) {
+          const { data: svcByName } = await supabase
+            .from("services").select("id").eq("clinic_id", activeClinicId)
+            .ilike("name", a.service_name).limit(1).maybeSingle();
+          resolvedServiceId = svcByName?.id ?? null;
+        }
+
+        // Invoice creation (GAP-10) — B9: service_id guaranteed non-null when available
         const { error: invErr } = await supabase.rpc("create_invoice_with_items", {
           p_clinic_id:    activeClinicId,
           p_patient_id:   a.patient_id,
@@ -1500,7 +1564,7 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
           p_invoice_type: "session",
           p_notes:        a.service_name ?? "",
           p_items: JSON.stringify([{
-            service_id:   a.service_id,
+            service_id:   resolvedServiceId,
             description:  a.service_name,
             quantity:     1,
             unit_price:   amount,
@@ -1510,7 +1574,7 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
         });
         if (invErr) throw invErr;
 
-        // Commission (GAP-14: dynamic rate, GAP-5: validated in DB)
+        // Commission (GAP-14: dynamic rate, commission_type='delivery')
         if (a.provider_id && amount > 0) {
           const commAmt = Math.round(amount * commissionPct / 100 * 100) / 100;
           const { error: cErr } = await supabase.from("staff_commissions").insert({
@@ -1521,6 +1585,7 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
             sale_amount:       amount,
             commission_pct:    commissionPct,
             commission_amount: commAmt,
+            commission_type:   "delivery",
             clinic_id:         activeClinicId,
             patient_id:        a.patient_id,
             status:            "pending",
@@ -1528,11 +1593,28 @@ function AppointmentModal({ appointment: a, privacyMode, activeClinicId, onClose
           if (cErr) throw cErr;
         }
 
-        // Mark appointment completed
+        // B17: write treatment timing + B12: patient_event treatment_done
+        const nowTs = new Date().toISOString();
         const { error: aptErr } = await supabase.from("appointments").update({
-          status: "completed", credit_reserved: false, updated_at: new Date().toISOString(),
+          status:                  "completed",
+          treatment_complete_at:   nowTs,
+          credit_reserved:         false,
+          updated_at:              nowTs,
         }).eq("id", a.id);
         if (aptErr) throw aptErr;
+
+        // B12: patient_event on treatment_done
+        if (a.patient_id) {
+          supabase.from("patient_events").insert({
+            clinic_id:   activeClinicId,
+            patient_id:  a.patient_id,
+            event_type:  "treatment_done",
+            entity_type: "appointment",
+            entity_id:   a.id,
+            summary:     `Treatment done: ${a.service_name ?? "Service"} (direct charge)`,
+            actor_name:  a.provider_name ?? null,
+          }).then(() => {});
+        }
 
         toast.success("Session consumed — invoice created");
       }
@@ -2285,6 +2367,17 @@ function NewAppointmentDrawer({ prefillSlot, services, providers, activeClinicId
         });
         chainEnd = xEnd;
       }
+
+      // B12: patient_event for appointment_booked
+      supabase.from("patient_events").insert({
+        clinic_id:   activeClinicId,
+        patient_id:  selectedPatient.id,
+        event_type:  "appointment_booked",
+        entity_type: "appointment",
+        entity_id:   appt?.id ?? null,
+        summary:     `Appointment booked: ${svc?.name ?? "Service"}`,
+        actor_name:  profile?.full_name ?? null,
+      }).then(() => {});
 
       const extraMsg = extraRows.length > 0 ? ` + ${extraRows.length} extra service${extraRows.length > 1 ? "s" : ""}` : "";
       const recurringMsg = isRecurring ? ` (${recurringCount} sessions)` : "";
