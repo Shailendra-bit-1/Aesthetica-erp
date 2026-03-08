@@ -37,6 +37,10 @@ interface CounsellingSession {
   created_at: string;
   patients: { full_name: string };
   profiles: { full_name: string } | null;
+  claim_status: "unclaimed" | "claimed" | "admin_override" | null;
+  claimed_by: string | null;
+  claimed_at: string | null;
+  claimed_by_profile?: { full_name: string } | null;
 }
 
 interface Service { id: string; name: string; selling_price: number; mrp: number; }
@@ -560,12 +564,40 @@ function CounsellingPage() {
   const [proformaOpen, setProformaOpen]           = useState(false);
   const [clinicName, setClinicName]               = useState("Aesthetica Clinic");
   const [converting, setConverting]               = useState(false);
+  const [claimLoading, setClaimLoading]           = useState(false);
+
+  const isCounsellor = ["counsellor", "clinic_admin", "chain_admin", "superadmin"].includes(profile?.role ?? "");
+
+  async function handleClaim(sessionId: string, action: "claim" | "unclaim") {
+    setClaimLoading(true);
+    try {
+      const res = await fetch("/api/counselling/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, action }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed");
+      toast.success(action === "claim" ? "Session claimed" : "Session unclaimed");
+      fetchSessions();
+      // Update selected session inline
+      setSelectedSession(prev =>
+        prev?.id === sessionId
+          ? { ...prev, claim_status: action === "claim" ? "claimed" : "unclaimed", claimed_by: action === "claim" ? (profile?.id ?? null) : null, claimed_by_profile: action === "claim" ? { full_name: profile?.full_name ?? "" } : null }
+          : prev
+      );
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setClaimLoading(false);
+    }
+  }
 
   const fetchSessions = useCallback(async () => {
     if (!clinicId) return;
     const { data } = await supabase
       .from("counselling_sessions")
-      .select("*, patients(full_name), profiles(full_name)")
+      .select("*, patients(full_name), profiles(full_name), claimed_by_profile:claimed_by(full_name)")
       .eq("clinic_id", clinicId)
       .order("session_date", { ascending: false });
     setSessions((data as CounsellingSession[]) || []);
@@ -903,7 +935,7 @@ function CounsellingPage() {
                 <table className="w-full">
                   <thead>
                     <tr style={{ borderBottom: "1px solid rgba(197,160,89,0.1)", background: "rgba(197,160,89,0.04)" }}>
-                      {["Date", "Patient", "Counsellor", "Treatments", "Type", "Quoted ₹", "Status", "Follow-up"].map(h => (
+                      {["Date", "Patient", "Counsellor", "Treatments", "Type", "Quoted ₹", "Status", "Claim"].map(h => (
                         <th key={h} className="px-4 py-3 text-left text-xs font-medium" style={{ color: "rgba(197,160,89,0.7)", letterSpacing: "0.05em" }}>{h.toUpperCase()}</th>
                       ))}
                     </tr>
@@ -938,8 +970,11 @@ function CounsellingPage() {
                           <td className="px-4 py-3">
                             <span className="text-xs px-2 py-1 rounded-full font-medium" style={{ background: sc.bg, color: sc.color }}>{sc.label}</span>
                           </td>
-                          <td className="px-4 py-3 text-sm" style={{ color: "#4b5563" }}>
-                            {s.followup_date ? new Date(s.followup_date).toLocaleDateString("en-IN") : "—"}
+                          <td className="px-4 py-3">
+                            {s.claim_status === "claimed"
+                              ? <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: "rgba(37,99,235,0.1)", color: "#2563eb" }}>Claimed</span>
+                              : <span className="text-xs" style={{ color: "#9ca3af" }}>—</span>
+                            }
                           </td>
                         </tr>
                       );
@@ -952,8 +987,36 @@ function CounsellingPage() {
               {selectedSession && (
                 <div className="w-96 rounded-xl flex flex-col" style={{ background: "#fff", border: "1px solid rgba(197,160,89,0.15)" }}>
                   <div className="flex justify-between items-center px-4 py-4" style={{ borderBottom: "1px solid rgba(197,160,89,0.1)" }}>
-                    <h3 className="font-semibold text-sm" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Session Detail</h3>
-                    <button onClick={() => setSelectedSession(null)}><X size={15} style={{ color: "#9ca3af" }} /></button>
+                    <div>
+                      <h3 className="font-semibold text-sm" style={{ fontFamily: "Georgia, serif", color: "#1a1714" }}>Session Detail</h3>
+                      {/* B5: Claim status badge */}
+                      {selectedSession.claim_status === "claimed" ? (
+                        <span className="text-xs" style={{ color: "#2563eb" }}>
+                          Claimed by {selectedSession.claimed_by_profile?.full_name ?? "—"}
+                        </span>
+                      ) : (
+                        <span className="text-xs" style={{ color: "#9ca3af" }}>Unclaimed</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {/* B5: Claim/Unclaim button */}
+                      {isCounsellor && (
+                        selectedSession.claim_status === "claimed" && selectedSession.claimed_by === profile?.id ? (
+                          <button onClick={() => handleClaim(selectedSession.id, "unclaim")} disabled={claimLoading}
+                            className="text-xs px-2 py-1 rounded-lg font-medium"
+                            style={{ background: "rgba(239,68,68,0.1)", color: "#dc2626", border: "1px solid rgba(239,68,68,0.25)", cursor: "pointer" }}>
+                            Unclaim
+                          </button>
+                        ) : selectedSession.claim_status !== "claimed" ? (
+                          <button onClick={() => handleClaim(selectedSession.id, "claim")} disabled={claimLoading}
+                            className="text-xs px-2 py-1 rounded-lg font-medium"
+                            style={{ background: "rgba(37,99,235,0.1)", color: "#2563eb", border: "1px solid rgba(37,99,235,0.25)", cursor: "pointer" }}>
+                            Claim
+                          </button>
+                        ) : null
+                      )}
+                      <button onClick={() => setSelectedSession(null)}><X size={15} style={{ color: "#9ca3af" }} /></button>
+                    </div>
                   </div>
 
                   <div className="flex-1 p-4 space-y-4 overflow-y-auto">

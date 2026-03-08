@@ -9,7 +9,7 @@ import {
   CheckCircle2, XCircle, UserCheck, PhoneOff, CalendarCheck,
   AlertTriangle, Package, Calendar, MapPin, Edit2, Trash2,
   ChevronDown, Send, Check, Receipt, IndianRupee, CreditCard, GripVertical, CalendarClock,
-  Printer, Ban,
+  Printer, Ban, UserCheck2,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { withSupabaseRetry } from "@/lib/withRetry";
@@ -204,6 +204,8 @@ function SchedulerPageInner() {
   const [showSettings,  setShowSettings]  = useState(false);
   // GAP-25: Block time
   const [showBlockTime, setShowBlockTime] = useState(false);
+  // B6: Walk-in
+  const [showWalkin,    setShowWalkin]    = useState(false);
   const [prefillSlot,   setPrefillSlot]   = useState<{ date: Date; hour: number; providerId?: string } | null>(null);
   const [schedulerTab,  setSchedulerTab]  = useState<"calendar" | "waitlist" | "recalls">("calendar");
 
@@ -496,6 +498,13 @@ ${today.sort((a,b) => a.start_time.localeCompare(b.start_time)).map(a => `<tr>
             <Ban size={13} /> Block Time
           </button>
         )}
+        {/* B6: Walk-in button */}
+        <button
+          onClick={() => setShowWalkin(true)}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 10, border: "1px solid rgba(59,130,246,0.35)", background: "rgba(59,130,246,0.07)", color: "#2563eb", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+        >
+          <UserCheck2 size={14} /> Walk-in
+        </button>
         <button
           onClick={() => { setPrefillSlot(null); setShowNewAppt(true); }}
           style={{
@@ -677,6 +686,17 @@ ${today.sort((a,b) => a.start_time.localeCompare(b.start_time)).map(a => `<tr>
           existingAppointments={appointments}
           onClose={() => { setShowNewAppt(false); setPrefillSlot(null); }}
           onSaved={() => { setShowNewAppt(false); setPrefillSlot(null); fetchAll(); }}
+        />
+      )}
+
+      {/* B6: Walk-in modal */}
+      {showWalkin && activeClinicId && (
+        <WalkinModal
+          clinicId={activeClinicId}
+          providers={providers}
+          services={services}
+          onClose={() => setShowWalkin(false)}
+          onSaved={() => { setShowWalkin(false); fetchAll(); }}
         />
       )}
 
@@ -4033,6 +4053,158 @@ function AppointmentListView({
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── B6: Walk-in Modal ──────────────────────────────────────────────────────
+
+function WalkinModal({
+  clinicId, providers, services, onClose, onSaved,
+}: {
+  clinicId:  string;
+  providers: Provider[];
+  services:  Service[];
+  onClose:   () => void;
+  onSaved:   () => void;
+}) {
+  const [patientSearch,  setPatientSearch]  = useState("");
+  const [patientResults, setPatientResults] = useState<{ id: string; full_name: string; phone: string | null }[]>([]);
+  const [selectedPatient, setSelectedPatient] = useState<{ id: string; full_name: string } | null>(null);
+  const [walkInName,     setWalkInName]     = useState(""); // anonymous walk-in name
+  const [providerId,     setProviderId]     = useState(providers[0]?.id ?? "");
+  const [serviceId,      setServiceId]      = useState(services[0]?.id ?? "");
+  const [startTime,      setStartTime]      = useState(() => {
+    const now = new Date();
+    return `${String(now.getHours()).padStart(2,"0")}:${String(Math.floor(now.getMinutes()/15)*15).padStart(2,"0")}`;
+  });
+  const [date,           setDate]           = useState(new Date().toISOString().slice(0, 10));
+  const [saving,         setSaving]         = useState(false);
+
+  useEffect(() => {
+    if (patientSearch.length < 2) { setPatientResults([]); return; }
+    const t = setTimeout(async () => {
+      const { data } = await supabase.from("patients").select("id, full_name, phone")
+        .eq("clinic_id", clinicId)
+        .or(`full_name.ilike.%${patientSearch}%,phone.ilike.%${patientSearch}%`).limit(6);
+      setPatientResults((data ?? []) as typeof patientResults);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [patientSearch, clinicId]);
+
+  async function save() {
+    const svc = services.find(s => s.id === serviceId);
+    const start = new Date(`${date}T${startTime}`);
+    const end   = new Date(start.getTime() + (svc?.duration_minutes ?? 60) * 60000);
+    setSaving(true);
+    try {
+      const res = await fetch("/api/appointments/walkin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clinic_id:    clinicId,
+          patient_id:   selectedPatient?.id ?? null,
+          patient_name: selectedPatient?.full_name ?? (walkInName.trim() || "Walk-in"),
+          provider_id:  providerId || null,
+          service_id:   serviceId  || null,
+          service_name: svc?.name  ?? "Walk-in",
+          start_time:   start.toISOString(),
+          end_time:     end.toISOString(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed");
+      toast.success("Walk-in appointment created");
+      onSaved();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.5)" }}>
+      <div style={{ background: "#fff", borderRadius: 16, width: 440, boxShadow: "0 20px 60px rgba(0,0,0,0.2)", border: "1px solid rgba(59,130,246,0.2)" }}>
+        <div style={{ padding: "18px 24px", borderBottom: "1px solid #f3f4f6", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <UserCheck2 size={16} style={{ color: "#2563eb" }} />
+            <h3 style={{ fontSize: 15, fontWeight: 700, color: "#1a1714", margin: 0, fontFamily: "Georgia, serif" }}>Walk-in Appointment</h3>
+          </div>
+          <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={16} style={{ color: "#9ca3af" }} /></button>
+        </div>
+        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Patient search or walk-in name */}
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#4b5563", marginBottom: 6 }}>Patient (optional)</label>
+            {selectedPatient ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", borderRadius: 9, background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.2)" }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#1a1714" }}>{selectedPatient.full_name}</span>
+                <button onClick={() => { setSelectedPatient(null); setPatientSearch(""); }} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={13} style={{ color: "#9ca3af" }} /></button>
+              </div>
+            ) : (
+              <div style={{ position: "relative" }}>
+                <input value={patientSearch} onChange={e => setPatientSearch(e.target.value)}
+                  placeholder="Search by name or phone…"
+                  style={{ width: "100%", padding: "8px 12px", borderRadius: 9, border: "1px solid #e5e7eb", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+                {patientResults.length > 0 && (
+                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 9, zIndex: 10, boxShadow: "0 4px 16px rgba(0,0,0,0.1)" }}>
+                    {patientResults.map(p => (
+                      <button key={p.id} onClick={() => { setSelectedPatient(p); setPatientResults([]); setPatientSearch(""); }}
+                        style={{ display: "block", width: "100%", padding: "8px 12px", border: "none", background: "none", cursor: "pointer", textAlign: "left", fontSize: 13 }}>
+                        {p.full_name}{p.phone ? ` · ${p.phone}` : ""}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {!selectedPatient && (
+              <input value={walkInName} onChange={e => setWalkInName(e.target.value)}
+                placeholder="Or enter walk-in name (e.g. Anonymous)"
+                style={{ marginTop: 6, width: "100%", padding: "8px 12px", borderRadius: 9, border: "1px solid #e5e7eb", fontSize: 12, outline: "none", boxSizing: "border-box", color: "#6b7280" }} />
+            )}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#4b5563", marginBottom: 6 }}>Date</label>
+              <input type="date" value={date} onChange={e => setDate(e.target.value)}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: 9, border: "1px solid #e5e7eb", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#4b5563", marginBottom: 6 }}>Time</label>
+              <input type="time" value={startTime} onChange={e => setStartTime(e.target.value)}
+                style={{ width: "100%", padding: "8px 12px", borderRadius: 9, border: "1px solid #e5e7eb", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+            </div>
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#4b5563", marginBottom: 6 }}>Service</label>
+            <select value={serviceId} onChange={e => setServiceId(e.target.value)}
+              style={{ width: "100%", padding: "8px 12px", borderRadius: 9, border: "1px solid #e5e7eb", fontSize: 13, outline: "none", background: "#fff", boxSizing: "border-box" }}>
+              {services.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#4b5563", marginBottom: 6 }}>Provider</label>
+            <select value={providerId} onChange={e => setProviderId(e.target.value)}
+              style={{ width: "100%", padding: "8px 12px", borderRadius: 9, border: "1px solid #e5e7eb", fontSize: 13, outline: "none", background: "#fff", boxSizing: "border-box" }}>
+              <option value="">— Unassigned —</option>
+              {providers.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+            </select>
+          </div>
+          <div style={{ padding: "8px 12px", borderRadius: 9, background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.15)", fontSize: 12, color: "#2563eb" }}>
+            Walk-in appointments bypass the conflict check and are immediately confirmed.
+          </div>
+        </div>
+        <div style={{ padding: "16px 24px", borderTop: "1px solid #f3f4f6", display: "flex", gap: 10 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: "9px", borderRadius: 9, border: "1px solid #e5e7eb", background: "transparent", cursor: "pointer", fontSize: 13, color: "#6b7280" }}>Cancel</button>
+          <button onClick={save} disabled={saving}
+            style={{ flex: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px", borderRadius: 9, background: "#2563eb", color: "#fff", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, opacity: saving ? 0.7 : 1 }}>
+            {saving ? <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} /> : <UserCheck2 size={13} />}
+            {saving ? "Creating…" : "Create Walk-in"}
+          </button>
+        </div>
       </div>
     </div>
   );

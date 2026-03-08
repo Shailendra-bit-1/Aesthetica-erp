@@ -21,6 +21,9 @@ export async function POST(req: NextRequest) {
       notes,
       referralCode,
       customFieldAnswers,
+      utmSource,
+      utmMedium,
+      utmCampaign,
     } = body as {
       clinicId: string;
       fullName: string;
@@ -34,6 +37,9 @@ export async function POST(req: NextRequest) {
       notes?: string;
       referralCode?: string;
       customFieldAnswers?: Record<string, unknown>;
+      utmSource?: string;
+      utmMedium?: string;
+      utmCampaign?: string;
     };
 
     if (!clinicId || !fullName || !phone || !concerns?.length) {
@@ -75,6 +81,8 @@ export async function POST(req: NextRequest) {
         previous_injections: previousInjections,
         notes:              notes || null,
         send_intake:        false,
+        acquisition_source:   utmSource ?? null,
+        acquisition_campaign: utmCampaign ?? utmMedium ?? null,
       })
       .select("id")
       .single();

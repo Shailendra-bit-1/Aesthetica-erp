@@ -281,6 +281,14 @@ export default function MembershipPage() {
       }
 
       setAssignDrawer(false);
+      // B12: patient_event for membership activation
+      supabase.from("patient_events").insert({
+        patient_id:  assignForm.patient_id,
+        clinic_id:   clinicId,
+        event_type:  "membership_activated",
+        event_data:  { plan_id: assignForm.plan_id, plan_name: plan?.name },
+        occurred_at: new Date().toISOString(),
+      }).then(() => {});
       setAssignForm({ patient_search: "", patient_id: "", plan_id: "", auto_renew: true });
       fetchMemberships();
     } catch (e: unknown) {

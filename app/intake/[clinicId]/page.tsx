@@ -81,6 +81,10 @@ function IntakePageInner() {
   const clinicId     = params.clinicId as string;
   const formId       = searchParams.get("form");
   const refCode      = searchParams.get("ref");
+  // B14: UTM tracking from URL
+  const utmSource    = searchParams.get("utm_source")   ?? undefined;
+  const utmMedium    = searchParams.get("utm_medium")   ?? undefined;
+  const utmCampaign  = searchParams.get("utm_campaign") ?? undefined;
 
   // Remote data
   const [clinic,     setClinic]     = useState<ClinicInfo | null>(null);
@@ -240,6 +244,10 @@ function IntakePageInner() {
           notes: notes.trim() || undefined,
           customFieldAnswers: Object.keys(customFieldValues).length > 0 ? customFieldValues : undefined,
           referralCode: refCode || undefined,
+          // B14: UTM params
+          utmSource,
+          utmMedium,
+          utmCampaign,
         };
       }
 

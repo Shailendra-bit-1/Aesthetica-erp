@@ -876,6 +876,16 @@ function UploadDrawer({ clinicId, patients, profile, editPhoto, onClose }: {
         const { error } = await supabase.from("before_after_photos").insert({ ...row, id: pairId });
         if (error) throw error;
         toast.success("Photo pair added to gallery.");
+        // B12: fire patient_event if photo is linked to a patient
+        if (patientId) {
+          supabase.from("patient_events").insert({
+            patient_id:  patientId,
+            clinic_id:   clinicId,
+            event_type:  "photo_uploaded",
+            event_data:  { photo_id: pairId, treatment: treatVal, body_area: bodyArea || null },
+            occurred_at: new Date().toISOString(),
+          }).then(() => {});
+        }
       }
       logAction({ action: editPhoto ? "edit_ba_photo" : "upload_ba_photo", targetId: pairId, targetName: treatVal, metadata: { treatment: treatVal, body_area: bodyArea } });
       onClose();

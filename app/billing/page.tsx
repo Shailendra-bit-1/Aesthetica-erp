@@ -1439,6 +1439,16 @@ function RecordPaymentDrawer({ invoice: inv, clinicId, onClose, onSuccess }: {
         targetName: inv.invoice_number,
         metadata:   { amount: pay, mode, tip: tip > 0 ? tip : undefined, redeemPts: redeemPts > 0 ? redeemPts : undefined, status: newStatus },
       });
+      // B12: fire patient_event when invoice goes paid
+      if (newStatus === "paid" && inv.patient_id) {
+        supabase.from("patient_events").insert({
+          patient_id:  inv.patient_id,
+          clinic_id:   clinicId,
+          event_type:  "invoice_paid",
+          event_data:  { invoice_id: inv.id, invoice_number: inv.invoice_number, amount: pay },
+          occurred_at: new Date().toISOString(),
+        }).then(() => {});
+      }
       onSuccess();
     } catch (e: any) {
       toast.error(e.message ?? "Failed to record payment");
