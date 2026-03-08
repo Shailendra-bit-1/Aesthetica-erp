@@ -15,7 +15,6 @@ import { supabase } from "@/lib/supabase";
 import { withSupabaseRetry } from "@/lib/withRetry";
 import { useClinic } from "@/contexts/ClinicContext";
 import { toast } from "sonner";
-import TopBar from "@/components/TopBar";
 import { ModuleGate } from "@flags/gate";
 import CustomFieldsSection from "@/components/CustomFieldsSection";
 
@@ -395,7 +394,7 @@ function SchedulerPageInner() {
 
   return (
     <div style={{ minHeight: "100vh", background: "var(--background)", display: "flex", flexDirection: "column" }}>
-      <TopBar />
+
 
       {/* ── Calendar Header ─────────────────────────────────────────────────── */}
       <div style={{

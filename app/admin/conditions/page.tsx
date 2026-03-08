@@ -7,7 +7,6 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 import { toast } from "sonner";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -43,7 +42,7 @@ export default function ConditionsPage() {
 
   return (
     <div className="min-h-screen" style={{ background: "#F9F7F2" }}>
-      <TopBar />
+
       <div className="max-w-7xl mx-auto px-6 py-8">
         <div className="flex items-center gap-3 mb-6">
           <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "rgba(197,160,89,0.12)" }}>

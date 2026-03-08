@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import ConditionalSidebar from "@/components/ConditionalSidebar";
+import ConditionalTopBar from "@/components/ConditionalTopBar";
+import MobileBottomNav from "@/components/MobileBottomNav";
 import InactivityGuard from "@/components/InactivityGuard";
 import { ClinicProvider } from "@/contexts/ClinicContext";
 import { ImpersonationProvider } from "@/contexts/ImpersonationContext";
 import { FeatureFlagsProvider } from "@flags/context";
-import ImpersonationBanner from "@/components/ImpersonationBanner";
 import FeedbackWidget from "@/components/FeedbackWidget";
 import { Toaster } from "sonner";
 
@@ -21,8 +21,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Aesthetica — Luxury Clinic Dashboard",
-  description: "Premium Aesthetic & Dermatology Practice Management",
+  title: "Aesthetica — Clinic Management Suite",
+  description: "Aesthetic & Dermatology Practice Management Platform",
 };
 
 export default function RootLayout({
@@ -38,14 +38,12 @@ export default function RootLayout({
           <FeatureFlagsProvider>
             <ImpersonationProvider>
               <InactivityGuard>
-                <ImpersonationBanner />
-                <div className="flex h-screen overflow-hidden" style={{ background: "var(--background)" }}>
-                  <ConditionalSidebar />
-                  <main className="flex-1 overflow-y-auto">
-                    {children}
-                  </main>
-                </div>
+                <ConditionalTopBar />
+                <main className="min-h-screen pt-16" style={{ background: "var(--bg)" }}>
+                  {children}
+                </main>
                 <FeedbackWidget />
+                <MobileBottomNav />
               </InactivityGuard>
             </ImpersonationProvider>
           </FeatureFlagsProvider>
@@ -55,13 +53,13 @@ export default function RootLayout({
           gap={8}
           toastOptions={{
             style: {
-              background: "#1C1917",
-              border: "1px solid rgba(197,160,89,0.35)",
-              color: "#E8E2D4",
-              fontFamily: "Georgia, serif",
-              borderRadius: "14px",
-              padding: "14px 16px",
-              boxShadow: "0 8px 32px rgba(0,0,0,0.35)",
+              background: "#ffffff",
+              border: "1px solid var(--border)",
+              color: "var(--text-primary)",
+              borderRadius: "10px",
+              padding: "12px 16px",
+              boxShadow: "0 4px 24px rgba(0,0,0,0.1)",
+              fontSize: "13px",
             },
           }}
         />

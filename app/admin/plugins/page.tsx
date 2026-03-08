@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 import { Puzzle, Plus, X, Check, Shield, Settings, Trash2, ToggleLeft, ToggleRight } from "lucide-react";
 
 interface PluginRegistry {
@@ -96,7 +95,7 @@ export default function PluginsPage() {
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-      <TopBar />
+
 
       <div className="flex-1 overflow-auto p-6">
         <div className="flex gap-1 mb-6 p-1 rounded-xl w-fit" style={{ background: "rgba(197,160,89,0.08)", border: "1px solid rgba(197,160,89,0.15)" }}>

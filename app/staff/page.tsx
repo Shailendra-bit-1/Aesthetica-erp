@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 import {
   UserCheck2, ChevronLeft, ChevronRight, Download,
   Plus, X, Check, Clock, AlertCircle, BarChart3, TrendingUp, IndianRupee, UserPlus, Loader2,
@@ -286,7 +285,7 @@ export default function StaffHRPage() {
   if (profile && !HR_ROLES.includes(profile.role ?? "")) {
     return (
       <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-        <TopBar />
+
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <p style={{ color: "#6b7280", fontFamily: "Georgia, serif" }}>You don&apos;t have permission to access Staff HR.</p>
         </div>
@@ -296,7 +295,7 @@ export default function StaffHRPage() {
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-      <TopBar />
+
 
       <div className="flex-1 overflow-auto p-6">
         {/* Tabs */}

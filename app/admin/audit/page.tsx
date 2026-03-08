@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import TopBar from "@/components/TopBar";
 import { supabase } from "@/lib/supabase";
 import {
   ScrollText,
@@ -124,7 +123,7 @@ export default function AuditLogPage() {
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
+
 
       <div className="px-8 pb-12">
         {/* Hero */}

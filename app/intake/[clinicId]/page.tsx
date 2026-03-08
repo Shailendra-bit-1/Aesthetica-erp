@@ -109,6 +109,23 @@ function IntakePageInner() {
   const [customFieldDefs, setCustomFieldDefs] = useState<Array<{ id: string; field_key: string; field_label: string; field_type: string; options: string[] | null; validation: { required?: boolean } | null }>>([]);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
 
+  // C8: Clinic branding
+  const [brandColor, setBrandColor] = useState("#0B2A4A");
+  const [brandLogo, setBrandLogo]   = useState<string | null>(null);
+  const [brandName, setBrandName]   = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!clinicId) return;
+    fetch(`/api/branding?clinic_id=${clinicId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d?.primary_color) setBrandColor(d.primary_color);
+        if (d?.logo_url)      setBrandLogo(d.logo_url);
+        if (d?.app_name)      setBrandName(d.app_name);
+      })
+      .catch(() => {});
+  }, [clinicId]);
+
   // Submit state
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -267,32 +284,33 @@ function IntakePageInner() {
           from { opacity: 0; max-height: 0; transform: translateY(-8px); }
           to   { opacity: 1; max-height: 600px; transform: translateY(0); }
         }
-        @keyframes pulse-gold {
-          0%, 100% { box-shadow: 0 0 0 0 rgba(197,160,89,0.35); }
-          50%       { box-shadow: 0 0 0 8px rgba(197,160,89,0); }
+        @keyframes pulse-brand {
+          0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 35%, transparent); }
+          50%       { box-shadow: 0 0 0 8px transparent; }
         }
         .intake-input:focus {
           outline: none;
-          border-color: rgba(197,160,89,0.7) !important;
-          box-shadow: 0 0 0 3px rgba(197,160,89,0.12) !important;
+          border-color: var(--brand) !important;
+          box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 12%, transparent) !important;
         }
         .concern-pill:hover {
-          border-color: rgba(197,160,89,0.5) !important;
-          background: rgba(197,160,89,0.06) !important;
+          border-color: color-mix(in srgb, var(--brand) 50%, transparent) !important;
+          background: color-mix(in srgb, var(--brand) 6%, transparent) !important;
         }
         .submit-btn:not(:disabled):hover {
           opacity: 0.92;
           transform: translateY(-1px);
-          box-shadow: 0 6px 24px rgba(197,160,89,0.45) !important;
+          box-shadow: 0 6px 24px color-mix(in srgb, var(--brand) 45%, transparent) !important;
         }
         .submit-btn { transition: all 0.2s ease; }
       `}</style>
 
-      {/* ── Full-page linen background ── */}
+      {/* ── Full-page background — brand-aware ── */}
       <div
         className="min-h-screen flex flex-col items-center justify-start py-12 px-4"
         style={{
-          background: "#F9F7F2",
+          ["--brand" as string]: brandColor,
+          background: "#F7F9FC",
           backgroundImage: `
             repeating-linear-gradient(
               45deg,

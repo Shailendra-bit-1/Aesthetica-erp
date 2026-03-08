@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
-import TopBar from "@/components/TopBar";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 import {
@@ -490,7 +489,7 @@ export default function UsersPage() {
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
+
 
       <div className="px-8 pb-12">
         {/* Hero */}

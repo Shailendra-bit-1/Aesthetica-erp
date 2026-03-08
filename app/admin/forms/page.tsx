@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 import { FormInput, Plus, X, GripVertical, Copy, Trash2, Eye, EyeOff, Link, Check, MessageCircle, InboxIcon } from "lucide-react";
 
 type FieldType = "text" | "number" | "date" | "dropdown" | "checkbox" | "textarea" | "signature" | "file" | "section_header";
@@ -167,7 +166,7 @@ export default function FormsPage() {
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-      <TopBar />
+
 
       <div className="flex flex-1 overflow-hidden">
         {/* LEFT PANEL */}

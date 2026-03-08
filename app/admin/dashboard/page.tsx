@@ -1,4 +1,3 @@
-import TopBar from "@/components/TopBar";
 import Link from "next/link";
 import { Crown, Network, Building2, Users, CreditCard, ScrollText } from "lucide-react";
 
@@ -12,7 +11,7 @@ const cards = [
 export default function AdminDashboard() {
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
+
       <div className="px-8 pb-10">
 
         {/* Hero banner */}

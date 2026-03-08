@@ -13,7 +13,6 @@ import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import { logAction } from "@/lib/audit";
 import { toast } from "sonner";
-import TopBar from "@/components/TopBar";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -212,7 +211,7 @@ export default function CreditsPage() {
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
+
 
       <div className="px-8 py-8 max-w-screen-xl mx-auto">
 

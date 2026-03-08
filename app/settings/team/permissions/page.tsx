@@ -7,7 +7,6 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 
 // ── Permission columns ────────────────────────────────────────────────────────
 
@@ -265,7 +264,7 @@ export default function TeamPermissionsPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
+
 
       <div className="px-8 py-8" style={{ maxWidth: 1100, margin: "0 auto" }}>
 

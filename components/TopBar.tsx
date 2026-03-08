@@ -1,60 +1,87 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter, usePathname } from "next/navigation";
+import Link from "next/link";
 import {
-  Search, ChevronDown, Building2, LogOut, Check,
-  AlertTriangle, X, ChevronRight, Settings,
+  ChevronDown, Building2, LogOut, Check, AlertTriangle, X,
+  Grid3X3, Settings, LayoutDashboard, Users, Calendar, Receipt,
+  Target, BarChart2, Search, User, Package, Camera, Boxes,
+  UserCog, Wallet, MessageSquare, Stethoscope, FlaskConical,
+  Webhook, Puzzle, BookOpen, ClipboardList, CreditCard, Globe,
+  FileClock,
 } from "lucide-react";
 import { useClinic } from "@/contexts/ClinicContext";
 import { useImpersonation } from "@/contexts/ImpersonationContext";
 import { supabase } from "@/lib/supabase";
 import NotificationCenter from "@/components/NotificationCenter";
-import GlobalSearchPalette from "@/components/GlobalSearchPalette";
 
-// ── Page title map from pathname ───────────────────────────────────────────
+// ── Primary Nav ────────────────────────────────────────────────────────────
 
-const PAGE_TITLES: Record<string, { title: string; crumbs?: string[] }> = {
-  "/":                       { title: "Dashboard" },
-  "/patients":               { title: "Patient Records" },
-  "/scheduler":              { title: "Smart Scheduler" },
-  "/photos":                 { title: "Before & After" },
-  "/inventory":              { title: "Inventory" },
-  "/billing":                { title: "Billing" },
-  "/membership":             { title: "Memberships" },
-  "/counselling":            { title: "Counselling" },
-  "/crm":                    { title: "CRM & Leads" },
-  "/staff":                  { title: "Staff HR" },
-  "/payroll":                { title: "Payroll" },
-  "/settings":               { title: "Settings" },
-  "/settings/services":      { title: "Services & Packages",    crumbs: ["Settings"] },
-  "/settings/services/credits": { title: "Credits & Commissions", crumbs: ["Settings", "Services"] },
-  "/settings/team/permissions": { title: "Team Permissions",    crumbs: ["Settings"] },
-  "/admin/billing":          { title: "Platform Billing",       crumbs: ["Admin"] },
-  "/admin/reports":          { title: "Reports",                crumbs: ["Admin"] },
-  "/admin/forms":            { title: "Form Builder",           crumbs: ["Admin"] },
-  "/admin/rules":            { title: "Rule Builder",           crumbs: ["Admin"] },
-  "/admin/webhooks":         { title: "Webhooks",               crumbs: ["Admin"] },
-  "/admin/plugins":          { title: "Plugins",                crumbs: ["Admin"] },
-  "/admin/users":            { title: "User Management",        crumbs: ["Admin"] },
-  "/admin/analytics":        { title: "Analytics",              crumbs: ["Admin"] },
-  "/admin/audit":            { title: "Audit Log",              crumbs: ["Admin"] },
-  "/admin/permissions":      { title: "Permissions Matrix",     crumbs: ["Admin"] },
-  "/admin/god-mode":         { title: "God Mode",               crumbs: ["Admin"] },
-  "/admin/manage":           { title: "Master Admin",           crumbs: ["Admin"] },
-};
+const PRIMARY_NAV = [
+  { label: "Dashboard",  href: "/",              icon: LayoutDashboard },
+  { label: "Patients",   href: "/patients",       icon: Users           },
+  { label: "Scheduler",  href: "/scheduler",      icon: Calendar        },
+  { label: "Billing",    href: "/billing",        icon: Receipt         },
+  { label: "CRM",        href: "/crm",            icon: Target          },
+  { label: "Reports",    href: "/admin/reports",  icon: BarChart2       },
+];
 
-function resolveTitle(pathname: string) {
-  // Exact match first
-  if (PAGE_TITLES[pathname]) return PAGE_TITLES[pathname];
-  // Patient profile
-  if (pathname.startsWith("/patients/")) return { title: "Patient Profile", crumbs: ["Patient Records"] };
-  // Settings sub-pages
-  if (pathname.startsWith("/settings/staff/")) return { title: "Staff Profile", crumbs: ["Settings"] };
-  // Intake (public, no topbar shown)
-  if (pathname.startsWith("/intake")) return { title: "Patient Intake" };
-  return { title: "Aesthetica" };
-}
+// ── Apps Grid ──────────────────────────────────────────────────────────────
+
+const APPS = [
+  {
+    section: "PATIENT MANAGEMENT",
+    items: [
+      { label: "Patients",       href: "/patients",      icon: Users          },
+      { label: "Medical Records",href: "/patients",      icon: Stethoscope    },
+      { label: "Intake Portal",  href: "/admin/forms",   icon: ClipboardList  },
+    ],
+  },
+  {
+    section: "OPERATIONS",
+    items: [
+      { label: "Scheduler",      href: "/scheduler",     icon: Calendar       },
+      { label: "Inventory",      href: "/inventory",     icon: Boxes          },
+      { label: "Photos",         href: "/photos",        icon: Camera         },
+    ],
+  },
+  {
+    section: "SALES",
+    items: [
+      { label: "CRM",            href: "/crm",           icon: Target         },
+      { label: "Counselling",    href: "/counselling",   icon: MessageSquare  },
+      { label: "Memberships",    href: "/membership",    icon: CreditCard     },
+    ],
+  },
+  {
+    section: "FINANCE",
+    items: [
+      { label: "Billing",        href: "/billing",       icon: Receipt        },
+      { label: "Payroll",        href: "/payroll",       icon: Wallet         },
+      { label: "Services",       href: "/settings/services", icon: Package    },
+    ],
+  },
+  {
+    section: "ADMIN",
+    items: [
+      { label: "Staff HR",       href: "/staff",              icon: UserCog       },
+      { label: "Form Builder",   href: "/admin/forms",        icon: BookOpen      },
+      { label: "Reports",        href: "/admin/reports",      icon: BarChart2     },
+      { label: "Simulator",      href: "/admin/simulator",    icon: FlaskConical  },
+      { label: "God Mode",       href: "/admin/god-mode",     icon: Globe         },
+    ],
+  },
+  {
+    section: "SETTINGS",
+    items: [
+      { label: "Settings",       href: "/settings",           icon: Settings      },
+      { label: "Webhooks",       href: "/admin/webhooks",     icon: Webhook       },
+      { label: "Plugins",        href: "/admin/plugins",      icon: Puzzle        },
+      { label: "Audit Log",      href: "/admin/audit",        icon: FileClock     },
+    ],
+  },
+];
 
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -64,36 +91,35 @@ export default function TopBar() {
   const { profile, clinics, activeClinicId, setActiveClinicId, loading } = useClinic();
   const { isImpersonating, impersonated, stopImpersonation } = useImpersonation();
 
-  const [clinicOpen,   setClinicOpen]   = useState(false);
-  const [profileOpen,  setProfileOpen]  = useState(false);
-  const [today,        setToday]        = useState("");
-  const [searchOpen,   setSearchOpen]   = useState(false);
+  const [clinicOpen,  setClinicOpen]  = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [appsOpen,    setAppsOpen]    = useState(false);
+  const [cmdOpen,     setCmdOpen]     = useState(false);
+
   const clinicRef  = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
+  const appsRef    = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setToday(new Date().toLocaleDateString("en-IN", {
-      weekday: "long", year: "numeric", month: "long", day: "numeric",
-    }));
-  }, []);
-
-  const initials    = profile?.full_name?.split(" ").map(n => n[0]).slice(0, 2).join("").toUpperCase() ?? "—";
+  const initials     = profile?.full_name?.split(" ").map(n => n[0]).slice(0, 2).join("").toUpperCase() ?? "—";
   const activeClinic = clinics.find(c => c.id === activeClinicId);
-  const { title, crumbs } = resolveTitle(pathname);
+  const canSwitch    = !loading && (profile?.role === "superadmin" || profile?.role === "chain_admin") && clinics.length > 0;
 
+  // Close dropdowns on outside click
   useEffect(() => {
     function onOutside(e: MouseEvent) {
       if (clinicRef.current  && !clinicRef.current.contains(e.target  as Node)) setClinicOpen(false);
       if (profileRef.current && !profileRef.current.contains(e.target as Node)) setProfileOpen(false);
+      if (appsRef.current    && !appsRef.current.contains(e.target    as Node)) setAppsOpen(false);
     }
     document.addEventListener("mousedown", onOutside);
     return () => document.removeEventListener("mousedown", onOutside);
   }, []);
 
-  // Global Cmd+K / Ctrl+K shortcut
+  // Cmd+K / Ctrl+K
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); setSearchOpen(true); }
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); setCmdOpen(true); }
+      if (e.key === "Escape") { setAppsOpen(false); setClinicOpen(false); setProfileOpen(false); }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -104,19 +130,24 @@ export default function TopBar() {
     router.push("/login");
   }
 
-  return (
-    <div className="sticky top-0" style={{ zIndex: "var(--z-topbar)" as React.CSSProperties["zIndex"] }}>
+  function isActive(href: string) {
+    if (href === "/") return pathname === "/";
+    return pathname.startsWith(href);
+  }
 
-      {/* ── Impersonation Banner ── */}
+  return (
+    <>
+      {/* ── Impersonation Banner ─────────────────────────────────────────── */}
       {isImpersonating && impersonated && (
         <div style={{
           background: "rgba(217,119,6,0.1)",
           borderBottom: "1px solid rgba(217,119,6,0.35)",
           padding: "7px 24px",
           display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: "calc(var(--z-topbar) + 1)" as unknown as number,
         }}>
           <AlertTriangle size={13} style={{ color: "#B45309", flexShrink: 0 }} />
-          <span style={{ fontSize: 12, color: "#92400E", fontFamily: "var(--font-serif)" }}>
+          <span style={{ fontSize: 12, color: "#92400E" }}>
             <strong>View Mode:</strong> Viewing as{" "}
             <strong style={{ color: "#78350F" }}>{impersonated.clinicName}</strong>
           </span>
@@ -135,187 +166,270 @@ export default function TopBar() {
         </div>
       )}
 
+      {/* ── Main TopBar ──────────────────────────────────────────────────── */}
       <header style={{
-        background: "rgba(249,247,242,0.95)",
-        backdropFilter: "blur(16px)",
-        borderBottom: "1px solid var(--gold-border)",
-        padding: "0 28px",
-        height: 60,
+        background: "var(--primary)",
+        height: 64,
         display: "flex",
         alignItems: "center",
-        justifyContent: "space-between",
-        gap: 16,
+        padding: "0 20px",
+        gap: 0,
+        position: "fixed",
+        top: isImpersonating ? 36 : 0,
+        left: 0,
+        right: 0,
+        zIndex: "var(--z-topbar)" as React.CSSProperties["zIndex"],
+        boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
       }}>
 
-        {/* ── Left: Breadcrumbs + Page Title ── */}
-        <div style={{ minWidth: 0 }}>
-          {crumbs && crumbs.length > 0 && (
-            <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 1 }}>
-              {crumbs.map((crumb, i) => (
-                <span key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <span style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.04em" }}>{crumb}</span>
-                  <ChevronRight size={9} color="var(--text-muted)" style={{ opacity: 0.5 }} />
-                </span>
-              ))}
-            </div>
-          )}
-          <h1 style={{
-            fontSize: 16,
-            fontWeight: 700,
-            fontFamily: "var(--font-serif)",
-            color: "var(--text-primary)",
-            margin: 0,
-            lineHeight: 1.2,
-          }}>
-            {title}
-          </h1>
-          {!crumbs?.length && (
-            <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1, lineHeight: 1 }}>
-              {activeClinic ? `${activeClinic.name} · ` : ""}{today}
-            </p>
-          )}
-        </div>
+        {/* ── Logo + Wordmark ─────────────────────────────────────────── */}
+        <Link href="/" style={{
+          display: "flex", alignItems: "center", gap: 8,
+          textDecoration: "none", marginRight: 20, flexShrink: 0,
+        }}>
+          <div style={{
+            width: 30, height: 30, borderRadius: 8,
+            background: "rgba(255,255,255,0.15)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 14, fontWeight: 800, color: "#fff",
+          }}>A</div>
+          <span style={{ fontSize: 15, fontWeight: 700, color: "#fff", letterSpacing: "-0.01em" }}>
+            Aesthetica
+          </span>
+        </Link>
 
-        {/* ── Right Controls ── */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+        {/* ── Clinic Switcher ──────────────────────────────────────────── */}
+        {canSwitch && (
+          <div ref={clinicRef} style={{ position: "relative", marginRight: 12, flexShrink: 0 }}>
+            <button
+              onClick={() => setClinicOpen(o => !o)}
+              style={{
+                display: "flex", alignItems: "center", gap: 5,
+                padding: "5px 10px", borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.2)",
+                background: clinicOpen ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)",
+                cursor: "pointer", color: "#fff",
+              }}
+            >
+              <Building2 size={12} />
+              <span style={{ fontSize: 12, fontWeight: 500, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {activeClinic?.name ?? "All Clinics"}
+              </span>
+              <ChevronDown size={11} style={{ opacity: 0.7, transform: clinicOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+            </button>
 
-          {/* Search bar — opens Cmd+K palette */}
-          <div
-            onClick={() => setSearchOpen(true)}
-            style={{
-              display: "flex", alignItems: "center", gap: 8,
-              padding: "7px 14px",
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius-pill)",
-              minWidth: 220, cursor: "pointer",
-              transition: "var(--transition-base)",
+            {clinicOpen && (
+              <div style={{
+                position: "absolute", top: "calc(100% + 8px)", left: 0,
+                minWidth: 240, background: "#fff",
+                borderRadius: 12, border: "1px solid var(--border)",
+                boxShadow: "var(--shadow-lg)", zIndex: 200, overflow: "hidden",
+              }}>
+                <div style={{ padding: "8px 12px 6px", borderBottom: "1px solid var(--border)" }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--text-muted)", margin: 0 }}>
+                    Switch Clinic
+                  </p>
+                </div>
+                <button
+                  onClick={() => { setActiveClinicId(null); setClinicOpen(false); }}
+                  style={{ width: "100%", padding: "8px 12px", textAlign: "left", border: "none", background: activeClinicId === null ? "var(--primary-subtle)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}
+                >
+                  <Building2 size={12} style={{ color: "var(--text-muted)" }} />
+                  <span style={{ fontSize: 12, color: "var(--text-secondary)", flex: 1 }}>All Clinics</span>
+                  {activeClinicId === null && <Check size={11} style={{ color: "var(--primary)" }} />}
+                </button>
+                {clinics.map(c => (
+                  <button key={c.id} onClick={() => { setActiveClinicId(c.id); setClinicOpen(false); }}
+                    style={{ width: "100%", padding: "8px 12px", textAlign: "left", border: "none", background: activeClinicId === c.id ? "var(--primary-subtle)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, borderTop: "1px solid var(--border)" }}>
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: c.subscription_status === "active" ? "var(--success)" : "var(--text-muted)", flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</p>
+                      {c.location && <p style={{ fontSize: 10, color: "var(--text-muted)", margin: 0 }}>{c.location}</p>}
+                    </div>
+                    {activeClinicId === c.id && <Check size={11} style={{ color: "var(--primary)" }} />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Primary Nav Links ─────────────────────────────────────────── */}
+        <nav style={{ display: "flex", alignItems: "center", gap: 2, flex: 1, overflow: "hidden" }}>
+          {PRIMARY_NAV.map(item => (
+            <Link key={item.href} href={item.href} style={{
+              display: "flex", alignItems: "center", gap: 5,
+              padding: "6px 10px", borderRadius: 8, textDecoration: "none",
+              fontSize: 13, fontWeight: isActive(item.href) ? 600 : 400,
+              color: isActive(item.href) ? "#fff" : "rgba(255,255,255,0.72)",
+              background: isActive(item.href) ? "rgba(255,255,255,0.15)" : "transparent",
+              transition: "all 0.15s ease",
+              whiteSpace: "nowrap",
             }}
-            onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(197,160,89,0.4)")}
-            onMouseLeave={e => (e.currentTarget.style.borderColor = "var(--border)")}
-          >
-            <Search size={13} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
-            <span style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-sans)", flex: 1 }}>Search patients, records…</span>
-            <kbd style={{ padding: "1px 5px", borderRadius: 4, border: "1px solid var(--border)", fontSize: 10, color: "var(--text-muted)", background: "rgba(197,160,89,0.04)", flexShrink: 0 }}>⌘K</kbd>
+            onMouseEnter={e => { if (!isActive(item.href)) (e.currentTarget as HTMLElement).style.color = "#fff"; }}
+            onMouseLeave={e => { if (!isActive(item.href)) (e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.72)"; }}
+            >
+              <item.icon size={13} />
+              <span className="hidden md:inline">{item.label}</span>
+            </Link>
+          ))}
+        </nav>
+
+        {/* ── Right Controls ─────────────────────────────────────────────── */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+
+          {/* Apps Menu */}
+          <div ref={appsRef} style={{ position: "relative" }}>
+            <button
+              onClick={() => setAppsOpen(o => !o)}
+              title="Apps"
+              style={{
+                width: 34, height: 34, borderRadius: 8,
+                border: "1px solid rgba(255,255,255,0.2)",
+                background: appsOpen ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.08)",
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                color: "#fff",
+              }}
+            >
+              <Grid3X3 size={15} />
+            </button>
+
+            {appsOpen && (
+              <div style={{
+                position: "fixed",
+                top: 72, right: 16,
+                width: 560,
+                background: "#fff",
+                borderRadius: 16,
+                border: "1px solid var(--border)",
+                boxShadow: "var(--shadow-xl)",
+                zIndex: 200,
+                padding: 20,
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 20,
+              }}>
+                {APPS.map(group => (
+                  <div key={group.section}>
+                    <p style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.12em", color: "var(--text-muted)", marginBottom: 8, marginTop: 0 }}>
+                      {group.section}
+                    </p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      {group.items.map(item => (
+                        <Link key={item.href + item.label} href={item.href}
+                          onClick={() => setAppsOpen(false)}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 7,
+                            padding: "6px 8px", borderRadius: 8,
+                            textDecoration: "none", color: "var(--text-primary)",
+                            fontSize: 13, fontWeight: 500,
+                            transition: "background 0.15s",
+                          }}
+                          onMouseEnter={e => ((e.currentTarget as HTMLElement).style.background = "var(--primary-subtle)")}
+                          onMouseLeave={e => ((e.currentTarget as HTMLElement).style.background = "transparent")}
+                        >
+                          <item.icon size={13} style={{ color: "var(--primary)", flexShrink: 0 }} />
+                          {item.label}
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* Clinic Switcher (superadmin only) */}
-          {!loading && profile?.role === "superadmin" && clinics.length > 0 && (
-            <div ref={clinicRef} style={{ position: "relative" }}>
-              <button
-                onClick={() => setClinicOpen(o => !o)}
-                style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  padding: "6px 10px", borderRadius: "var(--radius-md)",
-                  border: "1px solid rgba(197,160,89,0.3)",
-                  background: clinicOpen ? "rgba(197,160,89,0.1)" : "rgba(197,160,89,0.05)",
-                  cursor: "pointer",
-                }}
-              >
-                <Building2 size={12} style={{ color: "var(--gold)" }} />
-                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", fontFamily: "var(--font-serif)", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {activeClinic?.name ?? "All Clinics"}
-                </span>
-                <ChevronDown size={11} style={{ color: "var(--text-muted)", transform: clinicOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
-              </button>
-
-              {clinicOpen && (
-                <div style={{
-                  position: "absolute", top: "calc(100% + 6px)", right: 0,
-                  minWidth: 240, background: "white",
-                  borderRadius: "var(--radius-lg)",
-                  border: "1px solid rgba(197,160,89,0.2)",
-                  boxShadow: "var(--shadow-lg)",
-                  zIndex: 200, overflow: "hidden",
-                }}>
-                  <div style={{ padding: "8px 12px 6px", borderBottom: "1px solid var(--gold-border)" }}>
-                    <p style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--text-muted)", margin: 0 }}>
-                      Switch Clinic
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => { setActiveClinicId(null); setClinicOpen(false); }}
-                    style={{ width: "100%", padding: "8px 12px", textAlign: "left", border: "none", background: activeClinicId === null ? "var(--gold-hover)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(197,160,89,0.06)" }}
-                  >
-                    <Building2 size={12} style={{ color: "var(--text-muted)" }} />
-                    <span style={{ fontSize: 12, color: "var(--text-secondary)", flex: 1 }}>All Clinics</span>
-                    {activeClinicId === null && <Check size={11} style={{ color: "var(--gold)" }} />}
-                  </button>
-                  {clinics.map(c => (
-                    <button key={c.id} onClick={() => { setActiveClinicId(c.id); setClinicOpen(false); }}
-                      style={{ width: "100%", padding: "8px 12px", textAlign: "left", border: "none", background: activeClinicId === c.id ? "var(--gold-hover)" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(197,160,89,0.04)" }}>
-                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: c.subscription_status === "active" ? "var(--success)" : "var(--text-muted)" }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <p style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", fontFamily: "var(--font-serif)", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</p>
-                        {c.location && <p style={{ fontSize: 10, color: "var(--text-muted)", margin: 0 }}>{c.location}</p>}
-                      </div>
-                      {activeClinicId === c.id && <Check size={11} style={{ color: "var(--gold)" }} />}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Divider */}
-          <div style={{ width: 1, height: 20, background: "var(--border)" }} />
-
-          {/* Notification Center */}
-          <NotificationCenter />
-
-          {/* Settings quick link */}
-          <button onClick={() => router.push("/settings")}
-            style={{ width: 34, height: 34, borderRadius: "var(--radius-md)", border: "1px solid var(--border)", background: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "var(--transition-base)" }}
-            onMouseEnter={e => (e.currentTarget.style.background = "var(--bg-subtle)")}
-            onMouseLeave={e => (e.currentTarget.style.background = "none")}
-            title="Settings"
+          {/* Cmd+K Search */}
+          <button
+            onClick={() => setCmdOpen(true)}
+            style={{
+              display: "flex", alignItems: "center", gap: 7,
+              padding: "6px 12px", borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.2)",
+              background: "rgba(255,255,255,0.08)",
+              cursor: "pointer", color: "rgba(255,255,255,0.75)",
+              fontSize: 12, minWidth: 160,
+            }}
           >
-            <Settings size={14} color="var(--text-muted)" />
+            <Search size={12} />
+            <span style={{ flex: 1, textAlign: "left" }}>Search…</span>
+            <kbd style={{ padding: "1px 4px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.25)", fontSize: 10, color: "rgba(255,255,255,0.6)", background: "rgba(255,255,255,0.05)" }}>⌘K</kbd>
           </button>
 
-          {/* Profile dropdown */}
+          {/* Notifications */}
+          <div style={{ color: "#fff" }}>
+            <NotificationCenter />
+          </div>
+
+          {/* Settings */}
+          <button
+            onClick={() => router.push("/settings")}
+            title="Settings"
+            style={{
+              width: 34, height: 34, borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.2)",
+              background: "rgba(255,255,255,0.08)",
+              cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+              color: "rgba(255,255,255,0.75)",
+            }}
+            onMouseEnter={e => ((e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.15)")}
+            onMouseLeave={e => ((e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.08)")}
+          >
+            <Settings size={14} />
+          </button>
+
+          {/* Profile */}
           <div ref={profileRef} style={{ position: "relative" }}>
             <button
               onClick={() => setProfileOpen(o => !o)}
-              style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", background: "transparent", border: "none", padding: "4px 8px", borderRadius: "var(--radius-md)" }}
+              style={{
+                display: "flex", alignItems: "center", gap: 7,
+                cursor: "pointer", background: "transparent", border: "none",
+                padding: "4px 6px", borderRadius: 8,
+              }}
             >
               <div style={{
-                width: 32, height: 32, borderRadius: "50%",
+                width: 30, height: 30, borderRadius: "50%",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 12, fontWeight: 700, flexShrink: 0,
-                background: "linear-gradient(135deg, #C5A059, #A8853A)",
-                color: "white", fontFamily: "var(--font-serif)",
+                fontSize: 11, fontWeight: 700,
+                background: "rgba(255,255,255,0.2)",
+                color: "#fff", border: "1.5px solid rgba(255,255,255,0.35)",
+                flexShrink: 0,
               }}>
                 {loading ? "…" : initials}
               </div>
-              <span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)", fontFamily: "var(--font-serif)", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {loading ? "Loading…" : (profile?.full_name ?? "Staff")}
-              </span>
-              <ChevronDown size={12} style={{ color: "var(--text-muted)", transform: profileOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+              <ChevronDown size={11} style={{ color: "rgba(255,255,255,0.7)", transform: profileOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
             </button>
 
             {profileOpen && (
               <div style={{
-                position: "absolute", top: "calc(100% + 6px)", right: 0,
-                minWidth: 200, background: "white",
-                borderRadius: "var(--radius-lg)",
-                border: "1px solid rgba(197,160,89,0.2)",
-                boxShadow: "var(--shadow-lg)",
-                zIndex: 200, overflow: "hidden",
+                position: "absolute", top: "calc(100% + 8px)", right: 0,
+                minWidth: 200, background: "#fff",
+                borderRadius: 12, border: "1px solid var(--border)",
+                boxShadow: "var(--shadow-lg)", zIndex: 200, overflow: "hidden",
               }}>
-                <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--gold-border)", background: "rgba(249,247,242,0.6)" }}>
-                  <p style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", fontFamily: "var(--font-serif)", margin: 0 }}>
+                <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)", background: "var(--primary-subtle)" }}>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", margin: 0 }}>
                     {profile?.full_name ?? "—"}
                   </p>
-                  <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "2px 0 0", textTransform: "capitalize" }}>
+                  <p style={{ fontSize: 11, color: "var(--text-secondary)", margin: "2px 0 0", textTransform: "capitalize" }}>
                     {profile?.role ?? "—"}
                   </p>
                 </div>
                 <button
+                  onClick={() => { router.push("/settings"); setProfileOpen(false); }}
+                  style={{ width: "100%", padding: "9px 14px", textAlign: "left", border: "none", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, color: "var(--text-primary)", fontSize: 13 }}
+                  onMouseEnter={e => ((e.currentTarget as HTMLElement).style.background = "var(--primary-subtle)")}
+                  onMouseLeave={e => ((e.currentTarget as HTMLElement).style.background = "transparent")}
+                >
+                  <User size={13} style={{ color: "var(--text-muted)" }} />
+                  Profile & Settings
+                </button>
+                <button
                   onClick={handleSignOut}
-                  style={{ width: "100%", padding: "10px 14px", textAlign: "left", border: "none", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, color: "var(--error)", fontSize: 13, fontFamily: "var(--font-serif)", transition: "background 0.15s" }}
-                  onMouseEnter={e => (e.currentTarget.style.background = "var(--error-bg)")}
-                  onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                  style={{ width: "100%", padding: "9px 14px", textAlign: "left", border: "none", background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: 8, color: "var(--error)", fontSize: 13, borderTop: "1px solid var(--border)" }}
+                  onMouseEnter={e => ((e.currentTarget as HTMLElement).style.background = "var(--error-bg)")}
+                  onMouseLeave={e => ((e.currentTarget as HTMLElement).style.background = "transparent")}
                 >
                   <LogOut size={13} />
                   Sign Out
@@ -325,7 +439,217 @@ export default function TopBar() {
           </div>
         </div>
       </header>
-    <GlobalSearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
+
+      {/* ── CommandBar ────────────────────────────────────────────────────── */}
+      {cmdOpen && <CommandBarInline onClose={() => setCmdOpen(false)} />}
+    </>
+  );
+}
+
+// ── Inline CommandBar (C5) ─────────────────────────────────────────────────
+
+interface CmdItem {
+  id: string;
+  label: string;
+  subtitle?: string;
+  href?: string;
+  action?: () => void;
+  category: string;
+  icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>;
+}
+
+function CommandBarInline({ onClose }: { onClose: () => void }) {
+  const router  = useRouter();
+  const { profile, activeClinicId } = useClinic();
+  const [query,   setQuery]   = useState("");
+  const [results, setResults] = useState<CmdItem[]>([]);
+  const [idx,     setIdx]     = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const NAV_COMMANDS: CmdItem[] = [
+    { id: "nav-dashboard",  label: "Go to Dashboard",  href: "/",                category: "Navigate", icon: LayoutDashboard },
+    { id: "nav-patients",   label: "Go to Patients",   href: "/patients",        category: "Navigate", icon: Users           },
+    { id: "nav-scheduler",  label: "Go to Scheduler",  href: "/scheduler",       category: "Navigate", icon: Calendar        },
+    { id: "nav-billing",    label: "Go to Billing",    href: "/billing",         category: "Navigate", icon: Receipt         },
+    { id: "nav-crm",        label: "Go to CRM",        href: "/crm",             category: "Navigate", icon: Target          },
+    { id: "nav-inventory",  label: "Go to Inventory",  href: "/inventory",       category: "Navigate", icon: Boxes           },
+    { id: "nav-membership", label: "Go to Memberships",href: "/membership",      category: "Navigate", icon: CreditCard      },
+    { id: "nav-staff",      label: "Go to Staff HR",   href: "/staff",           category: "Navigate", icon: UserCog         },
+    { id: "nav-settings",   label: "Go to Settings",   href: "/settings",        category: "Navigate", icon: Settings        },
+    ...(profile?.role === "superadmin" ? [
+      { id: "nav-godmode", label: "God Mode", href: "/admin/god-mode", category: "Admin", icon: Globe },
+      { id: "nav-reports", label: "Reports",  href: "/admin/reports",  category: "Admin", icon: BarChart2 },
+    ] : []),
+  ];
+
+  const QUICK_CREATE: CmdItem[] = [
+    { id: "new-patient",     label: "New Patient",      subtitle: "Add a new patient record", category: "Create", icon: Users, href: "/patients?new=1"      },
+    { id: "new-appointment", label: "New Appointment",  subtitle: "Schedule an appointment",  category: "Create", icon: Calendar, href: "/scheduler?new=1"  },
+    { id: "new-invoice",     label: "New Invoice",      subtitle: "Create an invoice",        category: "Create", icon: Receipt, href: "/billing?new=1"     },
+    { id: "new-lead",        label: "New Lead",         subtitle: "Add a CRM lead",           category: "Create", icon: Target, href: "/crm?new=1"          },
+  ];
+
+  // On mount: show nav + quick create
+  useEffect(() => {
+    setResults([...NAV_COMMANDS.slice(0, 5), ...QUICK_CREATE]);
+    inputRef.current?.focus();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const search = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setResults([...NAV_COMMANDS.slice(0, 5), ...QUICK_CREATE]);
+      setIdx(0);
+      return;
+    }
+    const lower = q.toLowerCase();
+
+    // Filter nav commands
+    const navHits = NAV_COMMANDS.filter(c => c.label.toLowerCase().includes(lower)).slice(0, 3);
+    const createHits = QUICK_CREATE.filter(c => c.label.toLowerCase().includes(lower)).slice(0, 2);
+
+    // Live search patients
+    const { data: patients } = await supabase
+      .from("patients")
+      .select("id, full_name, phone")
+      .eq("clinic_id", activeClinicId)
+      .or(`full_name.ilike.%${q}%,phone.ilike.%${q}%`)
+      .limit(4);
+
+    const patientHits: CmdItem[] = (patients ?? []).map(p => ({
+      id: `patient-${p.id}`,
+      label: p.full_name,
+      subtitle: p.phone ? `···${p.phone.slice(-4)}` : "Patient",
+      href: `/patients/${p.id}`,
+      category: "Patients",
+      icon: Users,
+    }));
+
+    setResults([...navHits, ...createHits, ...patientHits]);
+    setIdx(0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeClinicId]);
+
+  function onQueryChange(q: string) {
+    setQuery(q);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => search(q), 200);
+  }
+
+  function execute(item: CmdItem) {
+    if (item.action) { item.action(); }
+    else if (item.href) { router.push(item.href); }
+    onClose();
+  }
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "ArrowDown") { e.preventDefault(); setIdx(i => Math.min(i + 1, results.length - 1)); }
+    if (e.key === "ArrowUp")   { e.preventDefault(); setIdx(i => Math.max(i - 1, 0)); }
+    if (e.key === "Enter")     { e.preventDefault(); if (results[idx]) execute(results[idx]); }
+    if (e.key === "Escape")    { onClose(); }
+  }
+
+  // Group results by category
+  const groups: Record<string, CmdItem[]> = {};
+  for (const r of results) {
+    if (!groups[r.category]) groups[r.category] = [];
+    groups[r.category].push(r);
+  }
+  let flatIdx = 0;
+
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0,
+        background: "rgba(15,23,42,0.55)",
+        zIndex: "var(--z-modal)" as React.CSSProperties["zIndex"],
+        display: "flex", alignItems: "flex-start", justifyContent: "center",
+        paddingTop: 80,
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        width: "100%", maxWidth: 560,
+        background: "#fff",
+        borderRadius: 16,
+        border: "1px solid var(--border)",
+        boxShadow: "0 24px 64px rgba(0,0,0,0.2)",
+        overflow: "hidden",
+      }}>
+        {/* Search input */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", borderBottom: "1px solid var(--border)" }}>
+          <Search size={16} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={e => onQueryChange(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Search patients, navigate, create…"
+            style={{
+              flex: 1, border: "none", outline: "none",
+              fontSize: 15, color: "var(--text-primary)",
+              background: "transparent",
+            }}
+          />
+          {query && (
+            <button onClick={() => onQueryChange("")} style={{ border: "none", background: "none", cursor: "pointer", color: "var(--text-muted)", padding: 2 }}>
+              <X size={14} />
+            </button>
+          )}
+          <kbd style={{ padding: "2px 6px", borderRadius: 5, border: "1px solid var(--border)", fontSize: 11, color: "var(--text-muted)", background: "var(--surface-muted)" }}>Esc</kbd>
+        </div>
+
+        {/* Results */}
+        <div style={{ maxHeight: 400, overflowY: "auto", padding: "8px 0" }}>
+          {results.length === 0 ? (
+            <p style={{ fontSize: 13, color: "var(--text-muted)", textAlign: "center", padding: "24px 0" }}>No results found</p>
+          ) : (
+            Object.entries(groups).map(([cat, items]) => (
+              <div key={cat}>
+                <p style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", padding: "8px 16px 4px", margin: 0 }}>
+                  {cat}
+                </p>
+                {items.map(item => {
+                  const thisIdx = flatIdx++;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => execute(item)}
+                      style={{
+                        width: "100%", padding: "9px 16px",
+                        display: "flex", alignItems: "center", gap: 10,
+                        border: "none", cursor: "pointer",
+                        background: thisIdx === idx ? "var(--primary-subtle)" : "transparent",
+                        textAlign: "left",
+                      }}
+                      onMouseEnter={() => setIdx(thisIdx)}
+                    >
+                      <item.icon size={14} style={{ color: thisIdx === idx ? "var(--primary)" : "var(--text-muted)", flexShrink: 0 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)", margin: 0 }}>{item.label}</p>
+                        {item.subtitle && <p style={{ fontSize: 11, color: "var(--text-secondary)", margin: 0 }}>{item.subtitle}</p>}
+                      </div>
+                      {thisIdx === idx && (
+                        <kbd style={{ padding: "1px 5px", borderRadius: 4, border: "1px solid var(--border)", fontSize: 10, color: "var(--text-muted)", background: "var(--surface-muted)" }}>↵</kbd>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ))
+          )}
+        </div>
+
+        <div style={{ padding: "8px 16px", borderTop: "1px solid var(--border)", background: "var(--surface-muted)", display: "flex", gap: 12 }}>
+          {[["↑↓", "Navigate"], ["↵", "Select"], ["Esc", "Close"]].map(([k, v]) => (
+            <span key={k} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--text-muted)" }}>
+              <kbd style={{ padding: "1px 5px", borderRadius: 4, border: "1px solid var(--border)", fontSize: 10, background: "#fff" }}>{k}</kbd>
+              {v}
+            </span>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

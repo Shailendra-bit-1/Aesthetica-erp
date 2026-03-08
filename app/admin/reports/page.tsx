@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 import {
   BarChart2, Download, Save, X, Plus, Trash2, ChevronRight,
   IndianRupee, Users, TrendingUp, Package, Calendar,
@@ -1049,7 +1048,7 @@ export default function ReportsPage() {
   if (!clinicId) {
     return (
       <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-        <TopBar />
+
         <div className="flex-1 flex items-center justify-center" style={{ color: "#9ca3af" }}>
           <p style={{ fontFamily: "Georgia, serif" }}>No clinic selected</p>
         </div>
@@ -1065,7 +1064,7 @@ export default function ReportsPage() {
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-      <TopBar />
+
 
       {/* Top bar with tabs + date range */}
       <div className="flex items-center justify-between px-6 py-4" style={{ background: "#fff", borderBottom: "1px solid rgba(197,160,89,0.12)" }}>

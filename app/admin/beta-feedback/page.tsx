@@ -7,7 +7,6 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 
 /* ─── Types ─────────────────────────────────────────────────────────────────── */
 interface FeedbackRow {
@@ -100,7 +99,7 @@ export default function BetaFeedbackPage() {
 
   return (
     <div className="min-h-screen" style={{ background: "#F9F7F2" }}>
-      <TopBar />
+
       <div className="max-w-5xl mx-auto px-6 py-8">
 
         {/* Header */}

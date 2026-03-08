@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 import NewPatientModal from "@/components/NewPatientModal";
 import { logAction } from "@/lib/audit";
 import { KpiSkeleton, Skeleton } from "@/components/ui";
@@ -419,7 +418,7 @@ export default function OverviewPage() {
 
   return (
     <div className="min-h-full flex flex-col" style={{ background: "var(--background)" }}>
-      <TopBar />
+
       {/* Dashboard Customize button */}
       {isAdmin && (
         <div className="flex justify-end px-8 pt-2">

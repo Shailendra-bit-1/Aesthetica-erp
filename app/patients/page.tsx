@@ -9,7 +9,6 @@ import {
   Users, Search, ChevronRight, Sparkles, Phone, Mail, Calendar, Eye, EyeOff,
   AlertTriangle, Stethoscope, Building2, UserPlus, SlidersHorizontal, X,
 } from "lucide-react";
-import TopBar from "@/components/TopBar";
 import NewPatientModal from "@/components/NewPatientModal";
 import { TableRowSkeleton } from "@/components/ui";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -161,7 +160,7 @@ export default function PatientsPage() {
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
+
       <div className="px-6 py-6 max-w-[1440px] mx-auto space-y-5">
 
         {/* Header */}

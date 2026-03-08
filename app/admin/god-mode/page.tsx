@@ -15,7 +15,6 @@ import { useClinic } from "@/contexts/ClinicContext";
 import { useImpersonation } from "@/contexts/ImpersonationContext";
 import { logAction } from "@/lib/audit";
 import { toast } from "sonner";
-import TopBar from "@/components/TopBar";
 
 // ─────────────────────────────────────── Constants ───────────────────────────
 
@@ -198,7 +197,7 @@ export default function GodModePage() {
   if (profile?.role !== "superadmin") {
     return (
       <div style={{ background: "#F9F7F2", minHeight: "100vh" }}>
-        <TopBar />
+
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "60vh", gap: 12 }}>
           <Shield size={36} style={{ color: "rgba(197,160,89,0.35)" }} />
           <p style={{ fontSize: 16, fontFamily: "Georgia, serif", color: "#9C9584" }}>Superadmin access required</p>
@@ -375,7 +374,7 @@ export default function GodModePage() {
 
   return (
     <div style={{ background: "#F9F7F2", minHeight: "100vh" }}>
-      <TopBar />
+
 
       {/* Impersonation banner */}
       {isImpersonating && impersonated && (

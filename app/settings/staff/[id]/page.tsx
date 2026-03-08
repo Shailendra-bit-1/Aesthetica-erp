@@ -3,7 +3,6 @@
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import TopBar from "@/components/TopBar";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 import {
@@ -912,7 +911,7 @@ export default function StaffPermissionsPage() {
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
+
 
       <div className="px-8 pb-12 max-w-3xl mx-auto">
         {/* Back */}

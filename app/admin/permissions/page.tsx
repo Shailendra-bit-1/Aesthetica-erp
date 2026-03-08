@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import TopBar from "@/components/TopBar";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 import {
@@ -375,7 +374,7 @@ export default function PermissionsMatrixPage() {
 
   return (
     <div className="min-h-full flex flex-col" style={{ background: "var(--background)" }}>
-      <TopBar />
+
 
       {/* Hero banner */}
       <div

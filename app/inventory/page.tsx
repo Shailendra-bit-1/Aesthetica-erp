@@ -12,7 +12,6 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import { toast } from "sonner";
-import TopBar from "@/components/TopBar";
 import { logAction } from "@/lib/audit";
 import CustomFieldsSection from "@/components/CustomFieldsSection";
 
@@ -361,7 +360,7 @@ export default function InventoryPage() {
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
+
       <div className="px-6 py-6 max-w-[1440px] mx-auto space-y-6">
 
         {/* Header */}

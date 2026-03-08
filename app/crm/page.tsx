@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import { normalizePhone } from "@/lib/phoneUtils";
-import TopBar from "@/components/TopBar";
 import CustomFieldsSection from "@/components/CustomFieldsSection";
 import { toast } from "sonner";
 import {
@@ -310,7 +309,7 @@ export default function CRMPage() {
   if (profile && !CRM_ROLES.includes(profile.role ?? "")) {
     return (
       <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-        <TopBar />
+
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <p style={{ color: "#6b7280", fontFamily: "Georgia, serif" }}>You don&apos;t have permission to access CRM.</p>
         </div>
@@ -320,7 +319,7 @@ export default function CRMPage() {
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-      <TopBar />
+
 
       <div className="flex-1 overflow-auto p-6">
         {/* Tabs */}

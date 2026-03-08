@@ -1,9 +1,8 @@
-import TopBar from "@/components/TopBar";
 
 export default function Page() {
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
+
       <div className="px-8 py-12 flex flex-col items-center justify-center gap-4" style={{ minHeight: "60vh" }}>
         <div
           className="w-16 h-16 rounded-2xl flex items-center justify-center text-3xl"

@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 
 // ─────────────────────────────────────── Types ───────────────────────────────
 
@@ -522,7 +521,7 @@ export default function AnalyticsPage() {
 
   return (
     <div style={{ background: "#F9F7F2", minHeight: "100vh" }}>
-      <TopBar />
+
 
       <div style={{ padding: "28px 40px 60px", maxWidth: 1320, margin: "0 auto" }}>
 

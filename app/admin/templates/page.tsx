@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 import { Plus, X, Edit2, Trash2, Eye, CheckCircle, Copy, MessageSquare } from "lucide-react";
 
 interface WATemplate {
@@ -128,7 +127,7 @@ export default function TemplatesPage() {
   if (profile && profile.role !== "superadmin" && profile.role !== "chain_admin" && profile.role !== "clinic_admin") {
     return (
       <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-        <TopBar />
+
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <p style={{ color: "#6b7280", fontFamily: "Georgia, serif" }}>Admin access required.</p>
         </div>
@@ -138,7 +137,7 @@ export default function TemplatesPage() {
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-      <TopBar />
+
       <div style={{ flex: 1, overflowY: "auto", padding: 24, maxWidth: 1280, margin: "0 auto", width: "100%" }}>
 
         {/* Header */}

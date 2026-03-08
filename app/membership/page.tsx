@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 import {
   Star, Plus, X, ChevronDown, Wallet, Users, Crown,
   Check, Pause, Trash2, Gift, Edit2, Search, Trophy, Zap, TrendingUp,
@@ -392,7 +391,7 @@ export default function MembershipPage() {
   if (profile && !ALLOWED_ROLES.includes(profile.role ?? "")) {
     return (
       <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-        <TopBar />
+
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <p style={{ color: "#6b7280", fontFamily: "Georgia, serif" }}>You don&apos;t have permission to manage memberships.</p>
         </div>
@@ -402,7 +401,7 @@ export default function MembershipPage() {
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-      <TopBar />
+
 
       <div className="flex-1 overflow-auto p-6">
         {/* Tabs */}

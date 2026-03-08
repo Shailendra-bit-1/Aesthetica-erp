@@ -3,7 +3,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
-import TopBar from "@/components/TopBar";
 import { ArrowLeft, Send, Phone, User, Circle, CheckCheck, Zap, X } from "lucide-react";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -184,7 +183,7 @@ export default function WhatsAppInbox() {
 
   return (
     <div className="flex flex-col h-screen" style={{ background: "#F9F7F2" }}>
-      <TopBar />
+
 
       <div className="flex flex-1 overflow-hidden" style={{ maxWidth: 1280, margin: "0 auto", width: "100%", padding: "16px" }}>
         {/* ── Left: Conversation list ── */}

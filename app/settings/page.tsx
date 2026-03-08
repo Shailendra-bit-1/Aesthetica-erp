@@ -15,7 +15,6 @@ import { supabase } from "@/lib/supabase";
 import { useClinic } from "@/contexts/ClinicContext";
 import { logAction } from "@/lib/audit";
 import { toast } from "sonner";
-import TopBar from "@/components/TopBar";
 import { MODULE_KEYS, ALWAYS_ON_MODULES, type ModuleKey } from "@modules/config/environment";
 
 // ─────────────────────────────────────── Types ───────────────────────────────
@@ -46,11 +45,12 @@ interface NotifPrefs {
 
 // ─────────────────────────────────────── Constants ───────────────────────────
 
-type TabKey = "account" | "clinic" | "modules" | "notifications" | "integrations" | "links" | "custom_fields";
+type TabKey = "account" | "clinic" | "modules" | "notifications" | "integrations" | "links" | "custom_fields" | "branding";
 
 const TABS: { key: TabKey; label: string; icon: React.ElementType; adminOnly?: boolean }[] = [
   { key: "account",       label: "My Account",     icon: User                           },
   { key: "clinic",        label: "Clinic Profile",  icon: Building2, adminOnly: true     },
+  { key: "branding",      label: "Branding",        icon: Image,     adminOnly: true     },
   { key: "modules",       label: "Modules",         icon: Layers,    adminOnly: true     },
   { key: "notifications", label: "Notifications",   icon: Bell                           },
   { key: "integrations",  label: "Integrations",    icon: Zap,       adminOnly: true     },
@@ -108,7 +108,7 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-full" style={{ background: "var(--background)" }}>
-      <TopBar />
+
 
       <div style={{ display: "flex", gap: 0, height: "calc(100vh - 64px)", overflow: "hidden" }}>
 
@@ -191,6 +191,7 @@ export default function SettingsPage() {
               {tab === "integrations"  && <IntegrationsTab  />}
               {tab === "links"         && <LinksTab         isAdmin={isAdmin} isSuperAdmin={role === "superadmin"} />}
               {tab === "custom_fields" && <CustomFieldsTab  clinicId={activeClinicId} />}
+              {tab === "branding"      && <BrandingTab      clinicId={activeClinicId} isSuperAdmin={role === "superadmin"} />}
             </>
           )}
         </main>
@@ -1830,6 +1831,141 @@ function CustomFieldsTab({ clinicId }: { clinicId: string | null }) {
         </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────── Tab: Branding ───────────────────────
+
+function BrandingTab({ clinicId, isSuperAdmin }: { clinicId: string | null; isSuperAdmin: boolean }) {
+  const [brandName,  setBrandName]  = useState("");
+  const [brandColor, setBrandColor] = useState("#0B2A4A");
+  const [brandLogo,  setBrandLogo]  = useState("");
+  const [saving,     setSaving]     = useState(false);
+  const [loaded,     setLoaded]     = useState(false);
+
+  useEffect(() => {
+    if (!clinicId) return;
+    supabase.from("clinics").select("brand_name, brand_color, brand_logo_url").eq("id", clinicId).single()
+      .then(({ data }) => {
+        if (data) {
+          setBrandName(data.brand_name   ?? "");
+          setBrandColor(data.brand_color ?? "#0B2A4A");
+          setBrandLogo(data.brand_logo_url ?? "");
+        }
+        setLoaded(true);
+      });
+  }, [clinicId]);
+
+  async function handleSave() {
+    if (!clinicId) return;
+    setSaving(true);
+    const { error } = await supabase.from("clinics").update({
+      brand_name:     brandName     || null,
+      brand_color:    brandColor    || null,
+      brand_logo_url: brandLogo     || null,
+    }).eq("id", clinicId);
+    setSaving(false);
+    if (error) toast.error("Failed to save branding: " + error.message);
+    else       toast.success("Branding saved");
+  }
+
+  if (!loaded) return <div style={{ padding: 32, color: "var(--text-muted)", fontSize: 13 }}>Loading…</div>;
+
+  return (
+    <div style={{ maxWidth: 600 }}>
+      <h2 style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>Clinic Branding</h2>
+      <p style={{ fontSize: 13, color: "var(--text-secondary)", marginBottom: 28 }}>
+        Customise how your clinic appears on patient-facing pages (intake form, portal, invoices).
+      </p>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+
+        {/* Brand Name */}
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>
+            Brand / App Name
+          </label>
+          <input
+            value={brandName}
+            onChange={e => setBrandName(e.target.value)}
+            placeholder="e.g. Glow Aesthetics"
+            className="ae-input"
+          />
+          <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Displayed on intake form header and patient portal. Defaults to clinic name if blank.</p>
+        </div>
+
+        {/* Primary Color */}
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>
+            Primary Colour
+          </label>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <input
+              type="color"
+              value={brandColor}
+              onChange={e => setBrandColor(e.target.value)}
+              style={{ width: 44, height: 38, borderRadius: 8, border: "1px solid var(--border)", cursor: "pointer", padding: 2 }}
+            />
+            <input
+              value={brandColor}
+              onChange={e => setBrandColor(e.target.value)}
+              placeholder="#0B2A4A"
+              className="ae-input"
+              style={{ maxWidth: 160 }}
+            />
+            <div style={{ width: 38, height: 38, borderRadius: 8, background: brandColor, border: "1px solid var(--border)", flexShrink: 0 }} />
+          </div>
+          <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Used for buttons and highlights on patient-facing pages.</p>
+        </div>
+
+        {/* Logo URL */}
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>
+            Logo URL
+          </label>
+          <input
+            value={brandLogo}
+            onChange={e => setBrandLogo(e.target.value)}
+            placeholder="https://your-cdn.com/logo.png"
+            className="ae-input"
+          />
+          {brandLogo && (
+            <div style={{ marginTop: 10, padding: 12, background: "var(--surface-muted)", borderRadius: 8, display: "inline-block" }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={brandLogo} alt="Brand logo preview" style={{ maxHeight: 48, maxWidth: 160, objectFit: "contain" }} />
+            </div>
+          )}
+          <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>Direct URL to your logo image. Shown on intake form and portal header.</p>
+        </div>
+
+        {/* Preview */}
+        <div style={{ padding: 20, borderRadius: 12, border: "1px solid var(--border)", background: "var(--surface-muted)" }}>
+          <p style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 12 }}>Preview</p>
+          <div style={{ background: brandColor, borderRadius: 10, padding: "12px 20px", display: "flex", alignItems: "center", gap: 12 }}>
+            {brandLogo && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={brandLogo} alt="" style={{ height: 28, objectFit: "contain", filter: "brightness(0) invert(1)" }} />
+            )}
+            <span style={{ color: "#fff", fontSize: 15, fontWeight: 700 }}>{brandName || "Your Clinic Name"}</span>
+          </div>
+          <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 10 }}>This is how your header appears to patients.</p>
+        </div>
+
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          style={{
+            alignSelf: "flex-start",
+            padding: "10px 24px", borderRadius: 10,
+            background: "var(--primary)", color: "#fff",
+            border: "none", cursor: saving ? "not-allowed" : "pointer",
+            fontSize: 13, fontWeight: 600, opacity: saving ? 0.7 : 1,
+          }}
+        >
+          {saving ? "Saving…" : "Save Branding"}
+        </button>
+      </div>
     </div>
   );
 }
