@@ -409,11 +409,11 @@ export default function AnalyticsPage() {
         .select("id, name, category, low_stock_threshold, inventory_batches(quantity_remaining)")
         .eq("clinic_id", activeClinicId)
         .eq("is_active", true);
-      const lowItems = (prods ?? []).filter(p => {
+      const lowItems = (prods ?? []).filter((p: { inventory_batches?: unknown; low_stock_threshold?: number | null }) => {
         const qty = ((p.inventory_batches ?? []) as { quantity_remaining: number }[])
           .reduce((s, b) => s + (b.quantity_remaining ?? 0), 0);
         return qty <= (p.low_stock_threshold ?? 0);
-      }).map(p => ({
+      }).map((p: { id: string; name: string; category?: unknown; inventory_batches?: unknown; low_stock_threshold?: number | null }) => ({
         id: p.id, name: p.name, category: p.category as string | null,
         current_stock: ((p.inventory_batches ?? []) as { quantity_remaining: number }[])
           .reduce((s, b) => s + (b.quantity_remaining ?? 0), 0),

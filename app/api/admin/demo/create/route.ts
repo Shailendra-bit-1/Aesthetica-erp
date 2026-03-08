@@ -228,7 +228,7 @@ export async function POST(req: NextRequest) {
 
     // ── 9. Appointments ─────────────────────────────────────────────────────
     try {
-      const appts = [];
+      const appts: { clinic_id: string; patient_id: string; provider_id: string | null; service_id: string; service_name: string; start_time: string; end_time: string; status: string; credit_reserved: boolean }[] = [];
       // Past completed (last 28 days)
       const pastSlots = [
         { d: 25, p: 0, s: 0, hm: "10:00", dur: 45 },
